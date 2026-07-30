@@ -4740,3 +4740,37 @@ fn realtime_start_deserializes_client_handoff_channel_prefixes() {
         ]))
     );
 }
+
+#[test]
+fn thread_attention_params_reject_unknown_envelope_fields() {
+    let error = serde_json::from_value::<ThreadAttentionParams>(json!({
+        "threadId": "01936f73-7d4b-7b10-8000-000000000001",
+        "attention": {
+            "version": 1,
+            "eventId": "evt-1",
+            "kind": "mention",
+            "sourceClass": "chat",
+            "sourceRef": "message/42",
+            "reference": null,
+            "text": "arbitrary prose is not part of this envelope",
+        },
+    }))
+    .expect_err("unknown attention fields must fail");
+
+    assert!(error.to_string().contains("unknown field"));
+}
+
+#[test]
+fn thread_attention_response_has_stable_discriminator_and_held_reason() {
+    assert_eq!(
+        serde_json::to_value(ThreadAttentionResponse::Started {}).expect("serialize response"),
+        json!({"type": "started"})
+    );
+    assert_eq!(
+        serde_json::to_value(ThreadAttentionResponse::Held {
+            reason: ThreadAttentionHeldReason::PendingTriggerTurn,
+        })
+        .expect("serialize response"),
+        json!({"type": "held", "reason": "pendingTriggerTurn"})
+    );
+}

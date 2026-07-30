@@ -47,6 +47,11 @@ pub struct InitializeCapabilities {
     /// Opt into receiving experimental API methods and fields.
     #[serde(default)]
     pub experimental_api: bool,
+    /// Suppress automatic subscription to threads created after this connection initializes.
+    ///
+    /// Explicit thread operations and subscriptions are unaffected.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suppress_automatic_thread_subscription: bool,
     /// Opt into `attestation/generate` requests for upstream `x-oai-attestation`.
     #[serde(default)]
     pub request_attestation: bool,

@@ -48,6 +48,10 @@
           "default": false,
           "description": "Opt into `attestation/generate` requests for upstream `x-oai-attestation`.",
           "type": "boolean"
+        },
+        "suppressAutomaticThreadSubscription": {
+          "description": "Suppress automatic subscription to threads created after this connection initializes.\n\nExplicit thread operations and subscriptions are unaffected.",
+          "type": "boolean"
         }
       },
       "type": "object"

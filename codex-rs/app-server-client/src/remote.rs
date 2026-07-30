@@ -85,6 +85,7 @@ pub struct RemoteAppServerConnectArgs {
     pub client_name: String,
     pub client_version: String,
     pub experimental_api: bool,
+    pub suppress_automatic_thread_subscription: bool,
     pub mcp_server_openai_form_elicitation: bool,
     pub opt_out_notification_methods: Vec<String>,
     pub channel_capacity: usize,
@@ -93,6 +94,7 @@ impl RemoteAppServerConnectArgs {
     pub(crate) fn initialize_params(&self) -> InitializeParams {
         let capabilities = InitializeCapabilities {
             experimental_api: self.experimental_api,
+            suppress_automatic_thread_subscription: self.suppress_automatic_thread_subscription,
             request_attestation: false,
             opt_out_notification_methods: if self.opt_out_notification_methods.is_empty() {
                 None

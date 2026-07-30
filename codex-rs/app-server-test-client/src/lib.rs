@@ -1751,6 +1751,7 @@ impl CodexClient {
                 },
                 capabilities: Some(InitializeCapabilities {
                     experimental_api,
+                    suppress_automatic_thread_subscription: false,
                     request_attestation: false,
                     opt_out_notification_methods: Some(
                         NOTIFICATIONS_TO_OPT_OUT

@@ -1433,6 +1433,53 @@ pub struct ThreadReadResponse {
     pub thread: Thread,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct ThreadAttentionParams {
+    pub thread_id: String,
+    pub attention: ThreadAttentionEvent,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct ThreadAttentionEvent {
+    pub version: u8,
+    pub event_id: String,
+    pub kind: ThreadAttentionKind,
+    pub source_class: String,
+    pub source_ref: String,
+    #[ts(optional)]
+    pub reference: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadAttentionKind {
+    Mention,
+    DirectedResponse,
+    Periodic,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadAttentionHeldReason {
+    PendingTriggerTurn,
+    PlanMode,
+    Busy,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadAttentionResponse {
+    Started {},
+    Held { reason: ThreadAttentionHeldReason },
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

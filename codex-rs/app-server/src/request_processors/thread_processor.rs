@@ -3043,6 +3043,10 @@ impl ThreadRequestProcessor {
         thread_id: ThreadId,
         connection_ids: Vec<ConnectionId>,
     ) {
+        let connection_ids = self
+            .thread_state_manager
+            .automatic_subscription_connection_ids(connection_ids)
+            .await;
         let mut raw_events_enabled = false;
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
             let config_snapshot = thread.config_snapshot().await;

@@ -131,6 +131,7 @@ pub(crate) struct ConnectionSessionState {
 #[derive(Debug)]
 pub(crate) struct InitializedConnectionSessionState {
     pub(crate) experimental_api_enabled: bool,
+    pub(crate) suppress_automatic_thread_subscription: bool,
     pub(crate) opted_out_notification_methods: HashSet<String>,
     pub(crate) app_server_client_name: String,
     pub(crate) client_version: String,
@@ -160,6 +161,12 @@ impl ConnectionSessionState {
         self.initialized
             .get()
             .is_some_and(|session| session.experimental_api_enabled)
+    }
+
+    pub(crate) fn suppress_automatic_thread_subscription(&self) -> bool {
+        self.initialized
+            .get()
+            .is_some_and(|session| session.suppress_automatic_thread_subscription)
     }
 
     pub(crate) fn opted_out_notification_methods(&self) -> HashSet<String> {
@@ -666,13 +673,15 @@ impl MessageProcessor {
     pub(crate) async fn connection_initialized(
         &self,
         connection_id: ConnectionId,
-        request_attestation: bool,
+        session: &ConnectionSessionState,
     ) {
         self.thread_processor
             .connection_initialized(
                 connection_id,
                 ConnectionCapabilities {
-                    request_attestation,
+                    request_attestation: session.request_attestation(),
+                    suppress_automatic_thread_subscription: session
+                        .suppress_automatic_thread_subscription(),
                 },
             )
             .await;
@@ -782,14 +791,7 @@ impl MessageProcessor {
                 )
                 .await?;
             if connection_initialized {
-                self.thread_processor
-                    .connection_initialized(
-                        connection_id,
-                        ConnectionCapabilities {
-                            request_attestation: session.request_attestation(),
-                        },
-                    )
-                    .await;
+                self.connection_initialized(connection_id, &session).await;
             }
             return Ok(());
         }
@@ -1175,6 +1177,11 @@ impl MessageProcessor {
             }
             ClientRequest::ThreadRead { params, .. } => {
                 self.thread_processor.thread_read(params).await
+            }
+            ClientRequest::ThreadAttention { params, .. } => {
+                self.turn_processor
+                    .thread_attention(&request_id, params)
+                    .await
             }
             ClientRequest::ThreadTurnsList { params, .. } => {
                 self.thread_processor.thread_turns_list(params).await

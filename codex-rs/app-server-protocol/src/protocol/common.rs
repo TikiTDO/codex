@@ -647,6 +647,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadReadResponse,
     },
+    #[experimental("thread/attention")]
+    ThreadAttention => "thread/attention" {
+        params: v2::ThreadAttentionParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadAttentionResponse,
+    },
     #[experimental("thread/turns/list")]
     ThreadTurnsList => "thread/turns/list" {
         params: v2::ThreadTurnsListParams,
@@ -2424,6 +2430,7 @@ mod tests {
                 },
                 capabilities: Some(v1::InitializeCapabilities {
                     experimental_api: true,
+                    suppress_automatic_thread_subscription: true,
                     request_attestation: true,
                     mcp_server_openai_form_elicitation: true,
                     opt_out_notification_methods: Some(vec![
@@ -2446,6 +2453,7 @@ mod tests {
                     },
                     "capabilities": {
                         "experimentalApi": true,
+                        "suppressAutomaticThreadSubscription": true,
                         "requestAttestation": true,
                         "mcpServerOpenaiFormElicitation": true,
                         "optOutNotificationMethods": [
@@ -2495,6 +2503,7 @@ mod tests {
                     },
                     capabilities: Some(v1::InitializeCapabilities {
                         experimental_api: true,
+                        suppress_automatic_thread_subscription: false,
                         request_attestation: true,
                         mcp_server_openai_form_elicitation: true,
                         opt_out_notification_methods: Some(vec![

@@ -1554,6 +1554,10 @@
           "default": false,
           "description": "Opt into `attestation/generate` requests for upstream `x-oai-attestation`.",
           "type": "boolean"
+        },
+        "suppressAutomaticThreadSubscription": {
+          "description": "Suppress automatic subscription to threads created after this connection initializes.\n\nExplicit thread operations and subscriptions are unaffected.",
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -3909,6 +3913,50 @@
         "threadId"
       ],
       "type": "object"
+    },
+    "ThreadAttentionEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "eventId": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ThreadAttentionKind"
+        },
+        "reference": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceClass": {
+          "type": "string"
+        },
+        "sourceRef": {
+          "type": "string"
+        },
+        "version": {
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "eventId",
+        "kind",
+        "sourceClass",
+        "sourceRef",
+        "version"
+      ],
+      "type": "object"
+    },
+    "ThreadAttentionKind": {
+      "enum": [
+        "mention",
+        "directedResponse",
+        "periodic"
+      ],
+      "type": "string"
     },
     "ThreadCompactStartParams": {
       "properties": {

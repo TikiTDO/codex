@@ -309,6 +309,7 @@ struct ThreadStateManagerInner {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ConnectionCapabilities {
     pub(crate) request_attestation: bool,
+    pub(crate) suppress_automatic_thread_subscription: bool,
 }
 
 #[derive(Clone, Default)]
@@ -381,6 +382,24 @@ impl ThreadStateManager {
             .get(&thread_id)
             .map(|thread_entry| thread_entry.connection_ids.iter().copied().collect())
             .unwrap_or_default()
+    }
+
+    pub(crate) async fn automatic_subscription_connection_ids(
+        &self,
+        connection_ids: Vec<ConnectionId>,
+    ) -> Vec<ConnectionId> {
+        let state = self.state.lock().await;
+        connection_ids
+            .into_iter()
+            .filter(|connection_id| {
+                state
+                    .live_connections
+                    .get(connection_id)
+                    .is_some_and(|capabilities| {
+                        !capabilities.suppress_automatic_thread_subscription
+                    })
+            })
+            .collect()
     }
 
     pub(crate) async fn thread_state(&self, thread_id: ThreadId) -> Arc<Mutex<ThreadState>> {

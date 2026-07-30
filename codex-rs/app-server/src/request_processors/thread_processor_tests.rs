@@ -1346,6 +1346,63 @@ mod thread_processor_behavior_tests {
     }
 
     #[tokio::test]
+    async fn automatic_thread_subscription_excludes_suppressed_connection_but_explicit_subscription_allows_it()
+    -> Result<()> {
+        let manager = ThreadStateManager::new();
+        let thread_id = ThreadId::from_string("c1a44b68-ae2c-4db7-8024-b8881d81de80")?;
+        let suppressed_connection = ConnectionId(1);
+        let normal_connection = ConnectionId(2);
+
+        manager
+            .connection_initialized(
+                suppressed_connection,
+                ConnectionCapabilities {
+                    suppress_automatic_thread_subscription: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+        manager
+            .connection_initialized(normal_connection, ConnectionCapabilities::default())
+            .await;
+
+        let automatic_connection_ids = manager
+            .automatic_subscription_connection_ids(vec![suppressed_connection, normal_connection])
+            .await;
+        assert_eq!(automatic_connection_ids, vec![normal_connection]);
+        for connection_id in automatic_connection_ids {
+            manager
+                .try_ensure_connection_subscribed(
+                    thread_id,
+                    connection_id,
+                    /*experimental_raw_events*/ false,
+                )
+                .await
+                .expect("normal connection should remain live");
+        }
+        assert_eq!(
+            manager.subscribed_connection_ids(thread_id).await,
+            vec![normal_connection]
+        );
+
+        manager
+            .try_ensure_connection_subscribed(
+                thread_id,
+                suppressed_connection,
+                /*experimental_raw_events*/ false,
+            )
+            .await
+            .expect("explicit subscription should remain available");
+        let mut subscribed_connection_ids = manager.subscribed_connection_ids(thread_id).await;
+        subscribed_connection_ids.sort_by_key(|connection_id| connection_id.0);
+        assert_eq!(
+            subscribed_connection_ids,
+            vec![suppressed_connection, normal_connection]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn adding_connection_to_thread_updates_has_connections_watcher() -> Result<()> {
         let manager = ThreadStateManager::new();
         let thread_id = ThreadId::from_string("ad7f0408-99b8-4f6e-a46f-bd0eec433370")?;
@@ -1461,6 +1518,7 @@ mod thread_processor_behavior_tests {
                 unrelated_supported_connection,
                 ConnectionCapabilities {
                     request_attestation: true,
+                    ..Default::default()
                 },
             )
             .await;
@@ -1469,6 +1527,7 @@ mod thread_processor_behavior_tests {
                 earlier_supported_connection,
                 ConnectionCapabilities {
                     request_attestation: true,
+                    ..Default::default()
                 },
             )
             .await;
@@ -1477,6 +1536,7 @@ mod thread_processor_behavior_tests {
                 later_supported_connection,
                 ConnectionCapabilities {
                     request_attestation: true,
+                    ..Default::default()
                 },
             )
             .await;

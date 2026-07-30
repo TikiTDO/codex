@@ -11,6 +11,12 @@ export type InitializeCapabilities = {
  */
 experimentalApi: boolean,
 /**
+ * Suppress automatic subscription to threads created after this connection initializes.
+ *
+ * Explicit thread operations and subscriptions are unaffected.
+ */
+suppressAutomaticThreadSubscription?: boolean,
+/**
  * Opt into `attestation/generate` requests for upstream `x-oai-attestation`.
  */
 requestAttestation: boolean,
