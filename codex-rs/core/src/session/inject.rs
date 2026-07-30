@@ -43,12 +43,23 @@ impl Session {
     /// start a turn when user/client-triggered work is queued, any task is still
     /// active, or the session is currently in Plan mode. Active Review tasks are
     /// covered by the active-task check because Review turns are not steerable.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the direct-input admission gate must span the idle reservation and task start"
+    )]
     pub(crate) async fn try_start_turn_if_idle(
         self: &Arc<Self>,
         input: Vec<ResponseItem>,
     ) -> Result<(), TryStartTurnIfIdleError> {
         if input.is_empty() {
             return Ok(());
+        }
+        let direct_input_admission_gate = self.direct_input_admission.gate.lock().await;
+        if self.direct_input_admission.has_pending() {
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
+                input,
+            ));
         }
         if self.input_queue.has_trigger_turn_mailbox_items().await {
             return Err(TryStartTurnIfIdleError::new(
@@ -132,6 +143,7 @@ impl Session {
             MailboxParentProvenance::Ignore,
         )
         .await;
+        drop(direct_input_admission_gate);
         Ok(())
     }
 

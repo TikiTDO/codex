@@ -1160,16 +1160,18 @@ mod tests {
             session.get_config().await.as_ref(),
             session.user_instructions().await,
         );
+        let direct_input_admission = Arc::clone(&session.direct_input_admission);
 
         (
             GuardianReviewSession {
                 session,
-                io: SessionIo {
+                io: SessionIo::from_parts(
                     tx_sub,
                     rx_event,
+                    direct_input_admission,
                     agent_status,
-                    session_loop_termination: crate::session::completed_session_loop_termination(),
-                },
+                    crate::session::completed_session_loop_termination(),
+                ),
                 cancel_token: CancellationToken::new(),
                 reuse_key,
                 review_lock: Semaphore::new(/*permits*/ 1),

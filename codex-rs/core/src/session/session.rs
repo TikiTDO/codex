@@ -25,6 +25,76 @@ use codex_protocol::protocol::TurnEnvironmentSelections;
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
 
+#[derive(Default)]
+pub(crate) struct DirectInputAdmission {
+    pub(super) gate: Mutex<()>,
+    pending_submission_ids: std::sync::Mutex<HashSet<String>>,
+}
+
+pub(super) struct DirectInputReservation<'a> {
+    admission: &'a DirectInputAdmission,
+    submission_id: String,
+    owns_pending_entry: bool,
+    committed: bool,
+}
+
+impl DirectInputAdmission {
+    /// Admission is idempotent because [`Submission::id`] is the protocol's
+    /// unique correlation ID. Internal forwarding may therefore pass the same
+    /// submission through multiple [`SessionIo`] boundaries without creating
+    /// multiple pending entries.
+    pub(super) async fn reserve(&self, submission_id: String) -> DirectInputReservation<'_> {
+        let _gate = self.gate.lock().await;
+        let mut pending_submission_ids = self
+            .pending_submission_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owns_pending_entry = pending_submission_ids.insert(submission_id.clone());
+        DirectInputReservation {
+            admission: self,
+            submission_id,
+            owns_pending_entry,
+            committed: false,
+        }
+    }
+
+    pub(crate) fn has_pending(&self) -> bool {
+        !self
+            .pending_submission_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    }
+
+    pub(super) fn complete(&self, submission_id: &str) {
+        self.pending_submission_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(submission_id);
+    }
+}
+
+impl DirectInputReservation<'_> {
+    pub(super) fn commit(mut self) {
+        self.committed = true;
+    }
+
+    pub(super) fn complete(mut self) {
+        if self.owns_pending_entry {
+            self.admission.complete(&self.submission_id);
+            self.owns_pending_entry = false;
+        }
+    }
+}
+
+impl Drop for DirectInputReservation<'_> {
+    fn drop(&mut self) {
+        if self.owns_pending_entry && !self.committed {
+            self.admission.complete(&self.submission_id);
+        }
+    }
+}
+
 /// Context for an initialized model agent
 ///
 /// A session has at most 1 running task at a time, and can be interrupted by user input.
@@ -52,6 +122,10 @@ pub(crate) struct Session {
     pub(super) mcp_prewarm_task: std::sync::Mutex<Option<JoinHandle<()>>>,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
+    /// Direct user submissions admitted to the session queue but not yet fully
+    /// handled by the session loop. The mutex also serializes their admission
+    /// against automatic idle-turn reservation.
+    pub(crate) direct_input_admission: Arc<DirectInputAdmission>,
     pub(crate) input_queue: InputQueue,
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
@@ -1185,6 +1259,7 @@ impl Session {
                 mcp_prewarm_task: std::sync::Mutex::new(None),
                 conversation: Arc::new(RealtimeConversationManager::new()),
                 active_turn: Mutex::new(None),
+                direct_input_admission: Arc::new(DirectInputAdmission::default()),
                 input_queue: InputQueue::new(),
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,

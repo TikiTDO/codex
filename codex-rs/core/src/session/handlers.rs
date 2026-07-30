@@ -760,6 +760,7 @@ pub(super) async fn submission_loop(
                         sub.parent_turn_id,
                     )
                     .await;
+                    sess.direct_input_admission.complete(&sub.id);
                     false
                 }
                 Op::ThreadSettings { thread_settings } => {

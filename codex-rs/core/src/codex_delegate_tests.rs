@@ -56,12 +56,13 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
     let (session, ctx, _rx_evt) = crate::session::tests::make_session_and_context_with_rx().await;
-    let io = Arc::new(SessionIo {
+    let io = Arc::new(SessionIo::from_parts(
         tx_sub,
-        rx_event: rx_events,
+        rx_events,
+        Arc::clone(&session.direct_input_admission),
         agent_status,
-        session_loop_termination: completed_session_loop_termination(),
-    });
+        completed_session_loop_termination(),
+    ));
 
     let (tx_out, rx_out) = bounded(1);
     tx_out
@@ -155,12 +156,13 @@ async fn forward_ops_preserves_submission_trace_context() {
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let io = Arc::new(SessionIo {
+    let io = Arc::new(SessionIo::from_parts(
         tx_sub,
-        rx_event: rx_events,
+        rx_events,
+        Arc::new(crate::session::session::DirectInputAdmission::default()),
         agent_status,
-        session_loop_termination: completed_session_loop_termination(),
-    });
+        completed_session_loop_termination(),
+    ));
     let (tx_ops, rx_ops) = bounded(1);
     let cancel = CancellationToken::new();
     let forward = tokio::spawn(forward_ops(Arc::clone(&io), rx_ops, cancel));
@@ -193,6 +195,159 @@ async fn forward_ops_preserves_submission_trace_context() {
         .await
         .expect("forward_ops did not exit")
         .expect("forward_ops join error");
+}
+
+#[tokio::test]
+async fn forward_ops_releases_admission_when_downstream_session_queue_is_closed() {
+    let (session, _ctx, _events) = crate::session::tests::make_session_and_context_with_rx().await;
+    let (target_tx_sub, target_rx_sub) = bounded(1);
+    target_tx_sub
+        .send(Submission {
+            id: "barrier".to_string(),
+            op: Op::Shutdown,
+            client_user_message_id: None,
+            trace: None,
+            parent_turn_id: None,
+        })
+        .await
+        .expect("fill downstream queue as a deterministic forwarding barrier");
+    let (_target_tx_events, target_rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_target_status_tx, target_status) = watch::channel(AgentStatus::PendingInit);
+    let target_io = Arc::new(SessionIo::from_parts(
+        target_tx_sub,
+        target_rx_events,
+        Arc::clone(&session.direct_input_admission),
+        target_status,
+        completed_session_loop_termination(),
+    ));
+
+    let (bridge_tx_sub, bridge_rx_sub) = bounded(1);
+    let (_bridge_tx_events, bridge_rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_bridge_status_tx, bridge_status) = watch::channel(AgentStatus::PendingInit);
+    let bridge_io = SessionIo::from_parts(
+        bridge_tx_sub,
+        bridge_rx_events,
+        Arc::clone(&session.direct_input_admission),
+        bridge_status,
+        completed_session_loop_termination(),
+    );
+    let forward = tokio::spawn(forward_ops(
+        Arc::clone(&target_io),
+        bridge_rx_sub,
+        CancellationToken::new(),
+    ));
+
+    bridge_io
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "forward me".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect("bridge admission");
+    assert!(session.direct_input_admission.has_pending());
+    drop(target_rx_sub);
+
+    timeout(Duration::from_secs(1), forward)
+        .await
+        .expect("forward_ops did not exit after downstream closure")
+        .expect("forward_ops join error");
+    assert!(
+        !session.direct_input_admission.has_pending(),
+        "failed downstream handoff must release the upstream admission"
+    );
+}
+
+#[tokio::test]
+async fn forward_ops_cancellation_interrupts_a_full_live_downstream_queue() {
+    let (session, _ctx, _events) = crate::session::tests::make_session_and_context_with_rx().await;
+    let (target_tx_sub, target_rx_sub) = bounded(1);
+    target_tx_sub
+        .send(Submission {
+            id: "barrier".to_string(),
+            op: Op::Shutdown,
+            client_user_message_id: None,
+            trace: None,
+            parent_turn_id: None,
+        })
+        .await
+        .expect("fill live downstream queue");
+    let (_target_tx_events, target_rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_target_status_tx, target_status) = watch::channel(AgentStatus::PendingInit);
+    let target_io = Arc::new(SessionIo::from_parts(
+        target_tx_sub,
+        target_rx_events,
+        Arc::clone(&session.direct_input_admission),
+        target_status,
+        completed_session_loop_termination(),
+    ));
+
+    let (bridge_tx_sub, bridge_rx_sub) = bounded(1);
+    let bridge_probe = bridge_tx_sub.clone();
+    let (_bridge_tx_events, bridge_rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_bridge_status_tx, bridge_status) = watch::channel(AgentStatus::PendingInit);
+    let bridge_io = SessionIo::from_parts(
+        bridge_tx_sub,
+        bridge_rx_events,
+        Arc::clone(&session.direct_input_admission),
+        bridge_status,
+        completed_session_loop_termination(),
+    );
+    let cancel = CancellationToken::new();
+    let forward = tokio::spawn(forward_ops(
+        Arc::clone(&target_io),
+        bridge_rx_sub,
+        cancel.clone(),
+    ));
+
+    bridge_io
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "cancel blocked forward".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect("bridge admission");
+    timeout(Duration::from_secs(1), async {
+        while !bridge_probe.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("forwarder did not reach the full downstream queue");
+    assert!(session.direct_input_admission.has_pending());
+
+    cancel.cancel();
+    timeout(Duration::from_secs(1), forward)
+        .await
+        .expect("cancellation did not interrupt downstream send")
+        .expect("forward_ops join error");
+    assert!(
+        !session.direct_input_admission.has_pending(),
+        "cancelled downstream handoff must release upstream admission"
+    );
+    assert_eq!(
+        target_rx_sub
+            .recv()
+            .await
+            .expect("barrier remains the only downstream submission")
+            .id,
+        "barrier"
+    );
+    assert!(
+        target_rx_sub.try_recv().is_err(),
+        "cancelled UserInput must not commit downstream"
+    );
 }
 
 #[tokio::test]
@@ -241,12 +396,13 @@ async fn handle_request_permissions_uses_tool_call_id_for_round_trip() {
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_tx_events, rx_events_child) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let io = Arc::new(SessionIo {
+    let io = Arc::new(SessionIo::from_parts(
         tx_sub,
-        rx_event: rx_events_child,
+        rx_events_child,
+        Arc::new(crate::session::session::DirectInputAdmission::default()),
         agent_status,
-        session_loop_termination: completed_session_loop_termination(),
-    });
+        completed_session_loop_termination(),
+    ));
 
     let call_id = "tool-call-1".to_string();
     let expected_response = RequestPermissionsResponse {
@@ -345,12 +501,13 @@ async fn handle_exec_approval_uses_call_id_for_guardian_review_and_approval_id_f
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_tx_events, rx_events_child) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let io = Arc::new(SessionIo {
+    let io = Arc::new(SessionIo::from_parts(
         tx_sub,
-        rx_event: rx_events_child,
+        rx_events_child,
+        Arc::new(crate::session::session::DirectInputAdmission::default()),
         agent_status,
-        session_loop_termination: completed_session_loop_termination(),
-    });
+        completed_session_loop_termination(),
+    ));
 
     let cancel_token = CancellationToken::new();
     let handle = tokio::spawn({
