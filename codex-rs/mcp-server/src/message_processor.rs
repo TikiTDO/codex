@@ -76,7 +76,7 @@ impl MessageProcessor {
         codex_image_generation_extension::install(
             &mut extensions,
             auth_manager.clone(),
-            |config: &Config| Some(config.codex_home.clone()),
+            |config: &Config| Some(config.image_generation_output_dir.clone()),
         );
         let thread_manager = Arc::new(ThreadManager::new(
             config.as_ref(),

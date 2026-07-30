@@ -3327,6 +3327,7 @@ name = "codex-image-generation-extension"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "codex-api",
  "codex-core",
  "codex-exec-server",
@@ -3341,6 +3342,7 @@ dependencies = [
  "codex-utils-image",
  "codex-utils-path-uri",
  "http 1.4.0",
+ "png",
  "pretty_assertions",
  "schemars 0.8.22",
  "serde",

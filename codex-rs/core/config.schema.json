@@ -5402,6 +5402,14 @@
       ],
       "description": "Lifecycle hooks configured inline in TOML plus user-level overrides."
     },
+    "image_generation_output_dir": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        }
+      ],
+      "description": "Directory where the built-in image-generation tool stores generated images. Defaults to `$CODEX_HOME/generated_images`."
+    },
     "include_apps_instructions": {
       "description": "Whether to inject the `<apps_instructions>` developer block.",
       "type": "boolean"

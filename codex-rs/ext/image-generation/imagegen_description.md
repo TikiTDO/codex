@@ -12,5 +12,12 @@ Guidelines:
 - Set `num_last_images_to_include` to the smallest number of recent conversation images that includes every target image, up to 5.
 - Never provide both `referenced_image_paths` and `num_last_images_to_include`.
 - If neither mechanism can include every target image, ask the user to attach the missing images again.
+- Give every image a concise `title`. Codex uses it in the timestamped saved filename and embeds it
+  in the PNG metadata. Older callers may omit it, in which case Codex uses the privacy-safe title
+  `generated image` rather than copying prompt material into metadata.
+- Use `metadata` only for material intentionally selected to travel with the saved artifact:
+  creator `thoughts`, companion `text`, `commissioner_notes`, or `pinned_comments`. Omit empty
+  fields. Never copy raw chat, hidden reasoning, secrets, personal details, private reference
+  paths, or incidental prompt material into metadata.
 - Directly generate the image without reconfirmation or clarification unless required images must be attached again.
 - Always use this tool for image editing unless the user explicitly requests otherwise. Do not use the `python` tool for image editing unless specifically instructed.

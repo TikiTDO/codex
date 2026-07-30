@@ -1,37 +1,68 @@
 use std::fmt::Display;
 
+use chrono::DateTime;
+use chrono::FixedOffset;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
-const GENERATED_IMAGE_ARTIFACTS_DIR: &str = "generated_images";
 const MAX_IMAGE_GENERATION_OUTPUT_HINT_BYTES: usize = 1024;
+const MAX_TITLE_SLUG_BYTES: usize = 80;
 
 /// Returns the extension-owned artifact path for a generated image.
 pub(crate) fn image_generation_artifact_path(
-    save_root: &AbsolutePathBuf,
-    session_id: &str,
+    output_dir: &AbsolutePathBuf,
+    created_at: &DateTime<FixedOffset>,
+    title: &str,
     call_id: &str,
 ) -> AbsolutePathBuf {
-    let sanitize = |value: &str| {
-        let mut sanitized: String = value
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                    ch
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        if sanitized.is_empty() {
-            sanitized = "generated_image".to_string();
-        }
-        sanitized
-    };
+    output_dir
+        .join(created_at.format("%Y-%m-%d").to_string())
+        .join(format!(
+            "{}-{}-{}.png",
+            created_at.format("%Y%m%d-%H%M%S-%3f"),
+            title_slug(title),
+            identifier_slug(call_id),
+        ))
+}
 
-    save_root
-        .join(GENERATED_IMAGE_ARTIFACTS_DIR)
-        .join(sanitize(session_id))
-        .join(format!("{}.png", sanitize(call_id)))
+fn title_slug(value: &str) -> String {
+    let mut slug = String::with_capacity(value.len().min(MAX_TITLE_SLUG_BYTES));
+    let mut separator_pending = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if separator_pending && !slug.is_empty() {
+                if slug.len() + 1 >= MAX_TITLE_SLUG_BYTES {
+                    break;
+                }
+                slug.push('-');
+            }
+            separator_pending = false;
+            if slug.len() >= MAX_TITLE_SLUG_BYTES {
+                break;
+            }
+            slug.push(ch.to_ascii_lowercase());
+        } else {
+            separator_pending = true;
+        }
+    }
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        "generated-image".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+fn identifier_slug(value: &str) -> String {
+    let slug: String = value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(12)
+        .collect();
+    if slug.is_empty() {
+        "call".to_string()
+    } else {
+        slug
+    }
 }
 
 /// Returns the model-facing generated-image path hint, or omits it if it is too large.

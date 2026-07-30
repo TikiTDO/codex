@@ -3,6 +3,7 @@ use std::io;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use chrono::Local;
 use codex_api::ImageBackground;
 use codex_api::ImageEditRequest;
 use codex_api::ImageGenerationRequest;
@@ -53,6 +54,11 @@ use crate::IMAGEGEN_TOOL_NAME;
 use crate::artifact::image_generation_artifact_path;
 use crate::artifact::image_generation_output_hint;
 use crate::backend::CodexImagesBackend;
+use crate::metadata::ImageArtifactMetadata;
+use crate::metadata::ImagegenMetadata;
+use crate::metadata::embed_png_metadata;
+use crate::metadata::resolve_title;
+use crate::metadata::validate_metadata;
 
 const IMAGE_MODEL: &str = "gpt-image-2";
 const MAX_EDIT_IMAGES: usize = 5;
@@ -61,21 +67,15 @@ const IMAGEGEN_DESCRIPTION: &str = include_str!("../imagegen_description.md");
 #[derive(Clone)]
 pub(crate) struct ImageGenerationTool {
     backend: CodexImagesBackend,
-    save_root: Option<AbsolutePathBuf>,
-    thread_id: String,
+    output_dir: Option<AbsolutePathBuf>,
 }
 
 impl ImageGenerationTool {
     /// Creates an image-generation tool backed by an image API executor.
-    pub(crate) fn new(
-        backend: CodexImagesBackend,
-        save_root: Option<AbsolutePathBuf>,
-        thread_id: String,
-    ) -> Self {
+    pub(crate) fn new(backend: CodexImagesBackend, output_dir: Option<AbsolutePathBuf>) -> Self {
         Self {
             backend,
-            save_root,
-            thread_id,
+            output_dir,
         }
     }
 }
@@ -84,6 +84,11 @@ impl ImageGenerationTool {
 #[serde(deny_unknown_fields)]
 struct ImagegenArgs {
     prompt: String,
+    /// Concise artifact title used in the saved filename and embedded metadata.
+    #[schemars(length(max = 120))]
+    title: Option<String>,
+    /// Optional, deliberately selected provenance. Omit private or incidental conversation data.
+    metadata: Option<ImagegenMetadata>,
     #[schemars(length(max = 5))]
     referenced_image_paths: Option<Vec<AbsolutePathBuf>>,
     #[schemars(range(min = 1, max = 5))]
@@ -132,6 +137,10 @@ impl ToolExecutor<ToolCall> for ImageGenerationTool {
 impl ImageGenerationTool {
     async fn handle_call(&self, call: ToolCall) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let args = parse_args(&call)?;
+        let title =
+            resolve_title(args.title.as_deref()).map_err(FunctionCallError::RespondToModel)?;
+        let creative_metadata = args.metadata.clone().unwrap_or_default();
+        validate_metadata(&creative_metadata).map_err(FunctionCallError::RespondToModel)?;
         let request =
             request_for_call_args(&args, call.conversation_history.items(), &call.environments)
                 .await?;
@@ -179,11 +188,17 @@ impl ImageGenerationTool {
                 return Err(FunctionCallError::RespondToModel(message));
             }
         };
-        let saved_path = match self.save_root.as_ref() {
-            Some(save_root) => match save_image_generation_result(
+        let artifact_metadata = ImageArtifactMetadata {
+            title,
+            created_at: Local::now().fixed_offset(),
+            model: IMAGE_MODEL.to_string(),
+            creative: creative_metadata,
+        };
+        let saved_path = match self.output_dir.as_ref() {
+            Some(output_dir) => match save_image_generation_result(
                 LOCAL_FS.as_ref(),
-                save_root,
-                &self.thread_id,
+                output_dir,
+                &artifact_metadata,
                 &call.call_id,
                 &result,
             )
@@ -191,9 +206,13 @@ impl ImageGenerationTool {
             {
                 Ok(path) => Some(path),
                 Err(error) => {
-                    let output_path =
-                        image_generation_artifact_path(save_root, &self.thread_id, &call.call_id);
-                    let output_dir = output_path.parent().unwrap_or_else(|| save_root.clone());
+                    let output_path = image_generation_artifact_path(
+                        output_dir,
+                        &artifact_metadata.created_at,
+                        &artifact_metadata.title,
+                        &call.call_id,
+                    );
+                    let output_dir = output_path.parent().unwrap_or_else(|| output_dir.clone());
                     tracing::warn!(
                         call_id = %call.call_id,
                         output_dir = %output_dir.display(),
@@ -228,15 +247,17 @@ impl ImageGenerationTool {
 
 async fn save_image_generation_result(
     fs: &dyn ExecutorFileSystem,
-    save_root: &AbsolutePathBuf,
-    session_id: &str,
+    output_dir: &AbsolutePathBuf,
+    metadata: &ImageArtifactMetadata,
     call_id: &str,
     result: &str,
 ) -> io::Result<AbsolutePathBuf> {
     let bytes = BASE64_STANDARD
         .decode(result.trim().as_bytes())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let path = image_generation_artifact_path(save_root, session_id, call_id);
+    let bytes = embed_png_metadata(bytes, metadata)?;
+    let path =
+        image_generation_artifact_path(output_dir, &metadata.created_at, &metadata.title, call_id);
     if let Some(parent) = path.parent() {
         fs.create_directory(
             &PathUri::from_abs_path(&parent),

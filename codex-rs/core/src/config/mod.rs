@@ -864,6 +864,9 @@ pub struct Config {
     /// Token budget applied when storing tool/function outputs in the context manager.
     pub tool_output_token_limit: Option<usize>,
 
+    /// Directory where the built-in image-generation tool stores generated images.
+    pub image_generation_output_dir: AbsolutePathBuf,
+
     /// Whether multi-agent tools are enabled through `[agents]`.
     pub agents_enabled: bool,
 
@@ -3347,6 +3350,10 @@ impl Config {
             .into_iter()
             .map(|path| AbsolutePathBuf::resolve_path_against_base(path, resolved_cwd.as_path()))
             .collect();
+        let image_generation_output_dir = cfg
+            .image_generation_output_dir
+            .clone()
+            .unwrap_or_else(|| codex_home.join("generated_images"));
         let repo_root = resolve_root_git_project_for_trust(fs, &resolved_cwd).await;
         let active_project = cfg
             .get_active_project(
@@ -4083,6 +4090,7 @@ impl Config {
                 })
                 .collect(),
             tool_output_token_limit: cfg.tool_output_token_limit,
+            image_generation_output_dir,
             agents_enabled,
             agent_max_threads,
             agent_default_subagent_model,
