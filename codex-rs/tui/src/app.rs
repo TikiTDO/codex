@@ -217,6 +217,7 @@ mod pending_interactive_replay;
 mod pets;
 mod platform_actions;
 mod plugin_mentions;
+pub(crate) mod poke;
 mod replay_filter;
 mod resize_reflow;
 mod safety_buffering;
@@ -580,6 +581,7 @@ pub(crate) struct App {
     active_thread_id: Option<ThreadId>,
     active_thread_rx: Option<mpsc::Receiver<ThreadBufferedEvent>>,
     primary_thread_id: Option<ThreadId>,
+    poke_listener: Option<poke::PokeListener>,
     last_subagent_backfill_attempt: Option<ThreadId>,
     primary_session_configured: Option<ThreadSessionState>,
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
@@ -1074,6 +1076,7 @@ See the Codex keymap documentation for supported actions and examples."
             active_thread_id: None,
             active_thread_rx: None,
             primary_thread_id: None,
+            poke_listener: None,
             last_subagent_backfill_attempt: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
