@@ -52,9 +52,14 @@ struct PokeSignalPolicy {
 
 #[derive(Default)]
 struct AdmissionState {
-    replay_order: VecDeque<String>,
-    replay_ids: HashSet<String>,
+    replay: HashMap<(String, String, PokeSignal), ReplayState>,
     quota_events: HashMap<(String, String, PokeSignal), VecDeque<Instant>>,
+}
+
+#[derive(Default)]
+struct ReplayState {
+    order: VecDeque<String>,
+    ids: HashSet<String>,
 }
 
 impl AdmissionState {
@@ -64,14 +69,15 @@ impl AdmissionState {
         policy: PokeSignalPolicy,
         now: Instant,
     ) -> Result<(), &'static str> {
-        if self.replay_ids.contains(&request.event_id) {
-            return Err("duplicateEvent");
-        }
         let key = (
             request.workspace.clone(),
             request.member.clone(),
             request.signal,
         );
+        let replay = self.replay.entry(key.clone()).or_default();
+        if replay.ids.contains(&request.event_id) {
+            return Err("duplicateEvent");
+        }
         let events = self.quota_events.entry(key).or_default();
         let window = Duration::from_secs(policy.per_seconds);
         while events
@@ -81,15 +87,16 @@ impl AdmissionState {
             events.pop_front();
         }
         if events.len() >= policy.max_events as usize {
+            // A rate-limited event was not delivered, so its id may retry after the window.
             return Err("rateLimited");
         }
         events.push_back(now);
-        self.replay_ids.insert(request.event_id.clone());
-        self.replay_order.push_back(request.event_id.clone());
-        if self.replay_order.len() > MAX_REPLAY_IDS
-            && let Some(expired) = self.replay_order.pop_front()
+        replay.ids.insert(request.event_id.clone());
+        replay.order.push_back(request.event_id.clone());
+        if replay.order.len() > MAX_REPLAY_IDS
+            && let Some(expired) = replay.order.pop_front()
         {
-            self.replay_ids.remove(&expired);
+            replay.ids.remove(&expired);
         }
         Ok(())
     }

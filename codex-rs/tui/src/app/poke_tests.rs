@@ -217,6 +217,66 @@ fn policy_rejects_symlink_and_oversized_source_ref() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+#[cfg(unix)]
+fn replay_eviction_is_scoped_to_the_quota_source() {
+    let mut state = AdmissionState::default();
+    let policy = PokeSignalPolicy {
+        signal: PokeSignal::Cc,
+        max_events: 2_000,
+        per_seconds: 60,
+    };
+    let now = Instant::now();
+    let original = admission_request("member-a", "event-a");
+    assert_eq!(state.admit(&original, policy, now), Ok(()));
+    for index in 0..=MAX_REPLAY_IDS {
+        assert_eq!(
+            state.admit(
+                &admission_request("member-b", &format!("event-b-{index}")),
+                policy,
+                now,
+            ),
+            Ok(())
+        );
+    }
+    assert_eq!(state.admit(&original, policy, now), Err("duplicateEvent"));
+}
+
+#[test]
+#[cfg(unix)]
+fn rate_limited_event_can_retry_after_the_receiver_window() {
+    let mut state = AdmissionState::default();
+    let policy = PokeSignalPolicy {
+        signal: PokeSignal::Cc,
+        max_events: 1,
+        per_seconds: 60,
+    };
+    let now = Instant::now();
+    assert_eq!(
+        state.admit(&admission_request("member", "first"), policy, now),
+        Ok(())
+    );
+    let retry = admission_request("member", "retry");
+    assert_eq!(state.admit(&retry, policy, now), Err("rateLimited"));
+    assert_eq!(
+        state.admit(&retry, policy, now + Duration::from_secs(60)),
+        Ok(())
+    );
+}
+
+#[cfg(unix)]
+fn admission_request(member: &str, event_id: &str) -> PokeRequest {
+    PokeRequest {
+        version: 1,
+        event_id: event_id.to_string(),
+        to: "recipient".to_string(),
+        workspace: "workspace".to_string(),
+        member: member.to_string(),
+        session_id: "session".to_string(),
+        signal: PokeSignal::Cc,
+    }
+}
+
 #[cfg(unix)]
 fn call_socket(path: &Path, request: &PokeRequest) -> anyhow::Result<PokeResponse> {
     let mut stream = connect_with_retry(path)?;
