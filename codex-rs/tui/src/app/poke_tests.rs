@@ -170,6 +170,37 @@ fn listener_is_disabled_without_receiver_policy() -> anyhow::Result<()> {
 
 #[test]
 #[cfg(unix)]
+fn dropped_listener_cannot_unlink_a_restarted_listener() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let thread_id = ThreadId::new();
+    let root = codex_home.path().join("poke").join(thread_id.to_string());
+    fs::create_dir_all(&root)?;
+    let policy_path = root.join("policy.json");
+    fs::write(
+        &policy_path,
+        serde_json::json!({"version": 1, "recipient": thread_id.to_string(), "sources": []})
+            .to_string(),
+    )?;
+    fs::set_permissions(&policy_path, fs::Permissions::from_mode(0o600))?;
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let first = PokeListener::start(
+        codex_home.path(),
+        thread_id,
+        AppEventSender::new(tx.clone()),
+    )?
+    .expect("listener should start");
+    drop(first);
+    let restarted = PokeListener::start(codex_home.path(), thread_id, AppEventSender::new(tx))?
+        .expect("listener should restart");
+    thread::sleep(ACCEPT_RETRY_DELAY + ACCEPT_RETRY_DELAY);
+    assert!(root.join("poke.sock").exists());
+    drop(restarted);
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
 fn policy_rejects_symlink_and_oversized_source_ref() -> anyhow::Result<()> {
     let root = tempdir()?;
     let target = root.path().join("target.json");

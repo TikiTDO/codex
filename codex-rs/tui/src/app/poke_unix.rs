@@ -98,6 +98,7 @@ impl AdmissionState {
 pub(super) struct UnixPokeListener {
     socket_path: PathBuf,
     stop: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
 }
 
 impl UnixPokeListener {
@@ -123,7 +124,7 @@ impl UnixPokeListener {
         let thread_stop = Arc::clone(&stop);
         let recipient = thread_id.to_string();
         let thread_socket_path = socket_path.clone();
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name(format!("codex-poke-{}", &recipient[..8]))
             .spawn(move || {
                 run_listener(
@@ -136,7 +137,11 @@ impl UnixPokeListener {
                 let _ = fs::remove_file(thread_socket_path);
             })?;
 
-        Ok(Some(Self { socket_path, stop }))
+        Ok(Some(Self {
+            socket_path,
+            stop,
+            worker: Some(worker),
+        }))
     }
 }
 
@@ -144,6 +149,9 @@ impl Drop for UnixPokeListener {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         let _ = fs::remove_file(&self.socket_path);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
