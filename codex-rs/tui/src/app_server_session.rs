@@ -1585,6 +1585,12 @@ fn thread_resume_params_from_config(
         developer_instructions: with_terminal_visualization_instructions(
             &config, /*control_instructions*/ None,
         ),
+        // A remote app-server may already hold a very large legacy rollout for the model. Replaying
+        // every persisted turn through one WebSocket response makes attachment scale with the
+        // entire rollout and can appear hung for minutes. The remote TUI attaches to the live
+        // thread immediately and reconstructs new notifications; embedded sessions retain their
+        // existing full local replay behavior.
+        exclude_turns: matches!(thread_params_mode, ThreadParamsMode::Remote),
         ..ThreadResumeParams::default()
     }
 }
@@ -2187,6 +2193,7 @@ mod tests {
         assert_eq!(start.permissions, None);
         assert_eq!(resume.permissions, None);
         assert_eq!(fork.permissions, None);
+        assert!(resume.exclude_turns);
         assert_eq!(start.thread_source, Some(ThreadSource::User));
         assert_eq!(fork.thread_source, Some(ThreadSource::User));
     }
@@ -2367,6 +2374,7 @@ mod tests {
         assert_eq!(start.service_tier, expected_service_tier);
         assert_eq!(resume.service_tier, expected_service_tier);
         assert_eq!(fork.service_tier, expected_service_tier);
+        assert!(!resume.exclude_turns);
         let string = |value: &str| serde_json::Value::String(value.to_string());
         let expected_config = HashMap::from([
             ("model_reasoning_effort".to_string(), string("high")),
