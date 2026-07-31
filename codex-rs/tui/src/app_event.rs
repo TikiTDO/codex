@@ -253,6 +253,12 @@ pub(crate) enum AppEvent {
         result: Result<AppServerStartedThread, String>,
     },
 
+    /// Deliver one policy-admitted, payload-free signal from the local MCP relay.
+    PokeReceived {
+        request: crate::app::poke::PokeRequest,
+        reply: crate::app::poke::PokeResponseSender,
+    },
+
     /// Clear the terminal UI (screen + scrollback), start a fresh session, and keep the
     /// previous chat resumable.
     ClearUi {
