@@ -39,7 +39,7 @@ const HELD_EVENT_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Parser)]
 pub(crate) struct ListenCommand {
-    /// Exact loaded thread to wake.
+    /// Exact thread to subscribe to and wake.
     #[arg(long, value_name = "THREAD_ID")]
     thread_id: String,
 
@@ -93,6 +93,10 @@ pub(crate) async fn run(command: ListenCommand) -> Result<()> {
         None => app_server_control_socket_path(&find_codex_home()?)?,
     };
     let (mut requests, mut disconnect_rx) = app_server::connect(socket_path).await?;
+    requests
+        .subscribe(&command.thread_id)
+        .await
+        .context("failed to resume and subscribe listener to exact thread")?;
 
     let now = Utc::now().timestamp();
     if command.periodic_seconds.is_some() && state.last_periodic_at.is_none() {
@@ -108,6 +112,7 @@ pub(crate) async fn run(command: ListenCommand) -> Result<()> {
             "events": command.events,
             "state": command.state,
             "periodicSeconds": command.periodic_seconds,
+            "subscription": "threadResume",
         })
     );
 

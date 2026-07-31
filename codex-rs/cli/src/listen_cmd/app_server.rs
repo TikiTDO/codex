@@ -12,6 +12,8 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadAttentionEvent as RpcAttentionEvent;
 use codex_app_server_protocol::ThreadAttentionParams;
 use codex_app_server_protocol::ThreadAttentionResponse;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use tokio::sync::oneshot;
 
@@ -49,6 +51,35 @@ impl AppServerRequests {
                 },
             })
             .await
+    }
+
+    /// Resume the exact thread and keep this connection subscribed to it.
+    ///
+    /// `thread/attention` only accepts loaded threads. A loaded thread with no
+    /// subscribers is intentionally unloaded after an idle grace period, so a
+    /// durable listener must itself hold a subscription rather than spend
+    /// periodic model turns merely to keep the thread resident.
+    pub(super) async fn subscribe(
+        &mut self,
+        thread_id: &str,
+    ) -> std::result::Result<ThreadResumeResponse, TypedRequestError> {
+        let request_id = self.next_request_id();
+        self.handle
+            .request_typed(ClientRequest::ThreadResume {
+                request_id,
+                params: subscription_resume_params(thread_id),
+            })
+            .await
+    }
+}
+
+fn subscription_resume_params(thread_id: &str) -> ThreadResumeParams {
+    ThreadResumeParams {
+        thread_id: thread_id.to_string(),
+        // The listener needs only the live subscription. Avoid returning the
+        // full transcript or overriding any persisted thread settings.
+        exclude_turns: true,
+        ..ThreadResumeParams::default()
     }
 }
 
@@ -94,4 +125,28 @@ async fn drain_app_server_events(mut client: AppServerClient) -> String {
         }
     }
     "app-server event stream closed".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::subscription_resume_params;
+
+    #[test]
+    fn subscription_resume_is_metadata_only_and_does_not_override_thread_settings() {
+        let params = subscription_resume_params("019faa64-c0a7-7193-873b-f71cf30951d7");
+
+        assert_eq!(params.thread_id, "019faa64-c0a7-7193-873b-f71cf30951d7");
+        assert!(params.exclude_turns);
+        assert!(params.history.is_none());
+        assert!(params.path.is_none());
+        assert!(params.model.is_none());
+        assert!(params.model_provider.is_none());
+        assert!(params.cwd.is_none());
+        assert!(params.approval_policy.is_none());
+        assert!(params.sandbox.is_none());
+        assert!(params.permissions.is_none());
+        assert!(params.config.is_none());
+        assert!(params.base_instructions.is_none());
+        assert!(params.developer_instructions.is_none());
+    }
 }
