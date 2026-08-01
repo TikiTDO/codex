@@ -206,17 +206,17 @@ fn run_bridge(
         };
         match parse_frame(&line, member.as_deref(), workspace.as_deref()) {
             Ok(BridgeFrame::Ready {
+                asserted_session_id,
                 member: ready_member,
-                runtime_session_id,
                 workspace: ready_workspace,
             }) => {
                 if member.is_some() || workspace.is_some() {
                     tracing::warn!("workspace signal bridge attempted to rebind its ready scope");
                     break;
                 }
-                if runtime_session_id != expected_runtime_session_id {
+                if asserted_session_id != expected_runtime_session_id {
                     tracing::warn!(
-                        "workspace signal bridge ready frame did not match the exact runtime session"
+                        "workspace signal bridge ready frame did not match the asserted session"
                     );
                     break;
                 }
@@ -271,8 +271,8 @@ fn run_bridge(
 #[derive(Debug)]
 enum BridgeFrame {
     Ready {
+        asserted_session_id: String,
         member: String,
-        runtime_session_id: String,
         workspace: String,
     },
     Event(WorkspaceSignalEvent),
@@ -291,12 +291,13 @@ fn parse_frame(
     }
     match object.get("type").and_then(Value::as_str) {
         Some("ready") => {
+            let asserted_session_id = safe_atom(object.get("assertedSessionId"), 128)?;
             let member = safe_atom(object.get("member"), 64)?;
-            let runtime_session_id = safe_atom(object.get("runtimeSessionId"), 128)?;
+            safe_atom(object.get("runtimeSessionId"), 128)?;
             let workspace = safe_atom(object.get("workspace"), 64)?;
             Ok(BridgeFrame::Ready {
+                asserted_session_id,
                 member,
-                runtime_session_id,
                 workspace,
             })
         }

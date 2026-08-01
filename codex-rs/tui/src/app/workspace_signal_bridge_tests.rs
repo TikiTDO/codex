@@ -5,6 +5,7 @@ use super::*;
 fn ready() -> String {
     serde_json::json!({
         "protocol": BRIDGE_PROTOCOL,
+        "assertedSessionId": "thread-1",
         "member": "rook-left-builder",
         "runtimeSessionId": "runtime-1",
         "status": "waiting",
@@ -38,8 +39,8 @@ fn event() -> String {
 #[test]
 fn ready_frame_binds_the_payload_free_source_scope() {
     let BridgeFrame::Ready {
+        asserted_session_id,
         member,
-        runtime_session_id,
         workspace,
     } = parse_frame(
         &ready(),
@@ -50,8 +51,8 @@ fn ready_frame_binds_the_payload_free_source_scope() {
     else {
         panic!("expected ready frame");
     };
+    assert_eq!(asserted_session_id, "thread-1");
     assert_eq!(member, "rook-left-builder");
-    assert_eq!(runtime_session_id, "runtime-1");
     assert_eq!(workspace, "root");
 }
 
