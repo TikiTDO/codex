@@ -105,7 +105,7 @@ struct Resolution<'a> {
 
 pub(crate) struct WorkspaceSignalBridge {
     thread_id: ThreadId,
-    child: Arc<Mutex<Child>>,
+    child: Arc<Mutex<Option<Child>>>,
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
@@ -142,7 +142,7 @@ impl WorkspaceSignalBridge {
             .ok_or_else(|| io::Error::other("workspace bridge stdout is unavailable"))?;
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
-        let child = Arc::new(Mutex::new(child));
+        let child = Arc::new(Mutex::new(Some(child)));
         let worker_child = Arc::clone(&child);
         let worker = match thread::Builder::new()
             .name(format!("workspace-signal-{}", &thread_id.to_string()[..8]))
@@ -178,6 +178,7 @@ impl WorkspaceSignalBridge {
 impl Drop for WorkspaceSignalBridge {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        // Killing closes stdout and wakes the reader; joining before this can block forever.
         terminate_child(&self.child);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -185,9 +186,12 @@ impl Drop for WorkspaceSignalBridge {
     }
 }
 
-fn terminate_child(child: &Mutex<Child>) {
+fn terminate_child(child: &Mutex<Option<Child>>) {
     let Ok(mut child) = child.lock() else {
         tracing::warn!("workspace signal bridge child lock was poisoned");
+        return;
+    };
+    let Some(mut child) = child.take() else {
         return;
     };
     let _ = child.kill();
