@@ -259,6 +259,12 @@ pub(crate) enum AppEvent {
         reply: crate::app::poke::PokeResponseSender,
     },
 
+    /// Deliver one database-policy-admitted, payload-free durable workspace signal.
+    WorkspaceSignalReceived {
+        request: crate::app::workspace_signal_bridge::WorkspaceSignalRequest,
+        reply: crate::app::workspace_signal_bridge::WorkspaceSignalResponseSender,
+    },
+
     /// Clear the terminal UI (screen + scrollback), start a fresh session, and keep the
     /// previous chat resumable.
     ClearUi {

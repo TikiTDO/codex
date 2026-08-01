@@ -229,6 +229,7 @@ mod thread_goal_actions;
 mod thread_routing;
 mod thread_session_state;
 mod thread_settings;
+pub(crate) mod workspace_signal_bridge;
 
 use self::agent_navigation::AgentNavigationDirection;
 use self::agent_navigation::AgentNavigationState;
@@ -582,6 +583,7 @@ pub(crate) struct App {
     active_thread_rx: Option<mpsc::Receiver<ThreadBufferedEvent>>,
     primary_thread_id: Option<ThreadId>,
     poke_listener: Option<poke::PokeListener>,
+    workspace_signal_bridge: Option<workspace_signal_bridge::WorkspaceSignalBridge>,
     last_subagent_backfill_attempt: Option<ThreadId>,
     primary_session_configured: Option<ThreadSessionState>,
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
@@ -1077,6 +1079,7 @@ See the Codex keymap documentation for supported actions and examples."
             active_thread_rx: None,
             primary_thread_id: None,
             poke_listener: None,
+            workspace_signal_bridge: None,
             last_subagent_backfill_attempt: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
