@@ -124,8 +124,9 @@ impl WorkspaceSignalBridge {
             ));
         }
 
+        let runtime_session_id = thread_id.to_string();
         let mut child = Command::new(program)
-            .args(["stream", "--session-id", &thread_id.to_string()])
+            .args(["stream", "--session-id", &runtime_session_id])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -142,8 +143,15 @@ impl WorkspaceSignalBridge {
         let worker_stop = Arc::clone(&stop);
         let worker = match thread::Builder::new()
             .name(format!("workspace-signal-{}", &thread_id.to_string()[..8]))
-            .spawn(move || run_bridge(stdout, stdin, app_event_tx, &worker_stop))
-        {
+            .spawn(move || {
+                run_bridge(
+                    stdout,
+                    stdin,
+                    app_event_tx,
+                    &runtime_session_id,
+                    &worker_stop,
+                )
+            }) {
             Ok(worker) => worker,
             Err(err) => {
                 let _ = child.kill();
@@ -179,6 +187,7 @@ fn run_bridge(
     stdout: impl io::Read,
     mut stdin: impl Write,
     app_event_tx: crate::app_event_sender::AppEventSender,
+    expected_runtime_session_id: &str,
     stop: &AtomicBool,
 ) {
     let mut member = None;
@@ -198,10 +207,17 @@ fn run_bridge(
         match parse_frame(&line, member.as_deref(), workspace.as_deref()) {
             Ok(BridgeFrame::Ready {
                 member: ready_member,
+                runtime_session_id,
                 workspace: ready_workspace,
             }) => {
                 if member.is_some() || workspace.is_some() {
                     tracing::warn!("workspace signal bridge attempted to rebind its ready scope");
+                    break;
+                }
+                if runtime_session_id != expected_runtime_session_id {
+                    tracing::warn!(
+                        "workspace signal bridge ready frame did not match the exact runtime session"
+                    );
                     break;
                 }
                 member = Some(ready_member);
@@ -254,7 +270,11 @@ fn run_bridge(
 
 #[derive(Debug)]
 enum BridgeFrame {
-    Ready { member: String, workspace: String },
+    Ready {
+        member: String,
+        runtime_session_id: String,
+        workspace: String,
+    },
     Event(WorkspaceSignalEvent),
     Continue,
 }
@@ -272,17 +292,28 @@ fn parse_frame(
     match object.get("type").and_then(Value::as_str) {
         Some("ready") => {
             let member = safe_atom(object.get("member"), 64)?;
+            let runtime_session_id = safe_atom(object.get("runtimeSessionId"), 128)?;
             let workspace = safe_atom(object.get("workspace"), 64)?;
-            Ok(BridgeFrame::Ready { member, workspace })
+            Ok(BridgeFrame::Ready {
+                member,
+                runtime_session_id,
+                workspace,
+            })
         }
         Some("event") => {
-            if ready_member.is_none() || ready_workspace.is_none() {
+            let Some(ready_member) = ready_member else {
+                return Err("eventBeforeReady");
+            };
+            if ready_workspace.is_none() {
                 return Err("eventBeforeReady");
             }
             let event =
                 serde_json::from_value(object.get("event").cloned().ok_or("eventUnavailable")?)
                     .map_err(|_| "eventInvalid")?;
             validate_event(&event)?;
+            if event.to != ready_member {
+                return Err("eventScopeMismatch");
+            }
             Ok(BridgeFrame::Event(event))
         }
         Some("resolved") | Some("idle") => Ok(BridgeFrame::Continue),

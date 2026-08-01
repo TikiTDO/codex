@@ -37,15 +37,21 @@ fn event() -> String {
 
 #[test]
 fn ready_frame_binds_the_payload_free_source_scope() {
-    let BridgeFrame::Ready { member, workspace } = parse_frame(
+    let BridgeFrame::Ready {
+        member,
+        runtime_session_id,
+        workspace,
+    } = parse_frame(
         &ready(),
         /*ready_member*/ None,
         /*ready_workspace*/ None,
     )
-    .expect("ready") else {
+    .expect("ready")
+    else {
         panic!("expected ready frame");
     };
     assert_eq!(member, "rook-left-builder");
+    assert_eq!(runtime_session_id, "runtime-1");
     assert_eq!(workspace, "root");
 }
 
@@ -79,6 +85,14 @@ fn event_requires_ready_and_preserves_closed_signal_metadata() {
             targets: vec!["right".to_string()],
             to: "rook-left-builder".to_string(),
         }
+    );
+}
+
+#[test]
+fn event_must_address_the_member_bound_by_ready() {
+    assert_eq!(
+        parse_frame(&event(), Some("someone-else"), Some("root")).unwrap_err(),
+        "eventScopeMismatch"
     );
 }
 
