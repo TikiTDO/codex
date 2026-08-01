@@ -12,6 +12,7 @@ use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -104,7 +105,7 @@ struct Resolution<'a> {
 
 pub(crate) struct WorkspaceSignalBridge {
     thread_id: ThreadId,
-    child: Child,
+    child: Arc<Mutex<Child>>,
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
@@ -141,6 +142,8 @@ impl WorkspaceSignalBridge {
             .ok_or_else(|| io::Error::other("workspace bridge stdout is unavailable"))?;
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
+        let child = Arc::new(Mutex::new(child));
+        let worker_child = Arc::clone(&child);
         let worker = match thread::Builder::new()
             .name(format!("workspace-signal-{}", &thread_id.to_string()[..8]))
             .spawn(move || {
@@ -150,12 +153,12 @@ impl WorkspaceSignalBridge {
                     app_event_tx,
                     &runtime_session_id,
                     &worker_stop,
-                )
+                );
+                terminate_child(&worker_child);
             }) {
             Ok(worker) => worker,
             Err(err) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_child(&child);
                 return Err(err);
             }
         };
@@ -175,12 +178,20 @@ impl WorkspaceSignalBridge {
 impl Drop for WorkspaceSignalBridge {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        terminate_child(&self.child);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
     }
+}
+
+fn terminate_child(child: &Mutex<Child>) {
+    let Ok(mut child) = child.lock() else {
+        tracing::warn!("workspace signal bridge child lock was poisoned");
+        return;
+    };
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn run_bridge(
