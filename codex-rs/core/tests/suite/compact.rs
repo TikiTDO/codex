@@ -1,5 +1,6 @@
 use anyhow::Result;
 use anyhow::anyhow;
+use codex_core::compact::POST_COMPACTION_MARKER;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_core::config::Config;
@@ -520,6 +521,7 @@ async fn summarize_context_three_requests_and_instructions() {
     let mut builder = test_codex().with_config(move |config| {
         config.model_provider = model_provider;
         set_test_compact_prompt(config);
+        config.post_compaction_prompt = Some("Re-read the live task.".to_string());
         config.model_auto_compact_token_limit = Some(200_000);
     });
     let test = builder.build(&server).await.unwrap();
@@ -650,6 +652,14 @@ async fn summarize_context_three_requests_and_instructions() {
             .iter()
             .any(|(r, t)| r == "user" && t == &expected_summary_message),
         "third request should include the summary message"
+    );
+    assert!(
+        messages.iter().any(|(r, t)| {
+            r == "developer"
+                && t.contains(POST_COMPACTION_MARKER.trim())
+                && t.contains("Re-read the live task.")
+        }),
+        "third request should label the compaction seam and include configured instructions"
     );
     assert!(
         !messages

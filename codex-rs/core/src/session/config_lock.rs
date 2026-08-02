@@ -143,6 +143,7 @@ fn save_config_resolved_fields(
     lock_config.include_apps_instructions = Some(config.include_apps_instructions);
     lock_config.include_collaboration_mode_instructions =
         Some(config.include_collaboration_mode_instructions);
+    lock_config.post_compaction_prompt = config.post_compaction_prompt.clone();
     lock_config.include_environment_context = Some(config.include_environment_context);
     lock_config.background_terminal_max_timeout = Some(config.background_terminal_max_timeout);
 
@@ -286,6 +287,8 @@ mod tests {
             .enable(Feature::RolloutBudget)
             .expect("rollout_budget should be enableable in tests");
         config.current_time_reminder = Some(crate::config::CurrentTimeReminderConfig::default());
+        config.post_compaction_prompt =
+            Some("Re-anchor from the live repository after compaction.".to_string());
         config
             .features
             .enable(Feature::CurrentTimeReminder)
@@ -301,6 +304,10 @@ mod tests {
         assert_eq!(lock.instructions, Some(sc.base_instructions.clone()));
         assert_eq!(lock.developer_instructions, sc.developer_instructions);
         assert_eq!(lock.compact_prompt, sc.compact_prompt);
+        assert_eq!(
+            lock.post_compaction_prompt,
+            sc.original_config_do_not_use.post_compaction_prompt
+        );
         assert_eq!(lock.model, Some(sc.collaboration_mode.model().to_string()));
         assert_eq!(
             lock.model_reasoning_effort,

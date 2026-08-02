@@ -7487,6 +7487,29 @@ async fn cli_override_sets_compact_prompt() -> std::io::Result<()> {
 }
 
 #[tokio::test]
+async fn loads_and_trims_post_compaction_prompt() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg = ConfigToml {
+        post_compaction_prompt: Some("  Re-read the live task.  ".to_string()),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.post_compaction_prompt.as_deref(),
+        Some("Re-read the live task.")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn loads_compact_prompt_from_file() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let workspace = codex_home.path().join("workspace");

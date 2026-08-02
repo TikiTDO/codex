@@ -713,6 +713,9 @@ pub struct Config {
     /// Compact prompt override.
     pub compact_prompt: Option<String>,
 
+    /// Additional instructions injected into model context after compaction.
+    pub post_compaction_prompt: Option<String>,
+
     /// Optional external notifier command. When set, Codex will spawn this
     /// program after each completed *turn* (i.e. when the agent finishes
     /// processing a user submission). The value must be the full command
@@ -3878,6 +3881,10 @@ impl Config {
         )
         .await?;
         let compact_prompt = compact_prompt.or(file_compact_prompt);
+        let post_compaction_prompt = cfg.post_compaction_prompt.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        });
         let zsh_path = default_zsh_path
             .or_else(|| InstallContext::current().bundled_zsh_path())
             .map(AbsolutePathBuf::into_path_buf);
@@ -4051,6 +4058,7 @@ impl Config {
             personality,
             developer_instructions,
             compact_prompt,
+            post_compaction_prompt,
             include_permissions_instructions,
             include_apps_instructions,
             include_collaboration_mode_instructions,
