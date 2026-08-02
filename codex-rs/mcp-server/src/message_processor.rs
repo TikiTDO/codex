@@ -78,7 +78,7 @@ impl MessageProcessor {
         codex_image_generation_extension::install(
             &mut extensions,
             auth_manager.clone(),
-            |config: &Config| Some(config.codex_home.clone()),
+            |config: &Config| Some(config.image_generation_output_dir.clone()),
         );
         let skill_providers = codex_skills_extension::SkillProviders::new()
             .with_host_provider(Arc::new(codex_skills_extension::HostSkillProvider::new()));

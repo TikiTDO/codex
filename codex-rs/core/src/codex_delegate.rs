@@ -171,12 +171,13 @@ pub(crate) async fn run_codex_thread_interactive(
     // RequestUserInput approval event only carries a call_id and question metadata.
     let pending_mcp_invocations =
         Arc::new(Mutex::new(HashMap::<String, PendingMcpInvocation>::new()));
-    let caller_io = SessionIo {
-        tx_sub: tx_ops,
-        rx_event: rx_sub,
-        agent_status: io.agent_status.clone(),
-        session_loop_termination: io.session_loop_termination.clone(),
-    };
+    let caller_io = SessionIo::from_parts(
+        tx_ops,
+        rx_sub,
+        Arc::clone(&io.direct_input_admission),
+        io.agent_status.clone(),
+        io.session_loop_termination.clone(),
+    );
     let io_for_events = Arc::clone(&io);
     tokio::spawn(async move {
         forward_events(
@@ -249,7 +250,7 @@ pub(crate) async fn run_codex_thread_one_shot(
 
     // Bridge events so we can observe completion and shut down automatically.
     let (tx_bridge, rx_bridge) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
-    let ops_tx = io.tx_sub.clone();
+    let direct_input_admission = Arc::clone(&io.direct_input_admission);
     let agent_status = io.agent_status.clone();
     let session_loop_termination = io.session_loop_termination.clone();
     let io_for_bridge = io;
@@ -261,15 +262,7 @@ pub(crate) async fn run_codex_thread_one_shot(
             );
             let _ = tx_bridge.send(event).await;
             if should_shutdown {
-                let _ = ops_tx
-                    .send(Submission {
-                        id: "shutdown".to_string(),
-                        op: Op::Shutdown {},
-                        client_user_message_id: None,
-                        trace: None,
-                        parent_turn_id: None,
-                    })
-                    .await;
+                let _ = io_for_bridge.submit(Op::Shutdown {}).await;
                 child_cancel.cancel();
                 break;
             }
@@ -284,12 +277,13 @@ pub(crate) async fn run_codex_thread_one_shot(
 
     Ok((
         session,
-        SessionIo {
-            rx_event: rx_bridge,
-            tx_sub: tx_closed,
+        SessionIo::from_parts(
+            tx_closed,
+            rx_bridge,
+            direct_input_admission,
             agent_status,
             session_loop_termination,
-        },
+        ),
     ))
 }
 
@@ -490,9 +484,34 @@ async fn forward_ops(
     loop {
         let submission = match rx_ops.recv().or_cancel(&cancel_token_ops).await {
             Ok(Ok(submission)) => submission,
-            Ok(Err(_)) | Err(_) => break,
+            Ok(Err(_)) | Err(_) => {
+                release_abandoned_forwarded_user_inputs(io.as_ref(), &rx_ops);
+                break;
+            }
         };
-        let _ = io.submit_with_id(submission).await;
+        let admitted_user_input_id =
+            matches!(submission.op, Op::UserInput { .. }).then(|| submission.id.clone());
+        let send_result = tokio::select! {
+            biased;
+            result = io.submit_with_id(submission) => Some(result),
+            _ = cancel_token_ops.cancelled() => None,
+        };
+        if !matches!(send_result, Some(Ok(()))) {
+            if let Some(submission_id) = admitted_user_input_id {
+                io.release_forwarded_user_input(&submission_id);
+            }
+            release_abandoned_forwarded_user_inputs(io.as_ref(), &rx_ops);
+            break;
+        }
+    }
+}
+
+fn release_abandoned_forwarded_user_inputs(io: &SessionIo, rx_ops: &Receiver<Submission>) {
+    rx_ops.close();
+    while let Ok(submission) = rx_ops.try_recv() {
+        if matches!(submission.op, Op::UserInput { .. }) {
+            io.release_forwarded_user_input(&submission.id);
+        }
     }
 }
 

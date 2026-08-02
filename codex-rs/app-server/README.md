@@ -95,6 +95,13 @@ App-server then advertises the downstream `openai/form` MCP extension for
 threads started, resumed, or forked by that connection. Clients that cannot
 handle the request envelope omit the field or set it to `false`.
 
+Experimental clients can set
+`initialize.params.capabilities.suppressAutomaticThreadSubscription` to
+`true` to prevent that connection from being attached automatically to threads
+loaded in the future. This suppresses only future automatic attachment;
+operations that explicitly subscribe the connection to a thread remain
+available.
+
 Applications building on top of `codex app-server` should identify themselves via the `clientInfo` parameter.
 
 **Important**: `clientInfo.name` is used to identify the client for the OpenAI Compliance Logs Platform. If
@@ -149,6 +156,7 @@ Example with notification opt-out:
 - `threadSection/update` — rename an existing custom section while retaining its stable UUID; returns the updated `section`. The built-in pinned section cannot be renamed.
 - `threadSection/delete` — delete an existing custom section and atomically return its member threads to the unsectioned list; returns `{}`. The built-in pinned section cannot be deleted.
 - `thread/loaded/list` — list the thread ids currently loaded in memory.
+- `thread/attention` — experimental; attempt to admit a bounded, server-rendered attention event as a new turn on an already-loaded idle thread. A `started` response is admission-only; `held` reports why no turn was admitted.
 - `thread/read` — read a stored thread by id without resuming it; optionally include turns via `includeTurns`. The returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. For loaded threads, experimental clients can use `canAcceptDirectInput` to determine whether `turn/start` and `turn/steer` are accepted; unloaded stored threads report `null` when that capability is unavailable.
 - `thread/turns/list` — experimental; page through a stored thread’s turn history without resuming it; supports cursor-based pagination with `sortDirection`, `itemsView`, `nextCursor`, and `backwardsCursor`.
 - `thread/items/list` — experimental; page through persisted thread items without resuming the thread. Pass `turnId` to restrict results to one turn, or omit it to page items across the thread. The active thread store must support item pagination.
@@ -801,6 +809,41 @@ If the thread does not already have an active turn, the server starts a standalo
 { "method": "thread/shellCommand", "id": 26, "params": { "threadId": "thr_b", "command": "git status --short" } }
 { "id": 26, "result": {} }
 ```
+
+### Experimental: Admit thread attention
+
+`thread/attention` attempts to start one turn on an exact, already-loaded
+`threadId`. It does not load or resume a stored thread. The request contains
+only bounded event metadata; app-server validates it and generates the hidden
+model marker itself. `sourceClass`, `sourceRef`, and `reference` provide
+attribution and correlation, not authentication or authority.
+
+```json
+{ "method": "thread/attention", "id": 27, "params": {
+    "threadId": "thr_123",
+    "attention": {
+        "version": 1,
+        "eventId": "mention-42",
+        "kind": "mention",
+        "sourceClass": "chat",
+        "sourceRef": "message/42",
+        "reference": "chat/message/42"
+    }
+} }
+{ "id": 27, "result": { "type": "started" } }
+```
+
+`kind` is one of `mention`, `directedResponse`, or `periodic`. A
+`{"type":"started"}` response confirms only that the turn was admitted; normal
+turn notifications report its subsequent execution and completion. If the
+thread cannot accept the event, the response is
+`{"type":"held","reason":"..."}` with one of the stable reasons
+`pendingTriggerTurn`, `planMode`, or `busy`.
+
+A held request is not queued and app-server does not retry it. The method also
+does not steer an active turn or mutate thread settings. If transport or
+response decoding fails after the request is sent, admission is ambiguous;
+clients must reconcile rather than assuming rejection or retrying blindly.
 
 ### Example: Start a turn (send user input)
 

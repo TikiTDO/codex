@@ -1,4 +1,5 @@
 use super::mcp_refresh::McpRefresh;
+use super::session::DirectInputAdmission;
 use super::turn_context::TurnEnvironment;
 use super::*;
 use crate::agents_md_manager::AgentsMdManager;
@@ -165,6 +166,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::test_path_buf;
 use core_test_support::tracing::install_test_tracing;
 use core_test_support::wait_for_event;
+use futures::poll;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry::trace::TraceId;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
@@ -5836,6 +5838,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
         pending_user_message_admissions: Default::default(),
+        direct_input_admission: Arc::new(DirectInputAdmission::default()),
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
@@ -6771,12 +6774,13 @@ async fn request_permissions_is_auto_denied_when_granular_policy_blocks_tool_req
 
 #[tokio::test]
 async fn submit_with_id_captures_current_span_trace_context() {
-    let (_session, _turn_context) = make_session_and_context().await;
+    let (session, _turn_context) = make_session_and_context().await;
     let (tx_sub, rx_sub) = async_channel::bounded(1);
     let (_tx_event, rx_event) = async_channel::unbounded();
     let io = SessionIo {
         tx_sub,
         rx_event,
+        direct_input_admission: Arc::clone(&session.direct_input_admission),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: completed_session_loop_termination(),
     };
@@ -7551,6 +7555,7 @@ async fn shutdown_and_wait_allows_multiple_waiters() {
     let io = Arc::new(SessionIo {
         tx_sub,
         rx_event,
+        direct_input_admission: Arc::new(DirectInputAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(session_loop_handle),
     });
@@ -7587,6 +7592,7 @@ async fn shutdown_and_wait_waits_when_shutdown_is_already_in_progress() {
     let io = Arc::new(SessionIo {
         tx_sub,
         rx_event,
+        direct_input_admission: Arc::new(DirectInputAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(session_loop_handle),
     });
@@ -7623,6 +7629,7 @@ async fn shutdown_and_wait_shuts_down_cached_guardian_subagent() {
     let parent_io = SessionIo {
         tx_sub: parent_tx_sub,
         rx_event: parent_rx_event,
+        direct_input_admission: Arc::clone(&parent_session.direct_input_admission),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(parent_session_loop_handle),
     };
@@ -7645,6 +7652,7 @@ async fn shutdown_and_wait_shuts_down_cached_guardian_subagent() {
     let child_io = SessionIo {
         tx_sub: child_tx_sub,
         rx_event: child_rx_event,
+        direct_input_admission: Arc::clone(&child_session.direct_input_admission),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
@@ -7677,6 +7685,7 @@ async fn cached_guardian_subagent_exposes_its_rollout_path() {
     let child_io = SessionIo {
         tx_sub: child_tx_sub,
         rx_event: child_rx_event,
+        direct_input_admission: Arc::clone(&child_session.direct_input_admission),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
@@ -7708,6 +7717,7 @@ async fn shutdown_and_wait_shuts_down_tracked_ephemeral_guardian_review() {
     let parent_io = SessionIo {
         tx_sub: parent_tx_sub,
         rx_event: parent_rx_event,
+        direct_input_admission: Arc::clone(&parent_session.direct_input_admission),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(parent_session_loop_handle),
     };
@@ -7730,6 +7740,7 @@ async fn shutdown_and_wait_shuts_down_tracked_ephemeral_guardian_review() {
     let child_io = SessionIo {
         tx_sub: child_tx_sub,
         rx_event: child_rx_event,
+        direct_input_admission: Arc::clone(&child_session.direct_input_admission),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
@@ -8025,6 +8036,7 @@ where
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
         pending_user_message_admissions: Default::default(),
+        direct_input_admission: Arc::new(DirectInputAdmission::default()),
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
@@ -10322,6 +10334,167 @@ async fn try_start_turn_if_idle_rejects_pending_trigger_turn_without_injecting()
     assert_eq!(vec![item], err.into_input());
     assert!(sess.active_turn.lock().await.is_none());
     assert!(sess.input_queue.has_trigger_turn_mailbox_items().await);
+}
+
+#[tokio::test]
+async fn generic_session_io_user_input_blocks_idle_turn_before_session_handler() {
+    let (sess, _tc, _events) = make_session_and_context_with_rx().await;
+    let (tx_sub, rx_sub) = async_channel::bounded(1);
+    let (_tx_event, rx_event) = async_channel::unbounded();
+    let io = SessionIo {
+        tx_sub,
+        rx_event,
+        direct_input_admission: Arc::clone(&sess.direct_input_admission),
+        agent_status: watch::channel(AgentStatus::PendingInit).1,
+        session_loop_termination: completed_session_loop_termination(),
+    };
+    let user_items = vec![UserInput::Text {
+        text: "direct user message".to_string(),
+        text_elements: Vec::new(),
+    }];
+    let user_turn_id = io
+        .submit_with_trace(
+            Op::UserInput {
+                items: user_items.clone(),
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            },
+            /*trace*/ None,
+            /*parent_turn_id*/ None,
+        )
+        .await
+        .expect("queue direct input before starting the session handler");
+    assert_eq!(
+        rx_sub.len(),
+        1,
+        "submission remains behind the test barrier"
+    );
+
+    let attention = user_message("synthetic attention");
+    let error = sess
+        .try_start_turn_if_idle(vec![attention.clone()])
+        .await
+        .expect_err("queued direct input must retain admission priority");
+    assert_eq!(
+        TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
+        error.reason()
+    );
+    assert_eq!(vec![attention], error.into_input());
+    assert!(sess.active_turn.lock().await.is_none());
+
+    let submission = rx_sub.recv().await.expect("queued direct input");
+    super::handlers::user_input_or_turn(
+        &sess,
+        submission.id.clone(),
+        submission.op,
+        submission.client_user_message_id,
+        submission.parent_turn_id,
+    )
+    .await;
+    sess.direct_input_admission.complete(&submission.id);
+
+    let running_turn_id = {
+        let active_turn = sess.active_turn.lock().await;
+        active_turn
+            .as_ref()
+            .and_then(|turn| turn.task.as_ref())
+            .map(|task| task.turn_context.sub_id.clone())
+            .expect("direct input starts its own turn")
+    };
+    assert_eq!(running_turn_id, user_turn_id);
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "the state guard is the deterministic barrier proving realtime admission wins"
+)]
+async fn admitted_realtime_text_blocks_attention_until_its_turn_is_established() {
+    let (sess, _tc, _events) = make_session_and_context_with_rx().await;
+    let state_guard = sess.state.lock().await;
+    let realtime = sess.route_realtime_text_input("realtime text".to_string());
+    tokio::pin!(realtime);
+
+    assert!(
+        poll!(realtime.as_mut()).is_pending(),
+        "session state lock is the deterministic direct-handler barrier"
+    );
+    assert!(
+        sess.direct_input_admission.has_pending(),
+        "realtime input must reserve admission before entering its handler"
+    );
+
+    let attention = user_message("synthetic attention");
+    let error = sess
+        .try_start_turn_if_idle(vec![attention.clone()])
+        .await
+        .expect_err("admitted realtime input must retain turn priority");
+    assert_eq!(
+        TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
+        error.reason()
+    );
+    assert_eq!(vec![attention], error.into_input());
+    assert!(sess.active_turn.lock().await.is_none());
+
+    drop(state_guard);
+    realtime.await;
+    assert!(!sess.direct_input_admission.has_pending());
+    assert!(
+        sess.active_turn
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|turn| turn.task.as_ref())
+            .is_some(),
+        "realtime input starts its own turn after the barrier"
+    );
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "the admission guard deterministically queues attention before realtime input"
+)]
+async fn attention_gate_establishes_its_turn_before_realtime_text_can_begin() {
+    let (sess, _tc, _events) = make_session_and_context_with_rx().await;
+    let gate_guard = sess.direct_input_admission.gate.lock().await;
+    let attention_item = user_message("synthetic attention");
+    let attention = sess.try_start_turn_if_idle(vec![attention_item]);
+    tokio::pin!(attention);
+    assert!(
+        poll!(attention.as_mut()).is_pending(),
+        "attention waits first on the deterministic admission gate"
+    );
+
+    let realtime = sess.route_realtime_text_input("realtime text".to_string());
+    tokio::pin!(realtime);
+    assert!(
+        poll!(realtime.as_mut()).is_pending(),
+        "realtime waits behind attention on the same admission gate"
+    );
+    assert!(!sess.direct_input_admission.has_pending());
+    drop(gate_guard);
+
+    attention
+        .await
+        .expect("attention wins the gate and establishes its turn");
+    assert!(
+        sess.active_turn
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|turn| turn.task.as_ref())
+            .is_some(),
+        "attention task is established before realtime resumes"
+    );
+
+    realtime.await;
+    assert!(!sess.direct_input_admission.has_pending());
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
 #[tokio::test]

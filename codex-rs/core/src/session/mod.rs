@@ -391,8 +391,9 @@ use codex_utils_stream_parser::ProposedPlanSegment;
 /// submission senders be dropped to terminate the session loop. The shared
 /// completion future observes that shutdown.
 pub(crate) struct SessionIo {
-    pub(crate) tx_sub: Sender<Submission>,
+    tx_sub: Sender<Submission>,
     pub(crate) rx_event: Receiver<Event>,
+    pub(crate) direct_input_admission: Arc<session::DirectInputAdmission>,
     // Last known status of the agent.
     pub(crate) agent_status: watch::Receiver<AgentStatus>,
     // Shared future for the background submission loop completion so multiple
@@ -770,18 +771,39 @@ impl Session {
                 .instrument(info_span!("session_loop", thread_id = %thread_id))
                 .await;
         });
-        let io = SessionIo {
+        let io = SessionIo::from_parts(
             tx_sub,
             rx_event,
-            agent_status: agent_status_rx,
-            session_loop_termination: session_loop_termination_from_handle(session_loop_handle),
-        };
+            Arc::clone(&session.direct_input_admission),
+            agent_status_rx,
+            session_loop_termination_from_handle(session_loop_handle),
+        );
 
         Ok((session, io))
     }
 }
 
 impl SessionIo {
+    pub(crate) fn from_parts(
+        tx_sub: Sender<Submission>,
+        rx_event: Receiver<Event>,
+        direct_input_admission: Arc<session::DirectInputAdmission>,
+        agent_status: watch::Receiver<AgentStatus>,
+        session_loop_termination: SessionLoopTermination,
+    ) -> Self {
+        Self {
+            tx_sub,
+            rx_event,
+            direct_input_admission,
+            agent_status,
+            session_loop_termination,
+        }
+    }
+
+    pub(crate) fn submission_channel_is_closed(&self) -> bool {
+        self.tx_sub.is_closed()
+    }
+
     /// Submit the `op` wrapped in a `Submission` with a unique ID.
     pub(crate) async fn submit(&self, op: Op) -> CodexResult<String> {
         self.submit_with_trace(op, /*trace*/ None, /*parent_turn_id*/ None)
@@ -830,6 +852,27 @@ impl SessionIo {
         if sub.trace.is_none() {
             sub.trace = current_span_w3c_trace_context();
         }
+        if !matches!(sub.op, Op::UserInput { .. }) {
+            return self.send_submission(sub).await;
+        }
+
+        let reservation = self.direct_input_admission.reserve(sub.id.clone()).await;
+        match self.send_submission(sub).await {
+            Ok(()) => {
+                reservation.commit();
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Release a direct-input reservation whose admitted submission was
+    /// abandoned by an internal forwarding channel before the session loop.
+    pub(crate) fn release_forwarded_user_input(&self, submission_id: &str) {
+        self.direct_input_admission.complete(submission_id);
+    }
+
+    async fn send_submission(&self, sub: Submission) -> CodexResult<()> {
         self.tx_sub
             .send(sub)
             .await
@@ -1192,9 +1235,11 @@ impl Session {
     }
 
     pub(crate) async fn route_realtime_text_input(self: &Arc<Self>, text: String) {
-        handlers::user_input_or_turn(
+        let sub_id = Uuid::now_v7().to_string();
+        let admission = self.direct_input_admission.reserve(sub_id.clone()).await;
+        handlers::user_input_or_turn_inner(
             self,
-            Uuid::now_v7().to_string(),
+            sub_id,
             Op::UserInput {
                 items: vec![UserInput::Text {
                     text,
@@ -1209,6 +1254,7 @@ impl Session {
             /*parent_turn_id*/ None,
         )
         .await;
+        admission.complete();
     }
 
     pub(crate) async fn get_total_token_usage(&self) -> i64 {

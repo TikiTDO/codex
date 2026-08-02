@@ -77,6 +77,7 @@ mod session_end;
 mod skills_list;
 mod sleep;
 mod thread_archive;
+mod thread_attention;
 mod thread_delete;
 mod thread_fork;
 mod thread_inject_items;

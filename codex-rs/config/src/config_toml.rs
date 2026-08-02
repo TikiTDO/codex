@@ -293,6 +293,10 @@ pub struct ConfigToml {
     /// Token budget applied when storing tool/function outputs in the context manager.
     pub tool_output_token_limit: Option<usize>,
 
+    /// Directory where the built-in image-generation tool stores generated images.
+    /// Defaults to `$CODEX_HOME/generated_images`.
+    pub image_generation_output_dir: Option<AbsolutePathBuf>,
+
     /// Maximum poll window for background terminal output (`write_stdin`), in milliseconds.
     /// Default: `300000` (5 minutes).
     pub background_terminal_max_timeout: Option<u64>,

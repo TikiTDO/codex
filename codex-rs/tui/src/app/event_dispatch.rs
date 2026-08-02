@@ -33,6 +33,13 @@ impl App {
                 self.handle_startup_thread_started(app_server, result)
                     .await?;
             }
+            AppEvent::PokeReceived { request, reply } => {
+                self.handle_poke(app_server, request, reply).await;
+            }
+            AppEvent::WorkspaceSignalReceived { request, reply } => {
+                self.handle_workspace_signal(app_server, request, reply)
+                    .await;
+            }
             AppEvent::ClearUi { name } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();

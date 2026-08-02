@@ -136,7 +136,7 @@ async fn run_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     ));
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     install_image_generation_extension(&mut extensions, auth_manager.clone(), |config: &Config| {
-        Some(config.codex_home.clone())
+        Some(config.image_generation_output_dir.clone())
     });
     let thread_manager = ThreadManager::new(
         &config,
@@ -248,6 +248,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         project_doc_max_bytes: 32 * 1024,
         project_doc_fallback_filenames: Vec::new(),
         tool_output_token_limit: None,
+        image_generation_output_dir: codex_home.join("generated_images"),
         agents_enabled: true,
         agent_max_threads: Some(6),
         agent_default_subagent_model: None,

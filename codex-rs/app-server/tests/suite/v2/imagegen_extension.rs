@@ -67,6 +67,11 @@ async fn standalone_image_generation_returns_saved_path_hint_to_model() -> Resul
                     "imagegen",
                     &json!({
                         "prompt": "paint a blue whale",
+                        "title": "Blue Whale Study",
+                        "metadata": {
+                            "thoughts": "The whale should remain blue.",
+                            "commissioner_notes": ["Keep it calm."],
+                        },
                     })
                     .to_string(),
                 ),
@@ -126,7 +131,17 @@ async fn standalone_image_generation_returns_saved_path_hint_to_model() -> Resul
     assert_eq!(status, "completed");
     assert_eq!(revised_prompt.as_deref(), Some("paint a blue whale"));
     assert_eq!(result, RESULT);
-    assert_eq!(std::fs::read(&saved_path)?, TINY_PNG_BYTES);
+    assert!(saved_path.starts_with(codex_home.path().join("generated_images")));
+    assert!(saved_path.file_name().is_some_and(|name| {
+        name.to_string_lossy()
+            .contains("blue-whale-study-imagerun1")
+    }));
+    let saved_bytes = std::fs::read(&saved_path)?;
+    assert!(saved_bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    let saved_text = String::from_utf8_lossy(&saved_bytes);
+    assert!(saved_text.contains("Blue Whale Study"));
+    assert!(saved_text.contains("The whale should remain blue."));
+    assert!(saved_text.contains("Keep it calm."));
 
     let image_request = server
         .received_requests()

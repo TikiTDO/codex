@@ -4,6 +4,7 @@ use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
+use crate::session::new_submission_id;
 use crate::session::session::Session;
 use crate::user_message_admission::UserMessageAdmission;
 use codex_exec_server::SelectedCapabilityRootsStatus;
@@ -224,7 +225,7 @@ impl CodexThread {
     }
 
     pub async fn submit(&self, op: Op) -> CodexResult<String> {
-        self.io.submit(op).await
+        self.submit_with_trace(op, /*trace*/ None).await
     }
 
     /// Returns the session telemetry handle for thread-scoped production instrumentation.
@@ -276,9 +277,17 @@ impl CodexThread {
         op: Op,
         trace: Option<W3cTraceContext>,
     ) -> CodexResult<String> {
+        let id = new_submission_id();
         self.io
-            .submit_with_trace(op, trace, /*parent_turn_id*/ None)
-            .await
+            .submit_with_id(Submission {
+                id: id.clone(),
+                op,
+                client_user_message_id: None,
+                trace,
+                parent_turn_id: None,
+            })
+            .await?;
+        Ok(id)
     }
 
     pub async fn submit_user_input_with_client_user_message_id(
@@ -553,7 +562,7 @@ impl CodexThread {
     }
 
     pub(crate) fn is_running(&self) -> bool {
-        !self.io.tx_sub.is_closed()
+        !self.io.submission_channel_is_closed()
     }
 
     pub async fn guardian_trunk_rollout_path(&self) -> Option<PathBuf> {

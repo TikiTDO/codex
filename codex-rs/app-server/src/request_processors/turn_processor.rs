@@ -2,6 +2,9 @@ use super::*;
 use codex_agent_extension::AgentInvocation;
 use codex_agent_extension::AgentRun;
 use codex_agent_extension::AgentRunner;
+use codex_core::context::ContextualUserFragment;
+use codex_core::context::InternalContextSource;
+use codex_core::context::InternalModelContextFragment;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -18,6 +21,11 @@ use crate::image_url::is_remote_image_url;
 
 const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
     "direct app-server input is not allowed for multi-agent v2 sub-agents";
+const ATTENTION_EVENT_VERSION: u8 = 1;
+const MAX_ATTENTION_EVENT_ID_BYTES: usize = 128;
+const MAX_ATTENTION_SOURCE_CLASS_BYTES: usize = 32;
+const MAX_ATTENTION_SOURCE_REF_BYTES: usize = 128;
+const MAX_ATTENTION_REFERENCE_BYTES: usize = 256;
 
 /// Mirrors the direct-input policy in both request validation and thread capability responses.
 pub(super) fn can_accept_direct_input(
@@ -81,6 +89,70 @@ fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONR
         return Err(invalid_request(REMOTE_IMAGE_URL_ERROR));
     }
     Ok(())
+}
+
+fn validate_attention_event(event: &ThreadAttentionEvent) -> Result<(), JSONRPCErrorError> {
+    if event.version != ATTENTION_EVENT_VERSION {
+        return Err(invalid_params(format!(
+            "unsupported attention event version {}; expected {ATTENTION_EVENT_VERSION}",
+            event.version
+        )));
+    }
+    validate_attention_atom("eventId", &event.event_id, MAX_ATTENTION_EVENT_ID_BYTES)?;
+    validate_attention_atom(
+        "sourceClass",
+        &event.source_class,
+        MAX_ATTENTION_SOURCE_CLASS_BYTES,
+    )?;
+    validate_attention_atom(
+        "sourceRef",
+        &event.source_ref,
+        MAX_ATTENTION_SOURCE_REF_BYTES,
+    )?;
+    if let Some(reference) = event.reference.as_deref() {
+        validate_attention_atom("reference", reference, MAX_ATTENTION_REFERENCE_BYTES)?;
+    }
+    Ok(())
+}
+
+fn validate_attention_atom(
+    field: &str,
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), JSONRPCErrorError> {
+    if value.is_empty() || value.len() > max_bytes {
+        return Err(invalid_params(format!(
+            "{field} must be between 1 and {max_bytes} bytes"
+        )));
+    }
+    if !value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/' | b'@')
+    }) {
+        return Err(invalid_params(format!(
+            "{field} contains a character outside the safe attention metadata alphabet"
+        )));
+    }
+    Ok(())
+}
+
+fn attention_marker(event: ThreadAttentionEvent) -> ResponseItem {
+    let kind = match event.kind {
+        ThreadAttentionKind::Mention => "mention",
+        ThreadAttentionKind::DirectedResponse => "directedResponse",
+        ThreadAttentionKind::Periodic => "periodic",
+    };
+    let reference = event
+        .reference
+        .map(|reference| format!(" reference=\"{reference}\""))
+        .unwrap_or_default();
+    let text = format!(
+        "<codex-attention version=\"{}\" event=\"{}\" kind=\"{kind}\" source-class=\"{}\" source-ref=\"{}\"{reference} />",
+        event.version, event.event_id, event.source_class, event.source_ref
+    );
+    ContextualUserFragment::into(InternalModelContextFragment::new(
+        InternalContextSource::from_static("attention"),
+        text,
+    ))
 }
 
 #[derive(Clone)]
@@ -197,6 +269,16 @@ impl TurnRequestProcessor {
         params: ThreadInjectItemsParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_inject_items_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_attention(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadAttentionParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_attention_inner(request_id, params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -352,6 +434,37 @@ impl TurnRequestProcessor {
         }
 
         Ok(())
+    }
+
+    async fn thread_attention_inner(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadAttentionParams,
+    ) -> Result<ThreadAttentionResponse, JSONRPCErrorError> {
+        let ThreadAttentionParams {
+            thread_id,
+            attention,
+        } = params;
+        validate_attention_event(&attention)?;
+        let (_, thread) = self.load_thread(&thread_id).await?;
+        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+            .await?;
+
+        let marker = attention_marker(attention);
+        match thread.try_start_turn_if_idle(vec![marker]).await {
+            Ok(()) => Ok(ThreadAttentionResponse::Started {}),
+            Err(error) => Ok(ThreadAttentionResponse::Held {
+                reason: match error.reason() {
+                    TryStartTurnIfIdleRejectionReason::PendingTriggerTurn => {
+                        ThreadAttentionHeldReason::PendingTriggerTurn
+                    }
+                    TryStartTurnIfIdleRejectionReason::PlanMode => {
+                        ThreadAttentionHeldReason::PlanMode
+                    }
+                    TryStartTurnIfIdleRejectionReason::Busy => ThreadAttentionHeldReason::Busy,
+                },
+            }),
+        }
     }
 
     fn normalize_collaboration_mode(
