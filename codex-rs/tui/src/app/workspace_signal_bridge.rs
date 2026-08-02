@@ -584,20 +584,23 @@ fn validate_v2_event(event: &WorkspaceSignalEvent) -> Result<(), &'static str> {
             if !(1..=100_000_000).contains(&source_count) {
                 return Err("eventInvalid");
             }
-            if !event
-                .source_first_ref
-                .as_deref()
-                .is_some_and(|value| is_safe_atom(value, 64))
-                || !event
-                    .source_latest_ref
-                    .as_deref()
-                    .is_some_and(|value| is_safe_atom(value, 64))
+            let source_first = event.source_first_ref.as_deref().ok_or("eventInvalid")?;
+            let source_latest = event.source_latest_ref.as_deref().ok_or("eventInvalid")?;
+            if !is_safe_atom(source_first, 64)
+                || !is_safe_atom(source_latest, 64)
+                || source_namespace(source_first) != source_namespace(source_latest)
+                || source_namespace(source_first).is_none()
             {
                 return Err("eventInvalid");
             }
         }
     }
     Ok(())
+}
+
+fn source_namespace(reference: &str) -> Option<&str> {
+    let (namespace, position) = reference.rsplit_once(':')?;
+    (!namespace.is_empty() && !position.is_empty()).then_some(namespace)
 }
 
 fn bounded_sequence(value: Option<&str>) -> Result<u64, &'static str> {

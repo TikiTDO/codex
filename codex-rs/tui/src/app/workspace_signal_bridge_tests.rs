@@ -198,6 +198,19 @@ fn v2_rejects_a_cause_kind_mismatch_and_an_unbounded_source() {
         .unwrap_err(),
         "eventInvalid"
     );
+
+    let mut mixed_namespace: Value = serde_json::from_str(&v2_event()).expect("event json");
+    mixed_namespace["event"]["sourceLatestRef"] = Value::String("fingerprint:44".to_string());
+    assert_eq!(
+        parse_frame(
+            &mixed_namespace.to_string(),
+            Some(BridgeProtocol::V2),
+            Some("terra-aurora-05"),
+            Some("root")
+        )
+        .unwrap_err(),
+        "eventInvalid"
+    );
 }
 
 #[test]
@@ -239,8 +252,8 @@ fn v2_reference_stays_inside_the_app_server_bound_at_maximum_metadata_sizes() {
     maximum["event"]["firstEventSequence"] = Value::String(maximum_sequence.clone());
     maximum["event"]["latestEventSequence"] = Value::String(maximum_sequence);
     maximum["event"]["sourceCount"] = serde_json::json!(100_000_000);
-    maximum["event"]["sourceFirstRef"] = Value::String("a".repeat(64));
-    maximum["event"]["sourceLatestRef"] = Value::String("b".repeat(64));
+    maximum["event"]["sourceFirstRef"] = Value::String(format!("n:{}", "a".repeat(62)));
+    maximum["event"]["sourceLatestRef"] = Value::String(format!("n:{}", "b".repeat(62)));
     let BridgeFrame::Event { event, protocol } = parse_frame(
         &maximum.to_string(),
         Some(BridgeProtocol::V2),
