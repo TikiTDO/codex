@@ -9,6 +9,7 @@ use crate::client_common::ResponseEvent;
 use crate::context::BaseInstructionsFragment;
 use crate::context::CompactionSummary;
 use crate::context::ContextualUserFragment;
+use crate::context::PostCompactionContext;
 use crate::context::world_state::WorldState;
 use crate::context::world_state::WorldStateSnapshot;
 use crate::context::world_state::split_prefix_updates;
@@ -60,9 +61,14 @@ use codex_utils_output_truncation::approx_token_count;
 use futures::prelude::*;
 use tracing::error;
 
+pub use codex_prompts::POST_COMPACTION_MARKER;
 pub use codex_prompts::SUMMARIZATION_PROMPT;
 pub use codex_prompts::SUMMARY_PREFIX;
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+
+pub(crate) fn post_compaction_item(configured_prompt: Option<&str>) -> ResponseItem {
+    ContextualUserFragment::into(PostCompactionContext::new(configured_prompt))
+}
 
 pub(crate) fn prepare_compaction_history(
     history: &mut ContextManager,
@@ -520,6 +526,12 @@ async fn run_compact_task_inner_impl(
     };
 
     let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
+    new_history = insert_initial_context_before_last_real_user_or_summary(
+        new_history,
+        vec![ResponseItemEnvelope::new(post_compaction_item(
+            turn_context.config.post_compaction_prompt.as_deref(),
+        ))],
+    );
     if let Some(summary_item) = new_history.last_mut() {
         // This replacement history skips `record_conversation_items`; only the appended summary
         // belongs to this compaction turn.

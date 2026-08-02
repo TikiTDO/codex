@@ -777,6 +777,9 @@ pub struct Config {
     /// Compact prompt override.
     pub compact_prompt: Option<String>,
 
+    /// Additional instructions injected into model context after compaction.
+    pub post_compaction_prompt: Option<String>,
+
     /// Optional external notifier command. When set, Codex will spawn this
     /// program after each completed *turn* (i.e. when the agent finishes
     /// processing a user submission). The value must be the full command
@@ -4316,6 +4319,10 @@ impl Config {
         )
         .await?;
         let compact_prompt = compact_prompt.or(file_compact_prompt);
+        let post_compaction_prompt = cfg.post_compaction_prompt.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        });
         let review_model = override_review_model.or(cfg.review_model);
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
@@ -4575,6 +4582,7 @@ impl Config {
             personality,
             developer_instructions,
             compact_prompt,
+            post_compaction_prompt,
             include_permissions_instructions,
             include_apps_instructions,
             include_collaboration_mode_instructions,

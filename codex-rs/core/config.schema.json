@@ -8516,6 +8516,10 @@
       "default": {},
       "description": "Default and per-plugin settings keyed by exact `<plugin>@<marketplace>` IDs."
     },
+    "post_compaction_prompt": {
+      "description": "Additional instructions injected into model context after compaction.",
+      "type": "string"
+    },
     "profile": {
       "description": "Profile to use from the `profiles` map.",
       "type": "string"

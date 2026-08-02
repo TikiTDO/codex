@@ -6,6 +6,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
+use codex_core::compact::POST_COMPACTION_MARKER;
+use codex_core::compact::SUMMARY_PREFIX;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
