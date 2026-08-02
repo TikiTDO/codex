@@ -5,6 +5,7 @@ use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_core::StartThreadOptions;
+use codex_core::compact::POST_COMPACTION_MARKER;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_features::Feature;
 use codex_login::CodexAuth;
@@ -349,7 +350,11 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
-        test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                config.post_compaction_prompt = Some("Re-read the live task.".to_string());
+            }),
     )
     .await?;
     let codex = harness.test().codex.clone();
@@ -549,6 +554,11 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
     assert!(
         follow_up_body.contains("ENCRYPTED_COMPACTION_SUMMARY"),
         "expected follow-up request to include compaction summary item"
+    );
+    assert!(
+        follow_up_request.body_contains_text(POST_COMPACTION_MARKER.trim())
+            && follow_up_request.body_contains_text("Re-read the live task."),
+        "expected follow-up request to label the compaction seam and include configured instructions"
     );
     assert!(
         !follow_up_body.contains("FIRST_REMOTE_REPLY"),

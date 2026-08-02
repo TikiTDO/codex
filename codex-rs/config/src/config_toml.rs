@@ -238,6 +238,9 @@ pub struct ConfigToml {
     /// Compact prompt used for history compaction.
     pub compact_prompt: Option<String>,
 
+    /// Additional instructions injected into model context after compaction.
+    pub post_compaction_prompt: Option<String>,
+
     /// When set, restricts ChatGPT login to one or more workspace identifiers.
     #[serde(default)]
     pub forced_chatgpt_workspace_id: Option<ForcedChatgptWorkspaceIds>,

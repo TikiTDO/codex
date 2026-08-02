@@ -5613,6 +5613,10 @@
       "description": "User-level plugin config entries keyed by plugin name.",
       "type": "object"
     },
+    "post_compaction_prompt": {
+      "description": "Additional instructions injected into model context after compaction.",
+      "type": "string"
+    },
     "profile": {
       "description": "Profile to use from the `profiles` map.",
       "type": "string"
