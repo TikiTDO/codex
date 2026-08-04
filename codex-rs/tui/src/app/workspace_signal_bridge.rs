@@ -38,6 +38,7 @@ const BRIDGE_ENVIRONMENT: &str = "OBSERVATORY_WORKSPACE_SIGNAL_BRIDGE";
 const BRIDGE_PROTOCOL_V1: &str = "observatory.workspace_signal_bridge.v1";
 const BRIDGE_PROTOCOL_V2: &str = "observatory.workspace_signal_bridge.v2";
 const ATTENTION_VERSION: u8 = 1;
+const GLOBAL_CC_WORKSPACE: &str = "global-cc-bootstrap";
 const MAX_FRAME_BYTES: usize = 16 * 1024;
 const MAX_REFERENCE_BYTES: usize = 256;
 const MAX_TARGETS: usize = 16;
@@ -220,6 +221,39 @@ pub(crate) enum WorkspaceSignalOutcome {
 }
 
 pub(crate) type WorkspaceSignalResponseSender = mpsc::Sender<WorkspaceSignalOutcome>;
+
+fn cc_poke_indicator(
+    request: &WorkspaceSignalRequest,
+    outcome: WorkspaceSignalOutcome,
+) -> Option<String> {
+    if outcome != WorkspaceSignalOutcome::Started
+        || request.protocol != BridgeProtocol::V1
+        || request.workspace != GLOBAL_CC_WORKSPACE
+        || request.event.signal != WorkspaceSignal::Cc
+        || !is_safe_atom(&request.event.from, 128)
+    {
+        return None;
+    }
+
+    let queued_at = chrono::DateTime::parse_from_rfc3339(&request.event.created_at)
+        .ok()
+        .map(|created_at| {
+            created_at
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        });
+    let timing = match (queued_at, request.event.predates_runtime) {
+        (Some(queued_at), true) => format!(" (queued {queued_at}; delayed/pre-runtime)"),
+        (Some(queued_at), false) => format!(" (queued {queued_at})"),
+        (None, true) => " (delayed/pre-runtime)".to_string(),
+        (None, false) => String::new(),
+    };
+
+    Some(format!(
+        "CC poke received now from reported sender {}{timing}. Fresh-state retrieval start is not yet evidenced; delivery and model-turn start do not establish comprehension, acceptance, CC read, or action.",
+        request.event.from
+    ))
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -648,7 +682,7 @@ impl App {
                     thread_id: primary_thread_id.to_string(),
                     attention: ThreadAttentionEvent {
                         version: ATTENTION_VERSION,
-                        event_id: request.event.event_id,
+                        event_id: request.event.event_id.clone(),
                         kind: attention_kind,
                         source_class: "workspace".to_string(),
                         source_ref: format!("{}/{}", request.workspace, request.event.from),
@@ -675,6 +709,9 @@ impl App {
                 WorkspaceSignalOutcome::Held
             }
         };
+        if let Some(message) = cc_poke_indicator(&request, outcome) {
+            self.chat_widget.add_info_message(message, /*hint*/ None);
+        }
         let _ = reply.send(outcome);
     }
 }
