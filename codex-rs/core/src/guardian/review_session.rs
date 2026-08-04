@@ -1455,6 +1455,7 @@ mod tests {
             instructions_template: None,
             instructions_variables: None,
             approvals: None,
+            collaboration_modes: None,
             auto_review: Some(AutoReviewMessages {
                 policy: Some("Use the catalog Guardian policy.".to_string()),
                 policy_template: Some(catalog_template.to_string()),
@@ -1488,6 +1489,7 @@ mod tests {
             instructions_template: None,
             instructions_variables: None,
             approvals: None,
+            collaboration_modes: None,
             auto_review: Some(AutoReviewMessages {
                 policy: Some(String::new()),
                 policy_template: None,
@@ -1529,6 +1531,7 @@ mod tests {
             instructions_template: None,
             instructions_variables: None,
             approvals: None,
+            collaboration_modes: None,
             auto_review: Some(AutoReviewMessages {
                 policy: Some(catalog_policy.to_string()),
                 policy_template: Some(String::new()),
