@@ -493,12 +493,13 @@ async fn handle_request_user_input_preserves_non_blocking_flag_for_round_trip() 
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_tx_events, rx_events_child) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let io = Arc::new(SessionIo {
+    let io = Arc::new(SessionIo::from_parts(
         tx_sub,
-        rx_event: rx_events_child,
+        rx_events_child,
+        Arc::new(crate::session::session::DirectInputAdmission::default()),
         agent_status,
-        session_loop_termination: completed_session_loop_termination(),
-    });
+        completed_session_loop_termination(),
+    ));
     let pending_mcp_invocations = Arc::new(Mutex::new(HashMap::new()));
     let cancel_token = CancellationToken::new();
     let child_event_id = "child-request-1".to_string();
