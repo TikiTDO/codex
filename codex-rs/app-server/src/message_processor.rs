@@ -1122,6 +1122,15 @@ impl MessageProcessor {
             ClientRequest::ThreadSectionList { params, .. } => {
                 self.thread_processor.thread_section_list(params).await
             }
+            ClientRequest::ThreadSectionCreate { params, .. } => {
+                self.thread_processor.thread_section_create(params).await
+            }
+            ClientRequest::ThreadSectionUpdate { params, .. } => {
+                self.thread_processor.thread_section_update(params).await
+            }
+            ClientRequest::ThreadSectionDelete { params, .. } => {
+                self.thread_processor.thread_section_delete(params).await
+            }
             ClientRequest::ThreadSettingsUpdate { params, .. } => {
                 self.turn_processor
                     .thread_settings_update(&request_id, params)
@@ -1222,6 +1231,9 @@ impl MessageProcessor {
             }
             ClientRequest::PluginList { params, .. } => {
                 self.plugin_processor.plugin_list(params).await
+            }
+            ClientRequest::PluginSearch { params, .. } => {
+                self.plugin_processor.plugin_search(params).await
             }
             ClientRequest::PluginInstalled { params, .. } => {
                 self.plugin_processor.plugin_installed(params).await

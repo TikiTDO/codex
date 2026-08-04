@@ -389,7 +389,7 @@
       "additionalProperties": false,
       "properties": {
         "disable_in_process_fallback": {
-          "description": "Fail instead of running embedded V8 when the standalone host is unavailable.",
+          "description": "Keep code mode fail-closed when the standalone host is unavailable.",
           "type": "boolean"
         },
         "enabled": {
@@ -529,6 +529,9 @@
               "type": "boolean"
             },
             "exec_permission_approvals": {
+              "type": "boolean"
+            },
+            "executed_tool_call_metadata": {
               "type": "boolean"
             },
             "executor_capability_discovery": {
@@ -1424,7 +1427,7 @@
           "type": "array"
         }
       ],
-      "description": "One action binding value in config.\n\nThis accepts either:\n\n1. A single key spec string (`\"ctrl-a\"`). 2. A list of key spec strings (`[\"ctrl-a\", \"alt-a\"]`).\n\nAn empty list explicitly unbinds the action in that scope. Because an explicit empty list is still a configured value, runtime resolution must not fall through to global or built-in defaults for that action."
+      "description": "One action binding value in config.\n\nThis accepts either:\n\n1. A single key or chord string (`\"ctrl-a\"` or `\"ctrl-x ctrl-s\"`). 2. A list of alternative bindings (`[\"ctrl-a\", \"ctrl-x ctrl-s\"]`).\n\nAn empty list explicitly unbinds the action in that scope. Because an explicit empty list is still a configured value, runtime resolution must not fall through to global or built-in defaults for that action."
     },
     "LegacyAppPathString": {
       "type": "string"
@@ -5089,6 +5092,9 @@
           "type": "boolean"
         },
         "exec_permission_approvals": {
+          "type": "boolean"
+        },
+        "executed_tool_call_metadata": {
           "type": "boolean"
         },
         "executor_capability_discovery": {

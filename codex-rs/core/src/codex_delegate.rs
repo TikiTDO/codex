@@ -385,7 +385,8 @@ async fn forward_events(
                         // runtime after a refresh.
                         let metadata = session
                             .mcp_tool_approval_metadata(&id, &event.call_id)
-                            .await;
+                            .await
+                            .map(|(_, metadata)| metadata);
                         pending_mcp_invocations
                             .lock()
                             .await
@@ -744,6 +745,7 @@ async fn handle_request_user_input(
 
     let args = RequestUserInputArgs {
         questions: event.questions,
+        is_blocking: event.is_blocking,
         auto_resolution_ms: event.auto_resolution_ms,
     };
     let response_fut =

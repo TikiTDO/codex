@@ -35,9 +35,11 @@ use crate::app_event::AppEvent;
 use crate::app_server_session::AppServerSession;
 
 const BRIDGE_ENVIRONMENT: &str = "OBSERVATORY_WORKSPACE_SIGNAL_BRIDGE";
-const BRIDGE_PROTOCOL: &str = "observatory.workspace_signal_bridge.v1";
+const BRIDGE_PROTOCOL_V1: &str = "observatory.workspace_signal_bridge.v1";
+const BRIDGE_PROTOCOL_V2: &str = "observatory.workspace_signal_bridge.v2";
 const ATTENTION_VERSION: u8 = 1;
 const MAX_FRAME_BYTES: usize = 16 * 1024;
+const MAX_REFERENCE_BYTES: usize = 256;
 const MAX_TARGETS: usize = 16;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -66,24 +68,148 @@ impl WorkspaceSignal {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BridgeProtocol {
+    V1,
+    V2,
+}
+
+impl BridgeProtocol {
+    fn parse(value: Option<&Value>) -> Result<Self, &'static str> {
+        match value.and_then(Value::as_str) {
+            Some(BRIDGE_PROTOCOL_V1) => Ok(Self::V1),
+            Some(BRIDGE_PROTOCOL_V2) => Ok(Self::V2),
+            _ => Err("protocolMismatch"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum WorkspaceAttentionKind {
+    Periodic,
+    Mention,
+    DirectedResponse,
+}
+
+impl WorkspaceAttentionKind {
+    fn into_thread_attention(self) -> ThreadAttentionKind {
+        match self {
+            Self::Periodic => ThreadAttentionKind::Periodic,
+            Self::Mention => ThreadAttentionKind::Mention,
+            Self::DirectedResponse => ThreadAttentionKind::DirectedResponse,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum WorkspaceWakeClass {
+    Unspecified,
+    OperatorChat,
+    PeerMention,
+    PeriodicReview,
+    Manual,
+}
+
+impl WorkspaceWakeClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::OperatorChat => "operatorChat",
+            Self::PeerMention => "peerMention",
+            Self::PeriodicReview => "periodicReview",
+            Self::Manual => "manual",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct WorkspaceSignalEvent {
+    pub(crate) attention_kind: Option<WorkspaceAttentionKind>,
+    pub(crate) batch_count: Option<u16>,
     pub(crate) created_at: String,
     pub(crate) delivery_mode: String,
     pub(crate) event_id: String,
     pub(crate) event_sequence: String,
+    pub(crate) first_event_sequence: Option<String>,
     pub(crate) from: String,
     pub(crate) predates_runtime: bool,
     pub(crate) priority: u8,
     pub(crate) signal: WorkspaceSignal,
+    pub(crate) source_count: Option<u64>,
+    pub(crate) source_first_ref: Option<String>,
+    pub(crate) source_latest_ref: Option<String>,
     pub(crate) targets: Vec<String>,
     pub(crate) to: String,
+    pub(crate) latest_event_sequence: Option<String>,
+    pub(crate) wake_class: Option<WorkspaceWakeClass>,
+}
+
+impl WorkspaceSignalEvent {
+    fn attention_kind(&self) -> ThreadAttentionKind {
+        self.attention_kind
+            .map(WorkspaceAttentionKind::into_thread_attention)
+            .unwrap_or_else(|| self.signal.attention_kind())
+    }
+
+    fn reference(&self, protocol: BridgeProtocol) -> String {
+        let mut reference = format!(
+            "workspace-signal/{}/{}",
+            match protocol {
+                BridgeProtocol::V1 => "v1",
+                BridgeProtocol::V2 => "v2",
+            },
+            self.signal.as_str()
+        );
+        if protocol == BridgeProtocol::V2 {
+            let wake_class = self
+                .wake_class
+                .expect("validated v2 event has a wake class");
+            let batch_count = self
+                .batch_count
+                .expect("validated v2 event has a batch count");
+            let first = self
+                .first_event_sequence
+                .as_deref()
+                .expect("validated v2 event has a first sequence");
+            let latest = self
+                .latest_event_sequence
+                .as_deref()
+                .expect("validated v2 event has a latest sequence");
+            reference.push_str(&format!(
+                "/wake/{}/b/{batch_count}/e/{first}-{latest}",
+                wake_class.as_str()
+            ));
+            if let (Some(source_count), Some(source_first), Some(source_latest)) = (
+                self.source_count,
+                self.source_first_ref.as_deref(),
+                self.source_latest_ref.as_deref(),
+            ) && source_count > 0
+            {
+                reference.push_str(&format!("/s/{source_count}/{source_first}-{source_latest}"));
+            }
+        }
+        let targets = self
+            .targets
+            .iter()
+            .map(|target| format!("/cc/{target}"))
+            .collect::<String>();
+        if reference.len() + targets.len() <= MAX_REFERENCE_BYTES {
+            reference.push_str(&targets);
+        } else {
+            reference.push_str(&format!("/cc-count/{}", self.targets.len()));
+        }
+        debug_assert!(reference.len() <= MAX_REFERENCE_BYTES);
+        reference
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct WorkspaceSignalRequest {
     pub(crate) event: WorkspaceSignalEvent,
+    protocol: BridgeProtocol,
     pub(crate) workspace: String,
 }
 
@@ -206,6 +332,7 @@ fn run_bridge(
     stop: &AtomicBool,
 ) {
     let mut member = None;
+    let mut protocol = None;
     let mut workspace = None;
     for line in BufReader::new(stdout).lines() {
         let line = match line {
@@ -219,10 +346,11 @@ fn run_bridge(
                 break;
             }
         };
-        match parse_frame(&line, member.as_deref(), workspace.as_deref()) {
+        match parse_frame(&line, protocol, member.as_deref(), workspace.as_deref()) {
             Ok(BridgeFrame::Ready {
                 asserted_session_id,
                 member: ready_member,
+                protocol: ready_protocol,
                 workspace: ready_workspace,
             }) => {
                 if member.is_some() || workspace.is_some() {
@@ -235,10 +363,14 @@ fn run_bridge(
                     );
                     break;
                 }
+                protocol = Some(ready_protocol);
                 member = Some(ready_member);
                 workspace = Some(ready_workspace);
             }
-            Ok(BridgeFrame::Event(event)) => {
+            Ok(BridgeFrame::Event {
+                event,
+                protocol: event_protocol,
+            }) => {
                 let Some(workspace) = workspace.clone() else {
                     tracing::warn!("workspace signal bridge delivered an event before ready");
                     break;
@@ -246,7 +378,11 @@ fn run_bridge(
                 let event_id = event.event_id.clone();
                 let (reply, response) = mpsc::channel();
                 app_event_tx.send(AppEvent::WorkspaceSignalReceived {
-                    request: WorkspaceSignalRequest { event, workspace },
+                    request: WorkspaceSignalRequest {
+                        event,
+                        protocol: event_protocol,
+                        workspace,
+                    },
                     reply,
                 });
                 let outcome = loop {
@@ -288,20 +424,26 @@ enum BridgeFrame {
     Ready {
         asserted_session_id: String,
         member: String,
+        protocol: BridgeProtocol,
         workspace: String,
     },
-    Event(WorkspaceSignalEvent),
+    Event {
+        event: WorkspaceSignalEvent,
+        protocol: BridgeProtocol,
+    },
     Continue,
 }
 
 fn parse_frame(
     line: &str,
+    ready_protocol: Option<BridgeProtocol>,
     ready_member: Option<&str>,
     ready_workspace: Option<&str>,
 ) -> Result<BridgeFrame, &'static str> {
     let value: Value = serde_json::from_str(line).map_err(|_| "invalidJson")?;
     let object = value.as_object().ok_or("invalidFrame")?;
-    if object.get("protocol").and_then(Value::as_str) != Some(BRIDGE_PROTOCOL) {
+    let protocol = BridgeProtocol::parse(object.get("protocol"))?;
+    if ready_protocol.is_some_and(|ready| ready != protocol) {
         return Err("protocolMismatch");
     }
     match object.get("type").and_then(Value::as_str) {
@@ -313,6 +455,7 @@ fn parse_frame(
             Ok(BridgeFrame::Ready {
                 asserted_session_id,
                 member,
+                protocol,
                 workspace,
             })
         }
@@ -326,11 +469,11 @@ fn parse_frame(
             let event =
                 serde_json::from_value(object.get("event").cloned().ok_or("eventUnavailable")?)
                     .map_err(|_| "eventInvalid")?;
-            validate_event(&event)?;
+            validate_event(&event, protocol)?;
             if event.to != ready_member {
                 return Err("eventScopeMismatch");
             }
-            Ok(BridgeFrame::Event(event))
+            Ok(BridgeFrame::Event { event, protocol })
         }
         Some("resolved") | Some("idle") => Ok(BridgeFrame::Continue),
         Some("hold") => Err("bridgeHeld"),
@@ -340,18 +483,24 @@ fn parse_frame(
 
 fn safe_atom(value: Option<&Value>, maximum: usize) -> Result<String, &'static str> {
     let value = value.and_then(Value::as_str).ok_or("metadataInvalid")?;
-    if value.is_empty()
-        || value.len() > maximum
-        || !value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'@')
-        })
-    {
+    if !is_safe_atom(value, maximum) {
         return Err("metadataInvalid");
     }
     Ok(value.to_string())
 }
 
-fn validate_event(event: &WorkspaceSignalEvent) -> Result<(), &'static str> {
+fn is_safe_atom(value: &str, maximum: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'@')
+        })
+}
+
+fn validate_event(
+    event: &WorkspaceSignalEvent,
+    protocol: BridgeProtocol,
+) -> Result<(), &'static str> {
     if event.priority > 2 || event.targets.len() > MAX_TARGETS {
         return Err("eventInvalid");
     }
@@ -371,7 +520,95 @@ fn validate_event(event: &WorkspaceSignalEvent) -> Result<(), &'static str> {
     if event.signal != WorkspaceSignal::Cc && !event.targets.is_empty() {
         return Err("eventInvalid");
     }
+    match protocol {
+        BridgeProtocol::V1 => {
+            if event.attention_kind.is_some()
+                || event.batch_count.is_some()
+                || event.first_event_sequence.is_some()
+                || event.latest_event_sequence.is_some()
+                || event.source_count.is_some()
+                || event.source_first_ref.is_some()
+                || event.source_latest_ref.is_some()
+                || event.wake_class.is_some()
+            {
+                return Err("eventInvalid");
+            }
+        }
+        BridgeProtocol::V2 => validate_v2_event(event)?,
+    }
     Ok(())
+}
+
+fn validate_v2_event(event: &WorkspaceSignalEvent) -> Result<(), &'static str> {
+    let attention_kind = event.attention_kind.ok_or("eventInvalid")?;
+    let batch_count = event.batch_count.ok_or("eventInvalid")?;
+    if !(1..=100).contains(&batch_count) {
+        return Err("eventInvalid");
+    }
+    let first = bounded_sequence(event.first_event_sequence.as_deref())?;
+    let latest = bounded_sequence(event.latest_event_sequence.as_deref())?;
+    if first != bounded_sequence(Some(&event.event_sequence))? || latest < first {
+        return Err("eventInvalid");
+    }
+    let wake_class = event.wake_class.ok_or("eventInvalid")?;
+    if wake_class == WorkspaceWakeClass::OperatorChat
+        && (event.from != event.to || event.signal != WorkspaceSignal::Tap)
+    {
+        return Err("eventInvalid");
+    }
+    let expected_attention = match wake_class {
+        WorkspaceWakeClass::OperatorChat => WorkspaceAttentionKind::DirectedResponse,
+        WorkspaceWakeClass::PeerMention => WorkspaceAttentionKind::Mention,
+        WorkspaceWakeClass::Unspecified
+        | WorkspaceWakeClass::PeriodicReview
+        | WorkspaceWakeClass::Manual => match event.signal {
+            WorkspaceSignal::Tap => WorkspaceAttentionKind::Periodic,
+            WorkspaceSignal::Cc => WorkspaceAttentionKind::DirectedResponse,
+            WorkspaceSignal::Council => WorkspaceAttentionKind::Mention,
+        },
+    };
+    if attention_kind != expected_attention {
+        return Err("eventInvalid");
+    }
+    let source_count = event.source_count.ok_or("eventInvalid")?;
+    match wake_class {
+        WorkspaceWakeClass::Unspecified => {
+            if source_count != 0
+                || event.source_first_ref.is_some()
+                || event.source_latest_ref.is_some()
+            {
+                return Err("eventInvalid");
+            }
+        }
+        _ => {
+            if !(1..=100_000_000).contains(&source_count) {
+                return Err("eventInvalid");
+            }
+            let source_first = event.source_first_ref.as_deref().ok_or("eventInvalid")?;
+            let source_latest = event.source_latest_ref.as_deref().ok_or("eventInvalid")?;
+            if !is_safe_atom(source_first, 64)
+                || !is_safe_atom(source_latest, 64)
+                || source_namespace(source_first) != source_namespace(source_latest)
+                || source_namespace(source_first).is_none()
+            {
+                return Err("eventInvalid");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn source_namespace(reference: &str) -> Option<&str> {
+    let (namespace, position) = reference.rsplit_once(':')?;
+    (!namespace.is_empty() && !position.is_empty()).then_some(namespace)
+}
+
+fn bounded_sequence(value: Option<&str>) -> Result<u64, &'static str> {
+    let value = value.ok_or("eventInvalid")?;
+    if value.is_empty() || value.len() > 20 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("eventInvalid");
+    }
+    value.parse().map_err(|_| "eventInvalid")
 }
 
 impl App {
@@ -400,11 +637,8 @@ impl App {
             let _ = reply.send(WorkspaceSignalOutcome::Held);
             return;
         };
-        let mut reference = format!("workspace-signal/v1/{}", request.event.signal.as_str());
-        for target in &request.event.targets {
-            reference.push_str("/cc/");
-            reference.push_str(target);
-        }
+        let reference = request.event.reference(request.protocol);
+        let attention_kind = request.event.attention_kind();
         let request_id = app_server.next_request_id();
         let response = app_server
             .request_handle()
@@ -415,7 +649,7 @@ impl App {
                     attention: ThreadAttentionEvent {
                         version: ATTENTION_VERSION,
                         event_id: request.event.event_id,
-                        kind: request.event.signal.attention_kind(),
+                        kind: attention_kind,
                         source_class: "workspace".to_string(),
                         source_ref: format!("{}/{}", request.workspace, request.event.from),
                         reference: Some(reference),
