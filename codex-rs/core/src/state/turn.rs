@@ -95,6 +95,7 @@ pub(crate) struct TurnState {
     mailbox_delivery_phase: MailboxDeliveryPhase,
     granted_permissions_by_environment_id: HashMap<String, AdditionalPermissionProfile>,
     strict_auto_review_enabled: bool,
+    context_compaction_requested: bool,
     pub(crate) tool_calls: u64,
     pub(crate) has_memory_citation: bool,
     pub(crate) token_usage_at_turn_start: TokenUsage,
@@ -256,5 +257,13 @@ impl TurnState {
 
     pub(crate) fn strict_auto_review_enabled(&self) -> bool {
         self.strict_auto_review_enabled
+    }
+
+    pub(crate) fn request_context_compaction(&mut self) {
+        self.context_compaction_requested = true;
+    }
+
+    pub(crate) fn take_context_compaction_request(&mut self) -> bool {
+        std::mem::take(&mut self.context_compaction_requested)
     }
 }
