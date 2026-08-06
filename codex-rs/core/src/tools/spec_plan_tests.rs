@@ -606,6 +606,29 @@ async fn request_user_input_tool_respects_experimental_config_gate() {
 }
 
 #[tokio::test]
+async fn self_context_tools_are_always_directly_available() {
+    for code_mode_only in [false, true] {
+        let plan = probe(|turn| {
+            if code_mode_only {
+                set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+            }
+        })
+        .await;
+
+        plan.assert_visible_contains(&["context_status", "compact_context"]);
+        plan.assert_registered_contains(&["context_status", "compact_context"]);
+        assert_eq!(
+            plan.exposure("context_status"),
+            ToolExposure::DirectModelOnly
+        );
+        assert_eq!(
+            plan.exposure("compact_context"),
+            ToolExposure::DirectModelOnly
+        );
+    }
+}
+
+#[tokio::test]
 async fn update_plan_tool_respects_config_gate() {
     let enabled = probe(|_| {}).await;
     enabled.assert_visible_contains(&["update_plan"]);

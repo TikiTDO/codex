@@ -10,10 +10,10 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::collect_explicit_skill_mentions;
 use crate::compact::InitialContextInjection;
-use crate::compact::run_inline_auto_compact_task;
+use crate::compact::run_inline_compact_task;
 use crate::compact::should_use_remote_compact_task;
-use crate::compact_remote::run_inline_remote_auto_compact_task;
-use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
+use crate::compact_remote::run_inline_remote_compact_task;
+use crate::compact_remote_v2::run_inline_remote_compact_task as run_inline_remote_compact_task_v2;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
 use crate::environment_selection::TurnEnvironmentSnapshot;
@@ -67,6 +67,7 @@ use crate::util::error_or_panic;
 use codex_analytics::AppInvocation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
+use codex_analytics::CompactionTrigger;
 use codex_analytics::InvocationType;
 use codex_analytics::TurnResolvedConfigFact;
 use codex_analytics::build_track_events_context;
@@ -415,8 +416,14 @@ pub(crate) async fn run_turn(
                     );
                 }
 
+                let requested_new_context =
+                    needs_follow_up && sess.take_new_context_window_request().await;
+                let requested_compaction = needs_follow_up
+                    && sess
+                        .take_context_compaction_request(&turn_context.sub_id)
+                        .await;
                 let should_roll_over = needs_follow_up
-                    && (sess.take_new_context_window_request().await || token_limit_reached);
+                    && (requested_new_context || requested_compaction || token_limit_reached);
                 let allow_auto_compact_fallback = !should_roll_over && !token_limit_reached;
                 super::token_budget::maybe_record(
                     sess.as_ref(),
@@ -428,7 +435,7 @@ pub(crate) async fn run_turn(
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if should_roll_over {
-                    if let Err(err) = run_auto_compact(
+                    if let Err(err) = run_inline_compact(
                         &sess,
                         Arc::clone(&step_context),
                         /*fallback_step_context*/ None,
@@ -437,7 +444,16 @@ pub(crate) async fn run_turn(
                             world_state: Arc::clone(&world_state),
                             step_context: Arc::clone(&step_context),
                         },
-                        CompactionReason::ContextLimit,
+                        if requested_compaction {
+                            CompactionTrigger::Manual
+                        } else {
+                            CompactionTrigger::Auto
+                        },
+                        if requested_compaction {
+                            CompactionReason::UserRequested
+                        } else {
+                            CompactionReason::ContextLimit
+                        },
                         CompactionPhase::MidTurn,
                     )
                     .await
@@ -995,12 +1011,13 @@ async fn run_pre_sampling_compact(
         let step_context = sess
             .capture_step_context(Arc::clone(turn_context), cancellation_token)
             .await?;
-        run_auto_compact(
+        run_inline_compact(
             sess,
             step_context,
             /*fallback_step_context*/ None,
             client_session,
             InitialContextInjection::DoNotInject,
+            CompactionTrigger::Auto,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
         )
@@ -1077,12 +1094,13 @@ async fn maybe_run_previous_model_inline_compact(
             cancellation_token,
         )
         .await?;
-        run_auto_compact(
+        run_inline_compact(
             sess,
             step_context,
             fallback_step_context,
             client_session,
             InitialContextInjection::DoNotInject,
+            CompactionTrigger::Auto,
             CompactionReason::CompHashChanged,
             CompactionPhase::PreTurn,
         )
@@ -1125,12 +1143,13 @@ async fn maybe_run_previous_model_inline_compact(
             cancellation_token,
         )
         .await?;
-        run_auto_compact(
+        run_inline_compact(
             sess,
             step_context,
             fallback_step_context,
             client_session,
             InitialContextInjection::DoNotInject,
+            CompactionTrigger::Auto,
             CompactionReason::ModelDownshift,
             CompactionPhase::PreTurn,
         )
@@ -1144,24 +1163,28 @@ async fn maybe_run_previous_model_inline_compact(
     skip_all,
     fields(reason = ?reason, phase = ?phase)
 )]
-async fn run_auto_compact(
+#[allow(clippy::too_many_arguments)]
+async fn run_inline_compact(
     sess: &Arc<Session>,
     step_context: Arc<StepContext>,
     fallback_step_context: Option<Arc<StepContext>>,
     client_session: &mut ModelClientSession,
     initial_context_injection: InitialContextInjection,
+    trigger: CompactionTrigger,
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
+    let manual = matches!(&trigger, CompactionTrigger::Manual);
     let _profile_guard = turn_context.turn_timing_state.begin_compaction();
     if turn_context.config.features.enabled(Feature::TokenBudget) {
         // Compaction is the reset request, so force a new context window
         // instead of consuming a pending `new_context` tool request.
-        crate::compact_token_budget::run_inline_auto_compact_task(
+        crate::compact_token_budget::run_inline_compact_task(
             Arc::clone(sess),
             step_context,
             initial_context_injection,
+            trigger,
         )
         .await?;
         return Ok(());
@@ -1173,48 +1196,39 @@ async fn run_auto_compact(
             .features
             .enabled(Feature::RemoteCompactionV2)
         {
-            emit_compact_metric(
-                &sess.services.session_telemetry,
-                "remote_v2",
-                /*manual*/ false,
-            );
-            run_inline_remote_auto_compact_task_v2(
+            emit_compact_metric(&sess.services.session_telemetry, "remote_v2", manual);
+            run_inline_remote_compact_task_v2(
                 Arc::clone(sess),
                 step_context,
                 fallback_step_context,
                 client_session,
                 initial_context_injection,
+                trigger,
                 reason,
                 phase,
             )
             .await?;
             return Ok(());
         }
-        emit_compact_metric(
-            &sess.services.session_telemetry,
-            "remote",
-            /*manual*/ false,
-        );
-        run_inline_remote_auto_compact_task(
+        emit_compact_metric(&sess.services.session_telemetry, "remote", manual);
+        run_inline_remote_compact_task(
             Arc::clone(sess),
             step_context,
             fallback_step_context,
             client_session.turn_state(),
             initial_context_injection,
+            trigger,
             reason,
             phase,
         )
         .await?;
     } else {
-        emit_compact_metric(
-            &sess.services.session_telemetry,
-            "local",
-            /*manual*/ false,
-        );
-        run_inline_auto_compact_task(
+        emit_compact_metric(&sess.services.session_telemetry, "local", manual);
+        run_inline_compact_task(
             Arc::clone(sess),
             Arc::clone(turn_context),
             initial_context_injection,
+            trigger,
             reason,
             phase,
         )
