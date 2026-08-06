@@ -111,10 +111,11 @@ pub(crate) async fn build_compaction_initial_context(
     }
 }
 
-pub(crate) async fn run_inline_auto_compact_task(
+pub(crate) async fn run_inline_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     initial_context_injection: InitialContextInjection,
+    trigger: CompactionTrigger,
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
@@ -135,7 +136,7 @@ pub(crate) async fn run_inline_auto_compact_task(
         turn_context,
         input,
         initial_context_injection,
-        CompactionTrigger::Auto,
+        trigger,
         reason,
         phase,
     )

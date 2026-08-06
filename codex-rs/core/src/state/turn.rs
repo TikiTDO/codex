@@ -92,6 +92,7 @@ pub(crate) struct TurnState {
     pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pub(crate) pending_input: TurnInputQueue,
     mailbox_delivery_phase: MailboxDeliveryPhase,
+    context_compaction_requested: bool,
     pub(crate) tool_calls: u64,
     pub(crate) has_memory_citation: bool,
     pub(crate) token_usage_at_turn_start: TokenUsage,
@@ -215,5 +216,13 @@ impl TurnState {
 
     pub(crate) fn set_mailbox_delivery_phase(&mut self, phase: MailboxDeliveryPhase) {
         self.mailbox_delivery_phase = phase;
+    }
+
+    pub(crate) fn request_context_compaction(&mut self) {
+        self.context_compaction_requested = true;
+    }
+
+    pub(crate) fn take_context_compaction_request(&mut self) -> bool {
+        std::mem::take(&mut self.context_compaction_requested)
     }
 }
