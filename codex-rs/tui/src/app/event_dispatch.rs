@@ -40,6 +40,17 @@ impl App {
                 self.handle_workspace_signal(app_server, request, reply)
                     .await;
             }
+            AppEvent::WorkspaceSignalBridgeStateChanged(state) => {
+                let message = match state {
+                    workspace_signal_bridge::WorkspaceSignalBridgeState::Unavailable => {
+                        "Workspace CC receiver unavailable; attention delivery is degraded. Retrying in the background."
+                    }
+                    workspace_signal_bridge::WorkspaceSignalBridgeState::Recovered => {
+                        "Workspace CC receiver recovered; attention delivery is available again."
+                    }
+                };
+                self.chat_widget.add_info_message(message.to_string(), None);
+            }
             AppEvent::ClearUi { name } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();

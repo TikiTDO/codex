@@ -226,6 +226,12 @@ pub(crate) enum WorkspaceSignalOutcome {
 
 pub(crate) type WorkspaceSignalResponseSender = mpsc::Sender<WorkspaceSignalOutcome>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkspaceSignalBridgeState {
+    Unavailable,
+    Recovered,
+}
+
 fn cc_poke_indicator(
     request: &WorkspaceSignalRequest,
     outcome: WorkspaceSignalOutcome,
@@ -346,7 +352,10 @@ fn spawn_bridge(program: &std::path::Path, runtime_session_id: &str) -> io::Resu
         .args(["stream", "--session-id", runtime_session_id])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        // A supervised bridge may restart repeatedly while its backing service is unavailable.
+        // Inheriting stderr writes those retries directly over the alternate-screen TUI. The
+        // supervisor below projects one deduplicated state transition through AppEvent instead.
+        .stderr(Stdio::null())
         .spawn()?;
     let Some(stdin) = child.stdin.take() else {
         let _ = child.kill();
@@ -374,6 +383,7 @@ fn supervise_bridge(
     child: Arc<Mutex<Option<Child>>>,
     stop: Arc<AtomicBool>,
 ) {
+    let mut unavailable = false;
     loop {
         run_bridge(
             stdout,
@@ -381,16 +391,23 @@ fn supervise_bridge(
             app_event_tx.clone(),
             &runtime_session_id,
             &stop,
+            &mut unavailable,
         );
         terminate_child(&child);
         if stop.load(Ordering::Acquire) {
             break;
         }
 
-        tracing::warn!(
-            %runtime_session_id,
-            "workspace signal bridge ended unexpectedly; restarting"
-        );
+        if !unavailable {
+            unavailable = true;
+            tracing::warn!(
+                %runtime_session_id,
+                "workspace signal bridge became unavailable; retrying in background"
+            );
+            app_event_tx.send(AppEvent::WorkspaceSignalBridgeStateChanged(
+                WorkspaceSignalBridgeState::Unavailable,
+            ));
+        }
         loop {
             if wait_for_restart(&stop) {
                 return;
@@ -471,6 +488,7 @@ fn run_bridge(
     app_event_tx: crate::app_event_sender::AppEventSender,
     expected_runtime_session_id: &str,
     stop: &AtomicBool,
+    unavailable: &mut bool,
 ) {
     let mut member = None;
     let mut protocol = None;
@@ -507,6 +525,16 @@ fn run_bridge(
                 protocol = Some(ready_protocol);
                 member = Some(ready_member);
                 workspace = Some(ready_workspace);
+                if *unavailable {
+                    *unavailable = false;
+                    tracing::info!(
+                        %expected_runtime_session_id,
+                        "workspace signal bridge recovered"
+                    );
+                    app_event_tx.send(AppEvent::WorkspaceSignalBridgeStateChanged(
+                        WorkspaceSignalBridgeState::Recovered,
+                    ));
+                }
             }
             Ok(BridgeFrame::Event {
                 event,
