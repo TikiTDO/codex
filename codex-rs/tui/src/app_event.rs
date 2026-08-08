@@ -274,9 +274,10 @@ pub(crate) enum AppEvent {
 
     /// Report one deduplicated receiver availability transition inside the TUI history instead of
     /// allowing a supervised bridge child to write raw diagnostics over the terminal screen.
-    WorkspaceSignalBridgeStateChanged(
-        crate::app::workspace_signal_bridge::WorkspaceSignalBridgeState,
-    ),
+    WorkspaceSignalBridgeStateChanged {
+        state: crate::app::workspace_signal_bridge::WorkspaceSignalBridgeState,
+        thread_id: codex_protocol::ThreadId,
+    },
 
     /// Clear the terminal UI (screen + scrollback), start a fresh session, and keep the
     /// previous chat resumable.

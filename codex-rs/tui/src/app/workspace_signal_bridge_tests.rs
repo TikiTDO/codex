@@ -403,6 +403,49 @@ fn pasted_attention_markup_has_no_structured_bridge_path() {
 }
 
 #[test]
+fn bridge_status_message_requires_the_current_exact_thread() {
+    let current = ThreadId::new();
+    let stale = ThreadId::new();
+    assert!(
+        workspace_signal_bridge_status_message(
+            Some(current),
+            current,
+            WorkspaceSignalBridgeState::Unavailable,
+        )
+        .is_some()
+    );
+    assert_eq!(
+        workspace_signal_bridge_status_message(
+            Some(current),
+            stale,
+            WorkspaceSignalBridgeState::Recovered,
+        ),
+        None
+    );
+    assert_eq!(
+        workspace_signal_bridge_status_message(
+            None,
+            current,
+            WorkspaceSignalBridgeState::Unavailable,
+        ),
+        None
+    );
+}
+
+#[test]
+fn only_content_neutral_bridge_hold_reasons_enter_diagnostics() {
+    assert_eq!(
+        public_bridge_hold_reason("CC SIGNAL BRIDGE HOLD: receiverUnavailable"),
+        Some("receiverUnavailable")
+    );
+    assert_eq!(public_bridge_hold_reason("database password=secret"), None);
+    assert_eq!(
+        public_bridge_hold_reason("CC SIGNAL BRIDGE HOLD: unsafe reason"),
+        None
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn bridge_restarts_after_child_eof_and_stops_with_its_owner() -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
@@ -419,8 +462,8 @@ fn bridge_restarts_after_child_eof_and_stops_with_its_owner() -> anyhow::Result<
     )?;
     fs::set_permissions(&program, fs::Permissions::from_mode(0o700))?;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let bridge =
-        WorkspaceSignalBridge::start_program(ThreadId::new(), AppEventSender::new(tx), program)?;
+    let thread_id = ThreadId::new();
+    let bridge = WorkspaceSignalBridge::start_program(thread_id, AppEventSender::new(tx), program)?;
 
     let deadline = Instant::now() + Duration::from_secs(3);
     while count_lines(&count) < 2 && Instant::now() < deadline {
@@ -432,7 +475,10 @@ fn bridge_restarts_after_child_eof_and_stops_with_its_owner() -> anyhow::Result<
     let state_deadline = Instant::now() + Duration::from_secs(3);
     while states.len() < 2 && Instant::now() < state_deadline {
         match rx.try_recv() {
-            Ok(AppEvent::WorkspaceSignalBridgeStateChanged(state)) => states.push(state),
+            Ok(AppEvent::WorkspaceSignalBridgeStateChanged {
+                state,
+                thread_id: event_thread_id,
+            }) => states.push((event_thread_id, state)),
             Ok(_) | Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                 thread::sleep(Duration::from_millis(25));
             }
@@ -442,8 +488,8 @@ fn bridge_restarts_after_child_eof_and_stops_with_its_owner() -> anyhow::Result<
     assert_eq!(
         states,
         vec![
-            WorkspaceSignalBridgeState::Unavailable,
-            WorkspaceSignalBridgeState::Recovered,
+            (thread_id, WorkspaceSignalBridgeState::Unavailable),
+            (thread_id, WorkspaceSignalBridgeState::Recovered),
         ]
     );
 

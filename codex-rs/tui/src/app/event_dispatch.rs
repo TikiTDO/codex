@@ -40,16 +40,18 @@ impl App {
                 self.handle_workspace_signal(app_server, request, reply)
                     .await;
             }
-            AppEvent::WorkspaceSignalBridgeStateChanged(state) => {
-                let message = match state {
-                    workspace_signal_bridge::WorkspaceSignalBridgeState::Unavailable => {
-                        "Workspace CC receiver unavailable; attention delivery is degraded. Retrying in the background."
-                    }
-                    workspace_signal_bridge::WorkspaceSignalBridgeState::Recovered => {
-                        "Workspace CC receiver recovered; attention delivery is available again."
-                    }
-                };
-                self.chat_widget.add_info_message(message.to_string(), None);
+            AppEvent::WorkspaceSignalBridgeStateChanged { state, thread_id } => {
+                if let Some(message) =
+                    workspace_signal_bridge::workspace_signal_bridge_status_message(
+                        self.primary_thread_id,
+                        thread_id,
+                        state,
+                    )
+                {
+                    self.chat_widget.add_info_message(message.to_string(), None);
+                } else {
+                    tracing::debug!(%thread_id, "ignored stale workspace signal bridge status");
+                }
             }
             AppEvent::ClearUi { name } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
