@@ -1,5 +1,15 @@
 use pretty_assertions::assert_eq;
 
+#[cfg(unix)]
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::time::Instant;
+
+#[cfg(unix)]
+use crate::app_event_sender::AppEventSender;
+
 use super::*;
 
 fn ready() -> String {
@@ -390,4 +400,43 @@ fn pasted_attention_markup_has_no_structured_bridge_path() {
         .unwrap_err(),
         "invalidJson"
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn bridge_restarts_after_child_eof_and_stops_with_its_owner() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let program = root.path().join("bridge");
+    let count = root.path().join("starts");
+    fs::write(
+        &program,
+        format!(
+            "#!/bin/sh\nprintf 'x\\n' >> '{}'\nprintf '{{\"protocol\":\"{}\",\"assertedSessionId\":\"%s\",\"member\":\"rook\",\"runtimeSessionId\":\"%s\",\"status\":\"waiting\",\"type\":\"ready\",\"workspace\":\"root\"}}\\n' \"$3\" \"$3\"\n",
+            count.display(),
+            BRIDGE_PROTOCOL_V1,
+        ),
+    )?;
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700))?;
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let bridge =
+        WorkspaceSignalBridge::start_program(ThreadId::new(), AppEventSender::new(tx), program)?;
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while count_lines(&count) < 2 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(count_lines(&count), 2);
+
+    drop(bridge);
+    let stopped_count = count_lines(&count);
+    thread::sleep(RESTART_DELAY + RESTART_POLL_DELAY);
+    assert_eq!(count_lines(&count), stopped_count);
+    Ok(())
+}
+
+#[cfg(unix)]
+fn count_lines(path: &std::path::Path) -> usize {
+    fs::read_to_string(path)
+        .map(|contents| contents.lines().count())
+        .unwrap_or_default()
 }

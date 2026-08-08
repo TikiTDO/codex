@@ -9,6 +9,8 @@ use std::io::BufReader;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Child;
+use std::process::ChildStdin;
+use std::process::ChildStdout;
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -42,6 +44,8 @@ const GLOBAL_CC_WORKSPACE: &str = "global-cc-bootstrap";
 const MAX_FRAME_BYTES: usize = 16 * 1024;
 const MAX_REFERENCE_BYTES: usize = 256;
 const MAX_TARGETS: usize = 16;
+const RESTART_DELAY: Duration = Duration::from_secs(1);
+const RESTART_POLL_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -285,36 +289,32 @@ impl WorkspaceSignalBridge {
             ));
         }
 
+        Self::start_program(thread_id, app_event_tx, program).map(Some)
+    }
+
+    fn start_program(
+        thread_id: ThreadId,
+        app_event_tx: crate::app_event_sender::AppEventSender,
+        program: PathBuf,
+    ) -> io::Result<Self> {
         let runtime_session_id = thread_id.to_string();
-        let mut child = Command::new(program)
-            .args(["stream", "--session-id", &runtime_session_id])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::other("workspace bridge stdin is unavailable"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("workspace bridge stdout is unavailable"))?;
+        let spawned = spawn_bridge(&program, &runtime_session_id)?;
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
-        let child = Arc::new(Mutex::new(Some(child)));
+        let child = Arc::new(Mutex::new(Some(spawned.child)));
         let worker_child = Arc::clone(&child);
         let worker = match thread::Builder::new()
             .name(format!("workspace-signal-{}", &thread_id.to_string()[..8]))
             .spawn(move || {
-                run_bridge(
-                    stdout,
-                    stdin,
+                supervise_bridge(
+                    program,
+                    spawned.stdout,
+                    spawned.stdin,
                     app_event_tx,
-                    &runtime_session_id,
-                    &worker_stop,
+                    runtime_session_id,
+                    worker_child,
+                    worker_stop,
                 );
-                terminate_child(&worker_child);
             }) {
             Ok(worker) => worker,
             Err(err) => {
@@ -322,17 +322,124 @@ impl WorkspaceSignalBridge {
                 return Err(err);
             }
         };
-        Ok(Some(Self {
+        Ok(Self {
             thread_id,
             child,
             stop,
             worker: Some(worker),
-        }))
+        })
     }
 
     pub(crate) fn serves(&self, thread_id: ThreadId) -> bool {
         self.thread_id == thread_id
     }
+}
+
+struct SpawnedBridge {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: ChildStdout,
+}
+
+fn spawn_bridge(program: &std::path::Path, runtime_session_id: &str) -> io::Result<SpawnedBridge> {
+    let mut child = Command::new(program)
+        .args(["stream", "--session-id", runtime_session_id])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    let Some(stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io::Error::other("workspace bridge stdin is unavailable"));
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io::Error::other("workspace bridge stdout is unavailable"));
+    };
+    Ok(SpawnedBridge {
+        child,
+        stdin,
+        stdout,
+    })
+}
+
+fn supervise_bridge(
+    program: PathBuf,
+    mut stdout: ChildStdout,
+    mut stdin: ChildStdin,
+    app_event_tx: crate::app_event_sender::AppEventSender,
+    runtime_session_id: String,
+    child: Arc<Mutex<Option<Child>>>,
+    stop: Arc<AtomicBool>,
+) {
+    loop {
+        run_bridge(
+            stdout,
+            stdin,
+            app_event_tx.clone(),
+            &runtime_session_id,
+            &stop,
+        );
+        terminate_child(&child);
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+
+        tracing::warn!(
+            %runtime_session_id,
+            "workspace signal bridge ended unexpectedly; restarting"
+        );
+        loop {
+            if wait_for_restart(&stop) {
+                return;
+            }
+            match spawn_bridge(&program, &runtime_session_id) {
+                Ok(spawned) => {
+                    let Ok(mut active_child) = child.lock() else {
+                        tracing::warn!(
+                            "workspace signal bridge child lock was poisoned during restart"
+                        );
+                        let mut spawned_child = spawned.child;
+                        let _ = spawned_child.kill();
+                        let _ = spawned_child.wait();
+                        return;
+                    };
+                    if stop.load(Ordering::Acquire) {
+                        let mut spawned_child = spawned.child;
+                        let _ = spawned_child.kill();
+                        let _ = spawned_child.wait();
+                        return;
+                    }
+                    *active_child = Some(spawned.child);
+                    stdout = spawned.stdout;
+                    stdin = spawned.stdin;
+                    break;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        %runtime_session_id,
+                        %err,
+                        "failed to restart workspace signal bridge"
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn wait_for_restart(stop: &AtomicBool) -> bool {
+    let mut waited = Duration::ZERO;
+    while waited < RESTART_DELAY {
+        if stop.load(Ordering::Acquire) {
+            return true;
+        }
+        let delay = (RESTART_DELAY - waited).min(RESTART_POLL_DELAY);
+        thread::sleep(delay);
+        waited += delay;
+    }
+    stop.load(Ordering::Acquire)
 }
 
 impl Drop for WorkspaceSignalBridge {
