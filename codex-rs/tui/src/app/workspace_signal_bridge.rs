@@ -896,6 +896,42 @@ fn bounded_sequence(value: Option<&str>) -> Result<u64, &'static str> {
 }
 
 impl App {
+    pub(super) fn handle_workspace_signal_bridge_state_changed(
+        &mut self,
+        thread_id: ThreadId,
+        state: WorkspaceSignalBridgeState,
+    ) {
+        let Some(message) =
+            workspace_signal_bridge_status_message(self.primary_thread_id, thread_id, state)
+        else {
+            tracing::debug!(%thread_id, "ignored stale workspace signal bridge status");
+            return;
+        };
+        if self.current_displayed_thread_id() != Some(thread_id) {
+            self.pending_workspace_signal_bridge_states.push_back(state);
+            return;
+        }
+        self.chat_widget
+            .add_info_message(message.to_string(), /*hint*/ None);
+    }
+
+    pub(super) fn surface_pending_workspace_signal_bridge_states(&mut self, thread_id: ThreadId) {
+        if self.primary_thread_id != Some(thread_id)
+            || self.current_displayed_thread_id() != Some(thread_id)
+        {
+            return;
+        }
+        for state in std::mem::take(&mut self.pending_workspace_signal_bridge_states) {
+            let Some(message) =
+                workspace_signal_bridge_status_message(self.primary_thread_id, thread_id, state)
+            else {
+                continue;
+            };
+            self.chat_widget
+                .add_info_message(message.to_string(), /*hint*/ None);
+        }
+    }
+
     pub(super) fn start_workspace_signal_bridge(&mut self, thread_id: ThreadId) {
         if self
             .workspace_signal_bridge
@@ -904,6 +940,7 @@ impl App {
         {
             return;
         }
+        self.pending_workspace_signal_bridge_states.clear();
         self.workspace_signal_bridge = None;
         match WorkspaceSignalBridge::start(thread_id, self.app_event_tx.clone()) {
             Ok(bridge) => self.workspace_signal_bridge = bridge,

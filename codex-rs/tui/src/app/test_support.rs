@@ -64,6 +64,7 @@ pub(super) async fn make_test_app() -> App {
         primary_thread_id: None,
         poke_listener: None,
         workspace_signal_bridge: None,
+        pending_workspace_signal_bridge_states: VecDeque::new(),
         last_subagent_backfill_attempt: None,
         primary_session_configured: None,
         pending_primary_events: VecDeque::new(),

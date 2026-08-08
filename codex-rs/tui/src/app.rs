@@ -587,6 +587,8 @@ pub(crate) struct App {
     primary_thread_id: Option<ThreadId>,
     poke_listener: Option<poke::PokeListener>,
     workspace_signal_bridge: Option<workspace_signal_bridge::WorkspaceSignalBridge>,
+    pending_workspace_signal_bridge_states:
+        VecDeque<workspace_signal_bridge::WorkspaceSignalBridgeState>,
     last_subagent_backfill_attempt: Option<ThreadId>,
     primary_session_configured: Option<ThreadSessionState>,
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
@@ -1084,6 +1086,7 @@ See the Codex keymap documentation for supported actions and examples."
             primary_thread_id: None,
             poke_listener: None,
             workspace_signal_bridge: None,
+            pending_workspace_signal_bridge_states: VecDeque::new(),
             last_subagent_backfill_attempt: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),

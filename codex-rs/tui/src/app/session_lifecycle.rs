@@ -536,6 +536,7 @@ impl App {
 
         self.reset_for_thread_switch(tui)?;
         self.replay_thread_snapshot(snapshot, !is_replay_only);
+        self.surface_pending_workspace_signal_bridge_states(thread_id);
         if is_replay_only {
             let message = if attached_replay_only {
                 format!(
@@ -592,6 +593,7 @@ impl App {
         self.primary_thread_id = None;
         self.poke_listener = None;
         self.workspace_signal_bridge = None;
+        self.pending_workspace_signal_bridge_states.clear();
         self.last_subagent_backfill_attempt = None;
         self.primary_session_configured = None;
         self.pending_primary_events.clear();

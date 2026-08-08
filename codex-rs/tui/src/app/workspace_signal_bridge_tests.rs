@@ -1,5 +1,6 @@
 use pretty_assertions::assert_eq;
 
+use std::collections::VecDeque;
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
@@ -429,6 +430,69 @@ fn bridge_status_message_requires_the_current_exact_thread() {
             WorkspaceSignalBridgeState::Unavailable,
         ),
         None
+    );
+}
+
+#[tokio::test]
+async fn bridge_status_waits_for_its_originating_thread_to_be_displayed() {
+    let mut app = crate::app::test_support::make_test_app().await;
+    let primary = ThreadId::new();
+    let side = ThreadId::new();
+    app.primary_thread_id = Some(primary);
+    app.active_thread_id = Some(side);
+
+    app.handle_workspace_signal_bridge_state_changed(
+        primary,
+        WorkspaceSignalBridgeState::Unavailable,
+    );
+    app.handle_workspace_signal_bridge_state_changed(
+        primary,
+        WorkspaceSignalBridgeState::Recovered,
+    );
+    assert_eq!(
+        app.pending_workspace_signal_bridge_states,
+        VecDeque::from([
+            WorkspaceSignalBridgeState::Unavailable,
+            WorkspaceSignalBridgeState::Recovered,
+        ])
+    );
+
+    app.surface_pending_workspace_signal_bridge_states(primary);
+    assert_eq!(
+        app.pending_workspace_signal_bridge_states,
+        VecDeque::from([
+            WorkspaceSignalBridgeState::Unavailable,
+            WorkspaceSignalBridgeState::Recovered,
+        ])
+    );
+
+    app.active_thread_id = Some(primary);
+    app.surface_pending_workspace_signal_bridge_states(primary);
+    assert_eq!(app.pending_workspace_signal_bridge_states, VecDeque::new());
+}
+
+#[test]
+fn bridge_status_messages_snapshot() {
+    let thread_id = ThreadId::new();
+    let unavailable = workspace_signal_bridge_status_message(
+        Some(thread_id),
+        thread_id,
+        WorkspaceSignalBridgeState::Unavailable,
+    )
+    .expect("unavailable status");
+    let recovered = workspace_signal_bridge_status_message(
+        Some(thread_id),
+        thread_id,
+        WorkspaceSignalBridgeState::Recovered,
+    )
+    .expect("recovered status");
+
+    insta::assert_snapshot!(
+        format!("{unavailable}\n{recovered}"),
+        @r###"
+        Workspace CC receiver unavailable; attention delivery is degraded. Retrying in the background.
+        Workspace CC receiver recovered; attention delivery is available again.
+        "###
     );
 }
 

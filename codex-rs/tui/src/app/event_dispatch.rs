@@ -41,17 +41,7 @@ impl App {
                     .await;
             }
             AppEvent::WorkspaceSignalBridgeStateChanged { state, thread_id } => {
-                if let Some(message) =
-                    workspace_signal_bridge::workspace_signal_bridge_status_message(
-                        self.primary_thread_id,
-                        thread_id,
-                        state,
-                    )
-                {
-                    self.chat_widget.add_info_message(message.to_string(), None);
-                } else {
-                    tracing::debug!(%thread_id, "ignored stale workspace signal bridge status");
-                }
+                self.handle_workspace_signal_bridge_state_changed(thread_id, state);
             }
             AppEvent::ClearUi { name } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
