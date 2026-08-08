@@ -443,6 +443,10 @@ fn only_content_neutral_bridge_hold_reasons_enter_diagnostics() {
         public_bridge_hold_reason("CC SIGNAL BRIDGE HOLD: unsafe reason"),
         None
     );
+    assert_eq!(
+        public_bridge_hold_reason("CC SIGNAL BRIDGE HOLD: sk-proj-123456789"),
+        None
+    );
 }
 
 #[test]

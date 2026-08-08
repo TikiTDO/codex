@@ -453,7 +453,29 @@ fn public_bridge_hold_reason(line: &str) -> Option<&str> {
     let reason = ["CC SIGNAL BRIDGE HOLD: ", "WORKSPACE SIGNAL BRIDGE HOLD: "]
         .into_iter()
         .find_map(|prefix| line.strip_prefix(prefix))?;
-    is_safe_atom(reason, 64).then_some(reason)
+    match reason {
+        "databaseRouteInvalid"
+        | "databaseRouteUnavailable"
+        | "exactSessionInvalid"
+        | "exactSessionMismatch"
+        | "exactSessionUnavailable"
+        | "momentumReceiptInvalid"
+        | "pollMillisInvalid"
+        | "receiverBridgeAlreadyActive"
+        | "receiverBridgeNotJoined"
+        | "receiverCueMismatch"
+        | "receiverCueNotObserved"
+        | "receiverCueUnresolved"
+        | "receiverJoinTimeInvalid"
+        | "receiverProtocolInvalid"
+        | "receiverTermNotActive"
+        | "receiverUnavailable"
+        | "resolutionFieldsInvalid"
+        | "resolutionInputClosed"
+        | "resolutionInvalid"
+        | "resolutionInvalidJson" => Some(reason),
+        _ => None,
+    }
 }
 
 fn supervise_bridge(
