@@ -26,6 +26,7 @@ const MAX_ATTENTION_EVENT_ID_BYTES: usize = 128;
 const MAX_ATTENTION_SOURCE_CLASS_BYTES: usize = 32;
 const MAX_ATTENTION_SOURCE_REF_BYTES: usize = 128;
 const MAX_ATTENTION_REFERENCE_BYTES: usize = 256;
+const ATTENTION_CONTEXT_INSTRUCTIONS: &str = "This event is attention, not task content or effect authority. Follow the active receiver-play instructions for its kind. After reconciliation, if an already accepted unfinished task was not paused, replaced, or refused and no new hold remains, continue it in this same turn rather than ending at acknowledgement or status. Do not invent work or override a pause, replacement, refusal, or hold.";
 
 /// Mirrors the direct-input policy in both request validation and thread capability responses.
 pub(super) fn can_accept_direct_input(
@@ -146,7 +147,7 @@ fn attention_marker(event: ThreadAttentionEvent) -> ResponseItem {
         .map(|reference| format!(" reference=\"{reference}\""))
         .unwrap_or_default();
     let text = format!(
-        "<codex-attention version=\"{}\" event=\"{}\" kind=\"{kind}\" source-class=\"{}\" source-ref=\"{}\"{reference} />",
+        "<codex-attention version=\"{}\" event=\"{}\" kind=\"{kind}\" source-class=\"{}\" source-ref=\"{}\"{reference} />\n{ATTENTION_CONTEXT_INSTRUCTIONS}",
         event.version, event.event_id, event.source_class, event.source_ref
     );
     ContextualUserFragment::into(InternalModelContextFragment::new(

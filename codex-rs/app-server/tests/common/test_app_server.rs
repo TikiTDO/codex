@@ -84,6 +84,7 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SkillsExtraRootsSetParams;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::ThreadArchiveParams;
+use codex_app_server_protocol::ThreadAttentionParams;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadDeleteParams;
 use codex_app_server_protocol::ThreadForkParams;
@@ -461,6 +462,15 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/start", params).await
+    }
+
+    /// Send a `thread/attention` JSON-RPC request.
+    pub async fn send_thread_attention_request(
+        &mut self,
+        params: ThreadAttentionParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/attention", params).await
     }
 
     /// Sends a `thread/start` request selecting the builder's automatic
