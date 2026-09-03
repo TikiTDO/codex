@@ -40,6 +40,9 @@ impl App {
                 self.handle_workspace_signal(app_server, request, reply)
                     .await;
             }
+            AppEvent::WorkspaceSignalBridgeStateChanged { state, thread_id } => {
+                self.handle_workspace_signal_bridge_state_changed(thread_id, state);
+            }
             AppEvent::ClearUi { name } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();

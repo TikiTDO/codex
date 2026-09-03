@@ -1,5 +1,6 @@
 use pretty_assertions::assert_eq;
 
+use std::collections::VecDeque;
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
@@ -403,6 +404,116 @@ fn pasted_attention_markup_has_no_structured_bridge_path() {
 }
 
 #[test]
+fn bridge_status_message_requires_the_current_exact_thread() {
+    let current = ThreadId::new();
+    let stale = ThreadId::new();
+    assert!(
+        workspace_signal_bridge_status_message(
+            Some(current),
+            current,
+            WorkspaceSignalBridgeState::Unavailable,
+        )
+        .is_some()
+    );
+    assert_eq!(
+        workspace_signal_bridge_status_message(
+            Some(current),
+            stale,
+            WorkspaceSignalBridgeState::Recovered,
+        ),
+        None
+    );
+    assert_eq!(
+        workspace_signal_bridge_status_message(
+            None,
+            current,
+            WorkspaceSignalBridgeState::Unavailable,
+        ),
+        None
+    );
+}
+
+#[tokio::test]
+async fn bridge_status_waits_for_its_originating_thread_to_be_displayed() {
+    let mut app = crate::app::test_support::make_test_app().await;
+    let primary = ThreadId::new();
+    let side = ThreadId::new();
+    app.primary_thread_id = Some(primary);
+    app.active_thread_id = Some(side);
+
+    app.handle_workspace_signal_bridge_state_changed(
+        primary,
+        WorkspaceSignalBridgeState::Unavailable,
+    );
+    app.handle_workspace_signal_bridge_state_changed(
+        primary,
+        WorkspaceSignalBridgeState::Recovered,
+    );
+    assert_eq!(
+        app.pending_workspace_signal_bridge_states,
+        VecDeque::from([
+            WorkspaceSignalBridgeState::Unavailable,
+            WorkspaceSignalBridgeState::Recovered,
+        ])
+    );
+
+    app.surface_pending_workspace_signal_bridge_states(primary);
+    assert_eq!(
+        app.pending_workspace_signal_bridge_states,
+        VecDeque::from([
+            WorkspaceSignalBridgeState::Unavailable,
+            WorkspaceSignalBridgeState::Recovered,
+        ])
+    );
+
+    app.active_thread_id = Some(primary);
+    app.surface_pending_workspace_signal_bridge_states(primary);
+    assert_eq!(app.pending_workspace_signal_bridge_states, VecDeque::new());
+}
+
+#[test]
+fn bridge_status_messages_snapshot() {
+    let thread_id = ThreadId::new();
+    let unavailable = workspace_signal_bridge_status_message(
+        Some(thread_id),
+        thread_id,
+        WorkspaceSignalBridgeState::Unavailable,
+    )
+    .expect("unavailable status");
+    let recovered = workspace_signal_bridge_status_message(
+        Some(thread_id),
+        thread_id,
+        WorkspaceSignalBridgeState::Recovered,
+    )
+    .expect("recovered status");
+
+    insta::assert_snapshot!(
+        format!("{unavailable}\n{recovered}"),
+        @r###"
+        Workspace CC receiver unavailable; attention delivery is degraded. Retrying in the background.
+        Workspace CC receiver recovered; attention delivery is available again.
+        "###
+    );
+}
+
+#[test]
+fn only_content_neutral_bridge_hold_reasons_enter_diagnostics() {
+    assert_eq!(
+        public_bridge_hold_reason("CC SIGNAL BRIDGE HOLD: receiverUnavailable"),
+        Some("receiverUnavailable")
+    );
+    assert_eq!(public_bridge_hold_reason("database password=secret"), None);
+    assert_eq!(
+        public_bridge_hold_reason("CC SIGNAL BRIDGE HOLD: unsafe reason"),
+        None
+    );
+    assert_eq!(
+        public_bridge_hold_reason("CC SIGNAL BRIDGE HOLD: sk-proj-123456789"),
+        None
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn bridge_restarts_after_child_eof_and_stops_with_its_owner() -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
@@ -411,21 +522,44 @@ fn bridge_restarts_after_child_eof_and_stops_with_its_owner() -> anyhow::Result<
     fs::write(
         &program,
         format!(
-            "#!/bin/sh\nprintf 'x\\n' >> '{}'\nprintf '{{\"protocol\":\"{}\",\"assertedSessionId\":\"%s\",\"member\":\"rook\",\"runtimeSessionId\":\"%s\",\"status\":\"waiting\",\"type\":\"ready\",\"workspace\":\"root\"}}\\n' \"$3\" \"$3\"\n",
+            "#!/bin/sh\nprintf 'x\\n' >> '{}'\nprintf 'bridge child diagnostic\\n' >&2\nprintf '{{\"protocol\":\"{}\",\"assertedSessionId\":\"%s\",\"member\":\"rook\",\"runtimeSessionId\":\"%s\",\"status\":\"waiting\",\"type\":\"ready\",\"workspace\":\"root\"}}\\n' \"$3\" \"$3\"\nif [ \"$(wc -l < '{}')\" -gt 1 ]; then exec cat >/dev/null; fi\n",
             count.display(),
             BRIDGE_PROTOCOL_V1,
+            count.display(),
         ),
     )?;
     fs::set_permissions(&program, fs::Permissions::from_mode(0o700))?;
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let bridge =
-        WorkspaceSignalBridge::start_program(ThreadId::new(), AppEventSender::new(tx), program)?;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let thread_id = ThreadId::new();
+    let bridge = WorkspaceSignalBridge::start_program(thread_id, AppEventSender::new(tx), program)?;
 
     let deadline = Instant::now() + Duration::from_secs(3);
     while count_lines(&count) < 2 && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(25));
     }
     assert_eq!(count_lines(&count), 2);
+
+    let mut states = Vec::new();
+    let state_deadline = Instant::now() + Duration::from_secs(3);
+    while states.len() < 2 && Instant::now() < state_deadline {
+        match rx.try_recv() {
+            Ok(AppEvent::WorkspaceSignalBridgeStateChanged {
+                state,
+                thread_id: event_thread_id,
+            }) => states.push((event_thread_id, state)),
+            Ok(_) | Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+        }
+    }
+    assert_eq!(
+        states,
+        vec![
+            (thread_id, WorkspaceSignalBridgeState::Unavailable),
+            (thread_id, WorkspaceSignalBridgeState::Recovered),
+        ]
+    );
 
     drop(bridge);
     let stopped_count = count_lines(&count);

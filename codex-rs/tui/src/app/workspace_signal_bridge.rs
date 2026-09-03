@@ -9,6 +9,7 @@ use std::io::BufReader;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Child;
+use std::process::ChildStderr;
 use std::process::ChildStdin;
 use std::process::ChildStdout;
 use std::process::Command;
@@ -42,6 +43,7 @@ const BRIDGE_PROTOCOL_V2: &str = "observatory.workspace_signal_bridge.v2";
 const ATTENTION_VERSION: u8 = 1;
 const GLOBAL_CC_WORKSPACE: &str = "global-cc-bootstrap";
 const MAX_FRAME_BYTES: usize = 16 * 1024;
+const MAX_DIAGNOSTIC_BYTES: usize = 4 * 1024;
 const MAX_REFERENCE_BYTES: usize = 256;
 const MAX_TARGETS: usize = 16;
 const RESTART_DELAY: Duration = Duration::from_secs(1);
@@ -226,6 +228,30 @@ pub(crate) enum WorkspaceSignalOutcome {
 
 pub(crate) type WorkspaceSignalResponseSender = mpsc::Sender<WorkspaceSignalOutcome>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkspaceSignalBridgeState {
+    Unavailable,
+    Recovered,
+}
+
+pub(crate) fn workspace_signal_bridge_status_message(
+    current_thread_id: Option<ThreadId>,
+    event_thread_id: ThreadId,
+    state: WorkspaceSignalBridgeState,
+) -> Option<&'static str> {
+    if current_thread_id != Some(event_thread_id) {
+        return None;
+    }
+    Some(match state {
+        WorkspaceSignalBridgeState::Unavailable => {
+            "Workspace CC receiver unavailable; attention delivery is degraded. Retrying in the background."
+        }
+        WorkspaceSignalBridgeState::Recovered => {
+            "Workspace CC receiver recovered; attention delivery is available again."
+        }
+    })
+}
+
 fn cc_poke_indicator(
     request: &WorkspaceSignalRequest,
     outcome: WorkspaceSignalOutcome,
@@ -310,7 +336,9 @@ impl WorkspaceSignalBridge {
                     program,
                     spawned.stdout,
                     spawned.stdin,
+                    spawned.diagnostic_worker,
                     app_event_tx,
+                    thread_id,
                     runtime_session_id,
                     worker_child,
                     worker_stop,
@@ -337,8 +365,16 @@ impl WorkspaceSignalBridge {
 
 struct SpawnedBridge {
     child: Child,
+    diagnostic_worker: thread::JoinHandle<BridgeDiagnostic>,
     stdin: ChildStdin,
     stdout: ChildStdout,
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+struct BridgeDiagnostic {
+    bytes: usize,
+    public_reason: Option<String>,
+    truncated: bool,
 }
 
 fn spawn_bridge(program: &std::path::Path, runtime_session_id: &str) -> io::Result<SpawnedBridge> {
@@ -346,7 +382,10 @@ fn spawn_bridge(program: &std::path::Path, runtime_session_id: &str) -> io::Resu
         .args(["stream", "--session-id", runtime_session_id])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        // A supervised bridge may restart repeatedly while its backing service is unavailable.
+        // Inheriting stderr writes those retries directly over the alternate-screen TUI. Drain it
+        // privately so the supervisor can retain bounded content-neutral evidence instead.
+        .stderr(Stdio::piped())
         .spawn()?;
     let Some(stdin) = child.stdin.take() else {
         let _ = child.kill();
@@ -358,39 +397,129 @@ fn spawn_bridge(program: &std::path::Path, runtime_session_id: &str) -> io::Resu
         let _ = child.wait();
         return Err(io::Error::other("workspace bridge stdout is unavailable"));
     };
+    let Some(stderr) = child.stderr.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io::Error::other("workspace bridge stderr is unavailable"));
+    };
+    let diagnostic_worker = match thread::Builder::new()
+        .name(format!(
+            "workspace-signal-diagnostic-{}",
+            &runtime_session_id[..8]
+        ))
+        .spawn(move || collect_bridge_diagnostic(stderr))
+    {
+        Ok(worker) => worker,
+        Err(err) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err);
+        }
+    };
     Ok(SpawnedBridge {
         child,
+        diagnostic_worker,
         stdin,
         stdout,
     })
+}
+
+fn collect_bridge_diagnostic(mut stderr: ChildStderr) -> BridgeDiagnostic {
+    let mut retained = Vec::with_capacity(MAX_DIAGNOSTIC_BYTES);
+    let mut bytes = 0usize;
+    let mut buffer = [0u8; 1024];
+    loop {
+        let read = match io::Read::read(&mut stderr, &mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        bytes = bytes.saturating_add(read);
+        let remaining = MAX_DIAGNOSTIC_BYTES.saturating_sub(retained.len());
+        retained.extend_from_slice(&buffer[..read.min(remaining)]);
+    }
+    let public_reason = std::str::from_utf8(&retained)
+        .ok()
+        .and_then(|text| text.lines().next())
+        .and_then(public_bridge_hold_reason)
+        .map(str::to_string);
+    BridgeDiagnostic {
+        bytes,
+        public_reason,
+        truncated: bytes > retained.len(),
+    }
+}
+
+fn public_bridge_hold_reason(line: &str) -> Option<&str> {
+    let reason = ["CC SIGNAL BRIDGE HOLD: ", "WORKSPACE SIGNAL BRIDGE HOLD: "]
+        .into_iter()
+        .find_map(|prefix| line.strip_prefix(prefix))?;
+    match reason {
+        "databaseRouteInvalid"
+        | "databaseRouteUnavailable"
+        | "exactSessionInvalid"
+        | "exactSessionMismatch"
+        | "exactSessionUnavailable"
+        | "momentumReceiptInvalid"
+        | "pollMillisInvalid"
+        | "receiverBridgeAlreadyActive"
+        | "receiverBridgeNotJoined"
+        | "receiverCueMismatch"
+        | "receiverCueNotObserved"
+        | "receiverCueUnresolved"
+        | "receiverJoinTimeInvalid"
+        | "receiverProtocolInvalid"
+        | "receiverTermNotActive"
+        | "receiverUnavailable"
+        | "resolutionFieldsInvalid"
+        | "resolutionInputClosed"
+        | "resolutionInvalid"
+        | "resolutionInvalidJson" => Some(reason),
+        _ => None,
+    }
 }
 
 fn supervise_bridge(
     program: PathBuf,
     mut stdout: ChildStdout,
     mut stdin: ChildStdin,
+    mut diagnostic_worker: thread::JoinHandle<BridgeDiagnostic>,
     app_event_tx: crate::app_event_sender::AppEventSender,
+    thread_id: ThreadId,
     runtime_session_id: String,
     child: Arc<Mutex<Option<Child>>>,
     stop: Arc<AtomicBool>,
 ) {
+    let mut unavailable = false;
     loop {
         run_bridge(
             stdout,
             stdin,
             app_event_tx.clone(),
             &runtime_session_id,
+            &thread_id,
             &stop,
+            &mut unavailable,
         );
         terminate_child(&child);
+        let diagnostic = diagnostic_worker.join().unwrap_or_default();
         if stop.load(Ordering::Acquire) {
             break;
         }
 
-        tracing::warn!(
-            %runtime_session_id,
-            "workspace signal bridge ended unexpectedly; restarting"
-        );
+        if !unavailable {
+            unavailable = true;
+            tracing::warn!(
+                %runtime_session_id,
+                bridge_reason = diagnostic.public_reason.as_deref().unwrap_or("unavailable"),
+                diagnostic_bytes = diagnostic.bytes,
+                diagnostic_truncated = diagnostic.truncated,
+                "workspace signal bridge became unavailable; retrying in background"
+            );
+            app_event_tx.send(AppEvent::WorkspaceSignalBridgeStateChanged {
+                state: WorkspaceSignalBridgeState::Unavailable,
+                thread_id,
+            });
+        }
         loop {
             if wait_for_restart(&stop) {
                 return;
@@ -415,6 +544,7 @@ fn supervise_bridge(
                     *active_child = Some(spawned.child);
                     stdout = spawned.stdout;
                     stdin = spawned.stdin;
+                    diagnostic_worker = spawned.diagnostic_worker;
                     break;
                 }
                 Err(err) => {
@@ -470,7 +600,9 @@ fn run_bridge(
     mut stdin: impl Write,
     app_event_tx: crate::app_event_sender::AppEventSender,
     expected_runtime_session_id: &str,
+    event_thread_id: &ThreadId,
     stop: &AtomicBool,
+    unavailable: &mut bool,
 ) {
     let mut member = None;
     let mut protocol = None;
@@ -507,6 +639,17 @@ fn run_bridge(
                 protocol = Some(ready_protocol);
                 member = Some(ready_member);
                 workspace = Some(ready_workspace);
+                if *unavailable {
+                    *unavailable = false;
+                    tracing::info!(
+                        %expected_runtime_session_id,
+                        "workspace signal bridge recovered"
+                    );
+                    app_event_tx.send(AppEvent::WorkspaceSignalBridgeStateChanged {
+                        state: WorkspaceSignalBridgeState::Recovered,
+                        thread_id: *event_thread_id,
+                    });
+                }
             }
             Ok(BridgeFrame::Event {
                 event,
@@ -753,6 +896,42 @@ fn bounded_sequence(value: Option<&str>) -> Result<u64, &'static str> {
 }
 
 impl App {
+    pub(super) fn handle_workspace_signal_bridge_state_changed(
+        &mut self,
+        thread_id: ThreadId,
+        state: WorkspaceSignalBridgeState,
+    ) {
+        let Some(message) =
+            workspace_signal_bridge_status_message(self.primary_thread_id, thread_id, state)
+        else {
+            tracing::debug!(%thread_id, "ignored stale workspace signal bridge status");
+            return;
+        };
+        if self.current_displayed_thread_id() != Some(thread_id) {
+            self.pending_workspace_signal_bridge_states.push_back(state);
+            return;
+        }
+        self.chat_widget
+            .add_info_message(message.to_string(), /*hint*/ None);
+    }
+
+    pub(super) fn surface_pending_workspace_signal_bridge_states(&mut self, thread_id: ThreadId) {
+        if self.primary_thread_id != Some(thread_id)
+            || self.current_displayed_thread_id() != Some(thread_id)
+        {
+            return;
+        }
+        for state in std::mem::take(&mut self.pending_workspace_signal_bridge_states) {
+            let Some(message) =
+                workspace_signal_bridge_status_message(self.primary_thread_id, thread_id, state)
+            else {
+                continue;
+            };
+            self.chat_widget
+                .add_info_message(message.to_string(), /*hint*/ None);
+        }
+    }
+
     pub(super) fn start_workspace_signal_bridge(&mut self, thread_id: ThreadId) {
         if self
             .workspace_signal_bridge
@@ -761,6 +940,7 @@ impl App {
         {
             return;
         }
+        self.pending_workspace_signal_bridge_states.clear();
         self.workspace_signal_bridge = None;
         match WorkspaceSignalBridge::start(thread_id, self.app_event_tx.clone()) {
             Ok(bridge) => self.workspace_signal_bridge = bridge,
