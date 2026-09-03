@@ -1426,6 +1426,9 @@ pub enum EventMsg {
     /// Updated long-running goal metadata for the thread.
     ThreadGoalUpdated(ThreadGoalUpdatedEvent),
 
+    /// A long-running goal was removed from the thread.
+    ThreadGoalCleared(ThreadGoalClearedEvent),
+
     /// A durable thread-scoped user-message queue changed.
     ThreadQueueChanged(ThreadQueueChangedEvent),
 
@@ -3993,6 +3996,16 @@ pub struct ThreadGoalUpdatedEvent {
     #[ts(optional)]
     pub turn_id: Option<String>,
     pub goal: ThreadGoal,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "protocol/")]
+pub struct ThreadGoalClearedEvent {
+    pub thread_id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]

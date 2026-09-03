@@ -13,6 +13,7 @@ use codex_protocol::protocol::ThreadGoalUpdatedEvent;
 use codex_protocol::protocol::validate_thread_goal_objective;
 use codex_rollout::RolloutItem;
 
+use crate::analytics::GoalEventAttribution;
 use crate::runtime::GoalRuntimeHandle;
 use crate::runtime::PreviousGoalSnapshot;
 use crate::tool::fill_empty_thread_preview_if_possible;
@@ -294,6 +295,41 @@ impl GoalService {
         state_db: &codex_state::StateRuntime,
         thread_id: ThreadId,
     ) -> Result<bool, GoalServiceError> {
+        Ok(self
+            .clear_thread_goal_inner(
+                state_db,
+                thread_id,
+                GoalEventAttribution::NoTurn,
+                /*progress_event_id*/ None,
+            )
+            .await?
+            .is_some())
+    }
+
+    pub(crate) async fn clear_thread_goal_from_turn(
+        &self,
+        state_db: &codex_state::StateRuntime,
+        thread_id: ThreadId,
+        turn_id: &str,
+        event_id: &str,
+    ) -> Result<Option<codex_state::ThreadGoal>, GoalServiceError> {
+        self.clear_thread_goal_inner(
+            state_db,
+            thread_id,
+            GoalEventAttribution::Turn(turn_id),
+            Some(event_id),
+        )
+        .await
+    }
+
+    async fn clear_thread_goal_inner(
+        &self,
+        state_db: &codex_state::StateRuntime,
+        thread_id: ThreadId,
+        attribution: GoalEventAttribution<'_>,
+        progress_event_id: Option<&str>,
+    ) -> Result<Option<codex_state::ThreadGoal>, GoalServiceError> {
+        let clear_started_from_turn = matches!(&attribution, GoalEventAttribution::Turn(_));
         let runtime = self.runtime_for_thread(thread_id);
         // Hold this through the prepare/write window so idle continuation cannot
         // launch from goal state that this external mutation is about to change.
@@ -306,33 +342,63 @@ impl GoalService {
             ),
             None => None,
         };
-        if let Some(runtime) = runtime.as_ref()
-            && let Err(err) = runtime.prepare_external_goal_mutation().await
-        {
-            tracing::warn!("failed to prepare external goal mutation: {err}");
+        if let Some(runtime) = runtime.as_ref() {
+            let result = match progress_event_id {
+                Some(event_id) => runtime.prepare_goal_mutation(event_id).await,
+                None => runtime.prepare_external_goal_mutation().await,
+            };
+            if let Err(err) = result {
+                if progress_event_id.is_some() {
+                    return Err(GoalServiceError::Internal(format!(
+                        "failed to account goal progress before clearing: {err}"
+                    )));
+                }
+                tracing::warn!("failed to prepare external goal mutation: {err}");
+            }
         }
 
+        let Some(expected_goal) = state_db
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+            })?
+        else {
+            return Ok(None);
+        };
         let cleared_goal = state_db
             .thread_goals()
-            .delete_thread_goal(thread_id)
+            .delete_thread_goal_if_matches(thread_id, expected_goal.goal_id.as_str())
             .await
             .map_err(|err| {
                 GoalServiceError::Internal(format!("failed to clear thread goal: {err}"))
+            })?
+            .ok_or_else(|| {
+                GoalServiceError::InvalidRequest(format!(
+                    "cannot clear goal for thread {thread_id}: the goal changed while clearing"
+                ))
             })?;
-        let cleared = cleared_goal.is_some();
-        if cleared && let Some(runtime) = runtime.as_ref() {
-            runtime.invalidate_turn_lineage().await;
+        if let Some(runtime) = runtime.as_ref() {
+            // An external clear invalidates any continuation lineage it races
+            // with. A clear_goal call is already part of the active turn, so
+            // invalidating that same turn would erase its trusted root before
+            // the tool completion and turn analytics are recorded.
+            if !clear_started_from_turn {
+                runtime.invalidate_turn_lineage().await;
+            }
+            if let Err(err) = runtime
+                .apply_external_goal_clear(cleared_goal.clone(), attribution)
+                .await
+            {
+                tracing::warn!("failed to apply external goal clear runtime effects: {err}");
+            }
         }
+
         drop(goal_state_permit);
         drop(runtime);
 
-        if let (Some(runtime), Some(goal)) = (self.runtime_for_thread(thread_id), cleared_goal)
-            && let Err(err) = runtime.apply_external_goal_clear(goal).await
-        {
-            tracing::warn!("failed to apply external goal clear runtime effects: {err}");
-        }
-
-        Ok(cleared)
+        Ok(Some(cleared_goal))
     }
 
     pub(crate) fn register_runtime(&self, runtime: &Arc<GoalRuntimeHandle>) {

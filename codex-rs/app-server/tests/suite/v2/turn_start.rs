@@ -1331,6 +1331,7 @@ async fn turn_profile_tracks_blocking_tool_and_follow_up_sampling() -> Result<()
             "update_goal",
             json!({"status": "complete"}),
         ),
+        ("clear-goal-call", "clear_goal", json!({})),
     ];
     let mut responses = vec![
         create_request_user_input_sse_response("call1")?,
@@ -1522,7 +1523,7 @@ async fn turn_profile_tracks_blocking_tool_and_follow_up_sampling() -> Result<()
             "total": second_turn_event["event_params"]["total_tool_call_count"],
             "dynamic": second_turn_event["event_params"]["dynamic_tool_call_count"],
         }),
-        json!({"rootTurnId": second_turn.turn.id, "total": 5, "dynamic": 0})
+        json!({"rootTurnId": second_turn.turn.id, "total": 6, "dynamic": 0})
     );
 
     Ok(())

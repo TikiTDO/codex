@@ -58,6 +58,11 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
     let tools = installed_tools(runtime.clone(), thread_id).await;
 
+    assert_eq!(
+        vec!["get_goal", "create_goal", "update_goal", "clear_goal"],
+        tool_names(&tools)
+    );
+
     let create_tool = tool_by_name(&tools, "create_goal");
     let invocation = tool_call(
         "create_goal",
@@ -94,6 +99,128 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
     assert_eq!(
         metadata.preview.as_deref(),
         Some("ship goal extension backend")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn clear_goal_accounts_final_progress_and_allows_a_new_goal() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    tool_by_name(&tools, "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "replace an obsolete approach", "token_budget": 100 }),
+        ))
+        .await?;
+    harness.sink.clear();
+    harness
+        .record_token_usage(
+            "turn-1",
+            &token_usage(
+                /*input_tokens*/ 20, /*cached_input_tokens*/ 5, /*output_tokens*/ 8,
+                /*reasoning_output_tokens*/ 2, /*total_tokens*/ 30,
+            ),
+        )
+        .await;
+
+    let invocation = tool_call("clear_goal", "call-clear-goal", json!({}));
+    let output = tool_by_name(&tools, "clear_goal")
+        .handle(invocation.clone())
+        .await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(
+        result,
+        json!({
+            "clearedGoal": {
+                "threadId": thread_id,
+                "objective": "replace an obsolete approach",
+                "status": "active",
+                "tokenBudget": 100,
+                "tokensUsed": 23,
+                "timeUsedSeconds": 0,
+                "createdAt": result["clearedGoal"]["createdAt"],
+                "updatedAt": result["clearedGoal"]["updatedAt"],
+            }
+        })
+    );
+    assert_eq!(
+        runtime.thread_goals().get_thread_goal(thread_id).await?,
+        None
+    );
+    assert_eq!(
+        vec![CapturedGoalClearedEvent {
+            event_id: "call-clear-goal".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            thread_id,
+        }],
+        harness.sink.goal_cleared_events()
+    );
+    assert!(
+        matches!(
+            harness.sink.events().as_slice(),
+            [
+                Event {
+                    msg: EventMsg::ThreadGoalUpdated(_),
+                    ..
+                },
+                Event {
+                    msg: EventMsg::ThreadGoalCleared(_),
+                    ..
+                }
+            ]
+        ),
+        "final progress must be published before the goal is cleared"
+    );
+
+    harness
+        .notify_tool_finish("turn-1", "call-clear-goal", "clear_goal")
+        .await;
+    assert_eq!(
+        vec![CapturedGoalClearedEvent {
+            event_id: "call-clear-goal".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            thread_id,
+        }],
+        harness.sink.goal_cleared_events()
+    );
+
+    let create_invocation = tool_call(
+        "create_goal",
+        "call-create-replacement",
+        json!({ "objective": "pursue the better approach" }),
+    );
+    let create_output = tool_by_name(&tools, "create_goal")
+        .handle(create_invocation.clone())
+        .await?;
+    assert_eq!(
+        create_output.code_mode_result(&create_invocation.payload)["goal"]["objective"],
+        "pursue the better approach"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn clear_goal_is_idempotent_when_no_goal_exists() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime, thread_id).await;
+
+    let invocation = tool_call("clear_goal", "call-clear-missing-goal", json!({}));
+    let output = tool_by_name(&tools, "clear_goal")
+        .handle(invocation.clone())
+        .await?;
+    assert_eq!(
+        output.code_mode_result(&invocation.payload),
+        json!({ "clearedGoal": serde_json::Value::Null })
     );
     Ok(())
 }
@@ -1883,6 +2010,20 @@ impl RecordingEventSink {
         self.events().clear();
     }
 
+    fn goal_cleared_events(&self) -> Vec<CapturedGoalClearedEvent> {
+        self.events()
+            .iter()
+            .filter_map(|event| match &event.msg {
+                EventMsg::ThreadGoalCleared(cleared) => Some(CapturedGoalClearedEvent {
+                    event_id: event.id.clone(),
+                    turn_id: cleared.turn_id.clone(),
+                    thread_id: cleared.thread_id,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn events(&self) -> std::sync::MutexGuard<'_, Vec<Event>> {
         self.events.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -1904,6 +2045,13 @@ struct CapturedGoalEvent {
     turn_id: Option<String>,
     status: ThreadGoalStatus,
     tokens_used: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CapturedGoalClearedEvent {
+    event_id: String,
+    turn_id: Option<String>,
+    thread_id: ThreadId,
 }
 
 fn default_collaboration_mode() -> CollaborationMode {

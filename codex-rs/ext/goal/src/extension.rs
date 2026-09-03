@@ -42,6 +42,7 @@ use crate::metrics::GoalMetrics;
 use crate::runtime::ActiveGoalStopReason;
 use crate::runtime::GoalRuntimeConfig;
 use crate::runtime::GoalRuntimeHandle;
+use crate::spec::CLEAR_GOAL_TOOL_NAME;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
 use crate::steering::budget_limit_steering_item;
@@ -451,7 +452,10 @@ where
             let should_count_for_goal_progress =
                 tool_attempt_counts_for_goal_progress(input.outcome)
                     && !(input.tool_name.is_default_namespace()
-                        && input.tool_name.name == UPDATE_GOAL_TOOL_NAME);
+                        && matches!(
+                            input.tool_name.name.as_str(),
+                            UPDATE_GOAL_TOOL_NAME | CLEAR_GOAL_TOOL_NAME
+                        ));
             if !should_count_for_goal_progress {
                 return;
             }
@@ -519,6 +523,8 @@ where
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
+                Arc::clone(&self.goal_service),
+                Arc::clone(&runtime),
             )),
             Arc::new(GoalToolExecutor::create(
                 runtime.thread_id(),
@@ -527,6 +533,8 @@ where
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
+                Arc::clone(&self.goal_service),
+                Arc::clone(&runtime),
                 max_goal_token_budget,
             )),
             Arc::new(GoalToolExecutor::update(
@@ -536,6 +544,18 @@ where
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
+                Arc::clone(&self.goal_service),
+                Arc::clone(&runtime),
+            )),
+            Arc::new(GoalToolExecutor::clear(
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.analytics.clone(),
+                self.event_emitter.clone(),
+                self.metrics.clone(),
+                Arc::clone(&self.goal_service),
+                Arc::clone(&runtime),
             )),
         ]
     }

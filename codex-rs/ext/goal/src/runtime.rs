@@ -157,6 +157,14 @@ impl GoalRuntimeHandle {
     }
 
     pub async fn prepare_external_goal_mutation(&self) -> Result<(), String> {
+        let event_id = self.inner.accounting_state.current_turn_id().map_or_else(
+            || format!("{}:external-goal-mutation", self.inner.thread_id),
+            |turn_id| format!("{turn_id}:external-goal-mutation"),
+        );
+        self.prepare_goal_mutation(event_id.as_str()).await
+    }
+
+    pub(crate) async fn prepare_goal_mutation(&self, event_id: &str) -> Result<(), String> {
         if !self.is_enabled() {
             return Ok(());
         }
@@ -164,7 +172,7 @@ impl GoalRuntimeHandle {
         if let Some(turn_id) = self.inner.accounting_state.current_turn_id() {
             self.account_active_goal_progress(
                 turn_id.as_str(),
-                &format!("{turn_id}:external-goal-mutation"),
+                event_id,
                 codex_state::GoalAccountingMode::ActiveOnly,
                 BudgetLimitedGoalDisposition::ClearActive,
             )
@@ -173,7 +181,7 @@ impl GoalRuntimeHandle {
         }
 
         self.account_idle_goal_progress(
-            &format!("{}:external-goal-mutation", self.inner.thread_id),
+            event_id,
             codex_state::GoalAccountingMode::ActiveOnly,
             BudgetLimitedGoalDisposition::ClearActive,
         )
@@ -187,6 +195,18 @@ impl GoalRuntimeHandle {
         previous_goal: Option<PreviousGoalSnapshot>,
     ) -> Result<(), String> {
         if !self.is_enabled() {
+            return Ok(());
+        }
+
+        let goal_state_permit = self.goal_state_permit().await?;
+        let current_goal = self
+            .inner
+            .state_dbs
+            .thread_goals()
+            .get_thread_goal(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?;
+        if current_goal.as_ref() != Some(&goal) {
             return Ok(());
         }
 
@@ -214,7 +234,7 @@ impl GoalRuntimeHandle {
         let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {
             !replaced_existing_goal && previous_goal.objective != goal.objective
         });
-        match goal.status {
+        let should_continue = match goal.status {
             codex_state::ThreadGoalStatus::Active => {
                 if self.inner.accounting_state.current_turn_id().is_some() {
                     let _ = self
@@ -230,32 +250,39 @@ impl GoalRuntimeHandle {
                     let item = objective_updated_steering_item(&protocol_goal_from_state(goal));
                     self.inject_active_turn_steering(item).await;
                 }
-                self.continue_if_idle().await?;
+                true
             }
             codex_state::ThreadGoalStatus::BudgetLimited => {
                 if self.inner.accounting_state.current_turn_id().is_none() {
                     self.inner.accounting_state.clear_active_goal();
                 }
+                false
             }
             codex_state::ThreadGoalStatus::Paused
             | codex_state::ThreadGoalStatus::Blocked
             | codex_state::ThreadGoalStatus::UsageLimited
             | codex_state::ThreadGoalStatus::Complete => {
                 self.inner.accounting_state.clear_active_goal();
+                false
             }
+        };
+        drop(goal_state_permit);
+        if should_continue {
+            self.continue_if_idle().await?;
         }
         Ok(())
     }
 
-    pub async fn apply_external_goal_clear(
+    pub(crate) async fn apply_external_goal_clear(
         &self,
         goal: codex_state::ThreadGoal,
+        attribution: GoalEventAttribution<'_>,
     ) -> Result<(), String> {
         if !self.is_enabled() {
             return Ok(());
         }
 
-        self.inner.analytics.cleared(&goal);
+        self.inner.analytics.cleared(&goal, attribution);
         self.inner.accounting_state.clear_active_goal();
         Ok(())
     }
