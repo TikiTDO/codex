@@ -393,6 +393,9 @@ fn canonicalize_snapshot_text(text: &str) -> String {
     if text.starts_with("<permissions instructions>") {
         return "<PERMISSIONS_INSTRUCTIONS>".to_string();
     }
+    if text.starts_with("<operating_contract>") {
+        return "<OPERATING_CONTRACT>".to_string();
+    }
     if text.starts_with(APPS_INSTRUCTIONS_OPEN_TAG) {
         return "<APPS_INSTRUCTIONS>".to_string();
     }
@@ -438,7 +441,7 @@ fn canonicalize_snapshot_text(text: &str) -> String {
     if text.starts_with("You are performing a CONTEXT CHECKPOINT COMPACTION.") {
         return "<SUMMARIZATION_PROMPT>".to_string();
     }
-    if text.starts_with("Another language model started to solve this problem")
+    if text.starts_with("This conversation's earlier context was reduced")
         && let Some((_, summary)) = text.split_once('\n')
     {
         return format!("<COMPACTION_SUMMARY>\n{summary}");

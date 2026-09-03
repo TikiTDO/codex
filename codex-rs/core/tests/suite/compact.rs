@@ -1298,13 +1298,15 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
                     .flatten()
                     .filter_map(|item| item.get("text").and_then(|text| text.as_str()));
 
-                // Ignore cached prefix messages (project docs + permissions) since they are not
-                // relevant to compaction behavior and can change as bundled prompts evolve.
+                // Ignore cached prefix messages (project docs + permissions) and the separately
+                // tested post-compaction marker since they are not part of this request-count
+                // assertion and can change as bundled prompts evolve.
                 let role = value.get("role").and_then(|role| role.as_str());
                 if role == Some("developer")
-                    && texts
-                        .into_iter()
-                        .any(|text| text.contains("`sandbox_mode`"))
+                    && texts.into_iter().any(|text| {
+                        text.contains("`sandbox_mode`")
+                            || text.starts_with("# CONTEXT COMPACTION EVENT")
+                    })
                 {
                     return None;
                 }

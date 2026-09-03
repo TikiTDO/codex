@@ -45,6 +45,16 @@ fn recognizes_legacy_token_budget_as_contextual_developer_content() {
 }
 
 #[test]
+fn recognizes_operating_contract_as_contextual_developer_content() {
+    let content = vec![ContentItem::InputText {
+        text: "<operating_contract>\nContract text.\n</operating_contract>".to_string(),
+    }];
+
+    assert!(is_contextual_dev_message_content(&content));
+    assert!(!has_non_contextual_dev_message_content(&content));
+}
+
+#[test]
 fn recognizes_context_window_as_contextual_developer_content() {
     let content = vec![ContentItem::InputText {
         text: format!(

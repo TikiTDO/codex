@@ -9,6 +9,30 @@ use codex_protocol::openai_models::CollaborationModeMessages;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn bundled_modes_preserve_the_material_ambiguity_gate() {
+    let presets = builtin_collaboration_mode_presets();
+    let instructions_for = |mode| {
+        presets
+            .iter()
+            .find(|preset| preset.mode == Some(mode))
+            .and_then(|preset| preset.developer_instructions.as_ref())
+            .and_then(Option::as_deref)
+            .expect("built-in collaboration mode should have instructions")
+    };
+
+    let default = instructions_for(ModeKind::Default);
+    assert!(default.contains("ambiguity could materially change behavior"));
+    assert!(default.contains("silence does not resolve a required material decision"));
+    assert!(!default.contains("strongly prefer making reasonable assumptions"));
+
+    let plan = instructions_for(ModeKind::Plan);
+    assert!(plan.contains("decision complete for choices that affect behavior"));
+    assert!(plan.contains("low-impact and reversible"));
+    assert!(plan.contains("silence as consent"));
+    assert!(!plan.contains("You SHOULD ask many questions"));
+}
+
+#[test]
 fn snapshots() {
     use PreviousSectionState::Absent;
     use PreviousSectionState::Known;

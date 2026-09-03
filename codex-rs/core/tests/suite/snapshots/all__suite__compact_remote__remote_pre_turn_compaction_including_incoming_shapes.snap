@@ -5,7 +5,9 @@ expression: "format_labeled_requests_snapshot(\"Remote pre-turn auto-compaction 
 Scenario: Remote pre-turn auto-compaction with a context override emits the context diff in the compact request while excluding the incoming user message.
 
 ## Remote Compaction Request
-00:message/developer:<PERMISSIONS_INSTRUCTIONS>
+00:message/developer[2]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <OPERATING_CONTRACT>
 01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
 02:message/user:USER_ONE
 03:message/assistant:REMOTE_FIRST_REPLY
@@ -17,6 +19,8 @@ Scenario: Remote pre-turn auto-compaction with a context override emits the cont
 01:message/developer:# CONTEXT COMPACTION EVENT\n\nThe conversation history was compr...
 02:message/user:USER_TWO
 03:compaction:encrypted=true
-04:message/developer:<PERMISSIONS_INSTRUCTIONS>
+04:message/developer[2]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <OPERATING_CONTRACT>
 05:message/user:<ENVIRONMENT_CONTEXT:cwd=PRETURN_CONTEXT_DIFF_CWD>
 06:message/user:USER_THREE

@@ -16,6 +16,7 @@ use crate::context::world_state::ManagedDeveloperInstructionsState;
 use crate::context::world_state::ModelInstructionsState;
 use crate::context::world_state::MultiAgentModeState;
 use crate::context::world_state::MultiAgentUsageHintState;
+use crate::context::world_state::OperatingContractState;
 use crate::context::world_state::PermissionsState;
 use crate::context::world_state::PersistentModeState;
 use crate::context::world_state::PersonalityState;
@@ -321,6 +322,10 @@ impl Session {
             world_state.add_section(usage_hint);
         }
         world_state.add_section(multi_agent_mode);
+        if OperatingContractState::applies_to(&turn_context.session_source) {
+            let preceding_instruction_epoch = world_state.snapshot().stable_hash();
+            world_state.add_section(OperatingContractState::new(preceding_instruction_epoch));
+        }
         if !crate::guardian::is_basic_session_source(&turn_context.session_source) {
             world_state.add_section(ManagedDeveloperInstructionsState::new(
                 turn_context

@@ -1,9 +1,11 @@
 # CONTEXT COMPACTION EVENT
 
-The conversation history was compressed immediately before this marker was recorded. The retained
-summary is bounded evidence, not proof of uninterrupted context and not automatic task authority.
+The conversation history was compressed immediately before this marker was recorded. This is the
+same conversation and the same working hand making room, not a successor, restart, or task transfer.
+The retained summary is bounded evidence rather than proof of current external state, and the marker
+does not create, clear, complete, block, or transfer a task or goal.
 
-Before consequential action, re-establish the current task, constraints, runtime and identity
-facts, and relevant route or custody state from live sources where the active instructions require
-it. Do not perform an external effect solely because this marker appeared. If the seam materially
-changes the response, say that compaction occurred rather than simulating unbroken continuity.
+Continue the active work without redoing completed steps. Before consequential action, refresh only
+the task, constraints, runtime, identity, route, custody, or permission facts that are missing,
+drift-prone, or required by active instructions. Do not perform an external effect solely because
+this marker appeared. Mention the compaction only when the seam materially limits the answer.

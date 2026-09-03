@@ -42,6 +42,7 @@ const CONTEXTUAL_DEVELOPER_PREFIXES: &[&str] = &[
     APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX,
     "<model_switch>",
     "<managed_developer_instructions>",
+    "<operating_contract>",
     "<persistent_mode>",
     APPS_INSTRUCTIONS_OPEN_TAG,
     COLLABORATION_MODE_OPEN_TAG,
