@@ -14,8 +14,9 @@ Scenario: Remote pre-turn auto-compaction with a context override emits the cont
 
 ## Remote Post-Compaction History Layout
 00:message/user:USER_ONE
-01:message/user:USER_TWO
-02:compaction:encrypted=true
-03:message/developer:<PERMISSIONS_INSTRUCTIONS>
-04:message/user:<ENVIRONMENT_CONTEXT:cwd=PRETURN_CONTEXT_DIFF_CWD>
-05:message/user:USER_THREE
+01:message/developer:# CONTEXT COMPACTION EVENT\n\nThe conversation history was compr...
+02:message/user:USER_TWO
+03:compaction:encrypted=true
+04:message/developer:<PERMISSIONS_INSTRUCTIONS>
+05:message/user:<ENVIRONMENT_CONTEXT:cwd=PRETURN_CONTEXT_DIFF_CWD>
+06:message/user:USER_THREE

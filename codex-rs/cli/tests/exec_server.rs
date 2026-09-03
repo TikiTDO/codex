@@ -90,6 +90,24 @@ fn local_exec_server_ignores_invalid_config_without_strict_config() -> Result<()
     Ok(())
 }
 
+/// The standalone exec-server accepts an explicit per-connection concurrency limit.
+#[test]
+fn local_exec_server_accepts_concurrent_requests_flag() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut cmd = codex_command(codex_home.path())?;
+    cmd.args([
+        "exec-server",
+        "--listen",
+        "stdio",
+        "--concurrent-requests",
+        "2",
+    ])
+    .assert()
+    .success();
+
+    Ok(())
+}
+
 #[test]
 fn local_exec_server_allows_disabled_parent_lifetime_environment_variable() -> Result<()> {
     let codex_home = TempDir::new()?;
@@ -173,6 +191,8 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{collector_url}/v1/metrics", pr
             &registry.uri(),
             "--environment-id",
             ENVIRONMENT_ID,
+            "--concurrent-requests",
+            "2",
         ])
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
@@ -231,6 +251,7 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{collector_url}/v1/metrics", pr
             process_id: ProcessId::from("parent-lifetime-process"),
             argv: argv.into_iter().map(str::to_string).collect(),
             cwd: cwd.as_str().parse()?,
+            shell_snapshot: None,
             env_policy: Some(codex_exec_server::ExecEnvPolicy {
                 inherit: codex_protocol::config_types::ShellEnvironmentPolicyInherit::All,
                 ignore_default_excludes: false,

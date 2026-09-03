@@ -15,7 +15,9 @@ on:
       - "rust-v*.*.*"
 
 env:
+  CODEX_REPO_ROOT: ${{ github.workspace }}
   CODEX_ZSH_RELEASE_TAG: codex-zsh-v0.1.0
+  CODEX_ZSH_MANIFEST_SHA256: c534eab89dcea7e3d8a5e5b3f49c025c7c64cd4e4d9814ee24871de58a9359a1
 
 concurrency:
   group: ${{ github.workflow }}
@@ -361,6 +363,8 @@ jobs:
           curl -fsSL \
             "https://github.com/${GITHUB_REPOSITORY}/releases/download/${CODEX_ZSH_RELEASE_TAG}/codex-zsh" \
             -o "${RUNNER_TEMP}/codex-zsh"
+          bash "${GITHUB_WORKSPACE}/.github/scripts/verify-zsh-manifest.sh" \
+            "${RUNNER_TEMP}/codex-zsh" "$CODEX_ZSH_MANIFEST_SHA256"
 
       - name: Build Codex package archive
         if: ${{ runner.os != 'macOS' }}
@@ -538,9 +542,8 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           BINARIES: ${{ matrix.binaries }}
-          APPLE_NOTARIZATION_KEY_P8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
-          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
-          APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+          APPLE_NOTARIZATION_AKV_KEY_NAME: ${{ secrets.AKV_NOTARIZATION_KEY_NAME }}
+          APPLE_NOTARIZATION_AKV_KEY_VERSION: ${{ secrets.AKV_NOTARIZATION_KEY_VERSION }}
         run: |
           set -euo pipefail
 
@@ -579,7 +582,7 @@ jobs:
             rcodesign print-signature-info "$signed_path" \
               >"${report_dir}/${binary}/signature-info.yaml"
 
-            .github/scripts/macos-signing/notarize_macos_binary_with_rcodesign.sh \
+            .github/scripts/macos-signing/notarize_macos_binary_with_akv.sh \
               --binary "$signed_path" \
               --report-dir "${report_dir}/${binary}"
           done
@@ -589,9 +592,8 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-          APPLE_NOTARIZATION_KEY_P8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
-          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
-          APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+          APPLE_NOTARIZATION_AKV_KEY_NAME: ${{ secrets.AKV_NOTARIZATION_KEY_NAME }}
+          APPLE_NOTARIZATION_AKV_KEY_VERSION: ${{ secrets.AKV_NOTARIZATION_KEY_VERSION }}
         run: |
           set -euo pipefail
 
@@ -601,6 +603,8 @@ jobs:
           curl -fsSL \
             "https://github.com/${GITHUB_REPOSITORY}/releases/download/${CODEX_ZSH_RELEASE_TAG}/codex-zsh" \
             -o "$zsh_manifest"
+          bash "${GITHUB_WORKSPACE}/.github/scripts/verify-zsh-manifest.sh" \
+            "$zsh_manifest" "$CODEX_ZSH_MANIFEST_SHA256"
 
           PYTHONPATH="${GITHUB_WORKSPACE}/scripts" python3 - "$TARGET" "$signed_root" "$zsh_manifest" <<'PY'
           import shutil
@@ -636,7 +640,7 @@ jobs:
             rcodesign print-signature-info "$binary" \
               >"${report_dir}/signature-info.yaml"
 
-            .github/scripts/macos-signing/notarize_macos_binary_with_rcodesign.sh \
+            .github/scripts/macos-signing/notarize_macos_binary_with_akv.sh \
               --binary "$binary" \
               --report-dir "$report_dir"
           done
@@ -923,9 +927,8 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-          APPLE_NOTARIZATION_KEY_P8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
-          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
-          APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+          APPLE_NOTARIZATION_AKV_KEY_NAME: ${{ secrets.AKV_NOTARIZATION_KEY_NAME }}
+          APPLE_NOTARIZATION_AKV_KEY_VERSION: ${{ secrets.AKV_NOTARIZATION_KEY_VERSION }}
         run: |
           set -euo pipefail
 
@@ -946,7 +949,7 @@ jobs:
           rcodesign print-signature-info "$dmg_path" \
             >"${report_dir}/signature-info-before-notarization.yaml"
 
-          .github/scripts/macos-signing/notarize_macos_dmg_with_rcodesign.sh \
+          .github/scripts/macos-signing/notarize_macos_dmg_with_akv.sh \
             --dmg "$dmg_path" \
             --report-dir "$report_dir"
 
@@ -1356,9 +1359,9 @@ jobs:
           # (e.g. -alpha, -beta). Otherwise publish a normal release.
           prerelease: ${{ steps.release_name.outputs.prerelease }}
 
-  publish-r2:
-    name: publish-r2
-    needs: [release, publish-dotslash]
+  publish-r2-assets:
+    name: publish-r2-assets
+    needs: release
     permissions:
       contents: read
     uses: ./.github/workflows/r2-release.yml
@@ -1367,6 +1370,20 @@ jobs:
       tag: ${{ needs.release.outputs.tag }}
       make_latest: ${{ fromJSON(needs.release.outputs.make_latest) }}
       prerelease: ${{ fromJSON(needs.release.outputs.prerelease) }}
+      stage: assets
+
+  publish-r2:
+    name: publish-r2
+    needs: [release, publish-dotslash, publish-r2-assets]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/r2-release.yml
+    secrets: inherit
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+      make_latest: ${{ fromJSON(needs.release.outputs.make_latest) }}
+      prerelease: ${{ fromJSON(needs.release.outputs.prerelease) }}
+      stage: finalize
 
   publish-dotslash:
     name: publish-dotslash

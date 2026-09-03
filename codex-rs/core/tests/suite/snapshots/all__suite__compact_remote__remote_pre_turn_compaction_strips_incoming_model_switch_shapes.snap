@@ -16,10 +16,11 @@ Scenario: Remote pre-turn compaction during model switch currently excludes inco
 03:message/assistant:BEFORE_SWITCH_REPLY
 
 ## Remote Post-Compaction History Layout
-00:message/user:BEFORE_SWITCH_USER
-01:compaction:encrypted=true
-02:message/developer[2]:
+00:message/developer:# CONTEXT COMPACTION EVENT\n\nThe conversation history was compr...
+01:message/user:BEFORE_SWITCH_USER
+02:compaction:encrypted=true
+03:message/developer[2]:
     [01] <model_switch>\nThe user was previously using a different model....
     [02] <PERMISSIONS_INSTRUCTIONS>
-03:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-04:message/user:AFTER_SWITCH_USER
+04:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
+05:message/user:AFTER_SWITCH_USER

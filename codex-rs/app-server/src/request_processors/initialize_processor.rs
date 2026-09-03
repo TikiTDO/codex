@@ -72,7 +72,11 @@ impl InitializeRequestProcessor {
         let suppress_automatic_thread_subscription =
             capabilities.suppress_automatic_thread_subscription;
         let request_attestation = capabilities.request_attestation;
-        let supports_openai_form_elicitation = capabilities.mcp_server_openai_form_elicitation;
+        let extensions = capabilities.extensions.as_ref();
+        let client_mcp_extensions = codex_mcp::client_mcp_extensions(
+            extensions,
+            capabilities.mcp_server_openai_form_elicitation,
+        );
         let opt_out_notification_methods = capabilities
             .opt_out_notification_methods
             .unwrap_or_default();
@@ -100,7 +104,7 @@ impl InitializeRequestProcessor {
                 app_server_client_name: name.clone(),
                 client_version: version,
                 request_attestation,
-                supports_openai_form_elicitation,
+                client_mcp_extensions,
             })
             .is_err()
         {

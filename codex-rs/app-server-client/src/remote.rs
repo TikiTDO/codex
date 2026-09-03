@@ -96,6 +96,7 @@ impl RemoteAppServerConnectArgs {
             experimental_api: self.experimental_api,
             suppress_automatic_thread_subscription: self.suppress_automatic_thread_subscription,
             request_attestation: false,
+            extensions: None,
             opt_out_notification_methods: if self.opt_out_notification_methods.is_empty() {
                 None
             } else {

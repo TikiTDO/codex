@@ -13,9 +13,10 @@ Scenario: Remote pre-turn auto-compaction while realtime remains active: compact
 03:message/assistant:REMOTE_FIRST_REPLY
 
 ## Remote Post-Compaction History Layout
-00:compaction:encrypted=true
-01:message/developer[2]:
+00:message/developer:# CONTEXT COMPACTION EVENT\n\nThe conversation history was compr...
+01:compaction:encrypted=true
+02:message/developer[2]:
     [01] <realtime_conversation>\nRealtime conversation started.\n\nYou a...
     [02] <PERMISSIONS_INSTRUCTIONS>
-02:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-03:message/user:USER_TWO
+03:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
+04:message/user:USER_TWO

@@ -1,5 +1,6 @@
 use super::ContextualUserFragment;
 use codex_prompts::POST_COMPACTION_MARKER;
+use codex_protocol::models::ContentItemKind;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
 
@@ -31,6 +32,10 @@ impl PostCompactionContext {
 mod tests;
 
 impl ContextualUserFragment for PostCompactionContext {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind("compaction.post_context".to_string())
+    }
+
     fn role(&self) -> &'static str {
         "developer"
     }

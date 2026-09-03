@@ -48,7 +48,10 @@ impl ToolExecutor<ToolInvocation> for TestHandler {
         })
     }
 
-    fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async {
             Ok(
                 Box::new(FunctionToolOutput::from_text("ok".to_string(), Some(true)))
@@ -97,6 +100,7 @@ impl codex_code_mode::CodeModeSession for MissingCellCodeModeSession {
         Box::pin(async move {
             Ok(codex_code_mode::WaitOutcome::MissingCell(
                 codex_code_mode::RuntimeResponse::Result {
+                    code_mode_host_duration: None,
                     error_text: Some(format!("exec cell {cell_id} not found")),
                     cell_id,
                     content_items: Vec::new(),
@@ -279,7 +283,8 @@ async fn missing_code_mode_wait_traces_only_the_wait_tool_call() -> anyhow::Resu
     let (mut session, turn) = make_session_and_context().await;
     session.services.code_mode_service = CodeModeService::new(
         Arc::new(MissingCellCodeModeSessionProvider),
-        &turn.config.features,
+        &turn.config.code_mode,
+        session.services.executed_tool_calls.clone(),
     );
     attach_test_trace(&mut session, &turn, temp.path())?;
 
@@ -287,18 +292,24 @@ async fn missing_code_mode_wait_traces_only_the_wait_tool_call() -> anyhow::Resu
     let session = Arc::new(session);
     let turn = Arc::new(turn);
 
+    let mut invocation = test_invocation(
+        session,
+        turn,
+        "wait-call",
+        WAIT_TOOL_NAME,
+        ToolCallSource::Direct,
+        r#"{"cell_id":"noop","terminate":true}"#,
+    );
+    invocation.tool_name = invocation.tool_name.with_default_namespace();
+    assert!(
+        super::tool_dispatch_invocation(&invocation)
+            .expect("wait calls should produce a trace invocation")
+            .tool_namespace
+            .is_none()
+    );
+
     registry
-        .dispatch_any_with_terminal_outcome(
-            test_invocation(
-                session,
-                turn,
-                "wait-call",
-                WAIT_TOOL_NAME,
-                ToolCallSource::Direct,
-                r#"{"cell_id":"noop","terminate":true}"#,
-            ),
-            /*terminal_outcome_reached*/ None,
-        )
+        .dispatch_any_with_terminal_outcome(invocation, /*terminal_outcome_reached*/ None)
         .await?;
 
     let replayed = codex_rollout_trace::replay_bundle(single_bundle_dir(temp.path())?)?;

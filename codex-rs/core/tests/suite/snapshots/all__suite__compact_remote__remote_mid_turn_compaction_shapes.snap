@@ -12,7 +12,8 @@ Scenario: Remote mid-turn continuation compaction after tool output: compact req
 04:function_call_output:unsupported call: test_tool
 
 ## Remote Post-Compaction History Layout
-00:message/developer:<PERMISSIONS_INSTRUCTIONS>
-01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-02:message/user:USER_ONE
-03:compaction:encrypted=true
+00:message/developer:# CONTEXT COMPACTION EVENT\n\nThe conversation history was compr...
+01:message/developer:<PERMISSIONS_INSTRUCTIONS>
+02:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
+03:message/user:USER_ONE
+04:compaction:encrypted=true

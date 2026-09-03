@@ -5,12 +5,14 @@ expression: "format_labeled_requests_snapshot(\"After a prior manual /compact pr
 Scenario: After a prior manual /compact produced an older remote compaction item, the next turn hits remote auto-compaction before the next sampling request. The compact request carries forward that earlier compaction item, and the next sampling request shows the latest compaction item with context reinjected before USER_TWO.
 
 ## Remote Compaction Request
-00:message/user:USER_ONE
-01:compaction:encrypted=true
+00:message/developer:# CONTEXT COMPACTION EVENT\n\nThe conversation history was compr...
+01:message/user:USER_ONE
+02:compaction:encrypted=true
 
 ## Second Turn Request (After Compaction)
-00:message/user:USER_ONE
-01:compaction:encrypted=true
-02:message/developer:<PERMISSIONS_INSTRUCTIONS>
-03:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-04:message/user:USER_TWO
+00:message/developer:# CONTEXT COMPACTION EVENT\n\nThe conversation history was compr...
+01:message/user:USER_ONE
+02:compaction:encrypted=true
+03:message/developer:<PERMISSIONS_INSTRUCTIONS>
+04:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
+05:message/user:USER_TWO

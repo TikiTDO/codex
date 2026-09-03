@@ -47,6 +47,32 @@ fn input_contains_text(input: &[Value], expected: &str) -> bool {
     })
 }
 
+fn input_contains_text_fragment(input: &[Value], expected: &str) -> bool {
+    input.iter().any(|item| {
+        item.get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|content| {
+                content.iter().any(|part| {
+                    part.get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(|text| text.contains(expected))
+                })
+            })
+    })
+}
+
+#[test]
+fn input_contains_text_fragment_matches_inside_server_context() {
+    let input = vec![serde_json::json!({
+        "content": [{
+            "text": "<codex_internal_context>event=\"evt-held\"</codex_internal_context>"
+        }]
+    })];
+
+    assert!(input_contains_text_fragment(&input, "event=\"evt-held\""));
+    assert!(!input_contains_text(&input, "event=\"evt-held\""));
+}
+
 #[tokio::test]
 async fn thread_attention_starts_idle_turn_with_server_generated_context() -> Result<()> {
     let server = responses::start_mock_server().await;
@@ -216,10 +242,7 @@ async fn thread_attention_holds_busy_without_queuing_or_injecting() -> Result<()
         "held attention must not queue another turn"
     );
     assert!(
-        !input_contains_text(
-            &requests[0].input(),
-            "<codex_internal_context source=\"attention\">\n<codex-attention version=\"1\" event=\"evt-held\" kind=\"mention\" source-class=\"chat\" source-ref=\"message/42\" reference=\"chat/message/42\" />\n</codex_internal_context>",
-        ),
+        !input_contains_text_fragment(&requests[0].input(), "event=\"evt-held\""),
         "held attention must not inject into the active turn"
     );
     Ok(())

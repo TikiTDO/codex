@@ -45,7 +45,7 @@ impl ContextStatusOutput {
 }
 
 impl ToolOutput for ContextStatusOutput {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         self.rendered()
     }
 
@@ -78,7 +78,10 @@ impl ToolExecutor<ToolInvocation> for ContextStatusHandler {
         create_context_status_tool()
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move {
             if !matches!(invocation.payload, ToolPayload::Function { .. }) {
                 return Err(FunctionCallError::RespondToModel(
@@ -122,7 +125,7 @@ impl ToolExecutor<ToolInvocation> for ContextStatusHandler {
                 });
 
             Ok(boxed_tool_output(ContextStatusOutput {
-                model: invocation.turn.model_info.slug.clone(),
+                model: invocation.turn.model_info().slug.clone(),
                 model_provider: invocation.turn.config.model_provider_id.clone(),
                 reasoning_effort: invocation.turn.effective_reasoning_effort_for_tracing(),
                 thread_id: invocation.session.thread_id.to_string(),
