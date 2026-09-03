@@ -9,6 +9,7 @@ mod managed_developer_instructions;
 mod model;
 mod multi_agent_mode;
 mod multi_agent_usage_hint;
+mod operating_contract;
 mod permissions;
 mod persistent_mode;
 mod personality;
@@ -49,6 +50,7 @@ pub(crate) use managed_developer_instructions::validate_managed_developer_instru
 pub(crate) use model::ModelInstructionsState;
 pub(crate) use multi_agent_mode::MultiAgentModeState;
 pub(crate) use multi_agent_usage_hint::MultiAgentUsageHintState;
+pub(crate) use operating_contract::OperatingContractState;
 pub(crate) use permissions::PermissionsState;
 pub(crate) use persistent_mode::PersistentModeState;
 pub(crate) use personality::PersonalityState;
@@ -307,6 +309,20 @@ impl From<&Map<String, Value>> for WorldStateSnapshot {
 }
 
 impl WorldStateSnapshot {
+    /// Stable digest of the exact persisted state visible at an instruction boundary.
+    ///
+    /// Objects are hashed by sorted key rather than insertion order so extension-owned
+    /// JSON snapshots cannot make the epoch depend on map construction details.
+    pub(crate) fn stable_hash(&self) -> WorldStateHash {
+        let mut hasher = Sha1::new();
+        hasher.update(b"codex-world-state-snapshot-v1\0");
+        for (section_id, snapshot) in &self.sections {
+            hash_component(&mut hasher, section_id);
+            hash_json_value(&mut hasher, snapshot);
+        }
+        WorldStateHash(format!("{:x}", hasher.finalize()))
+    }
+
     pub(crate) fn into_object(self) -> Map<String, Value> {
         self.sections.into_iter().collect()
     }
@@ -343,6 +359,51 @@ impl WorldStateSnapshot {
                 let mut current = Value::Null;
                 apply_merge_patch_value(&mut current, value);
                 self.sections.insert(key.clone(), current);
+            }
+        }
+    }
+}
+
+fn hash_json_value(hasher: &mut Sha1, value: &Value) {
+    enum Part<'a> {
+        Component(&'a str),
+        Value(&'a Value),
+    }
+
+    let mut pending = vec![Part::Value(value)];
+    while let Some(part) = pending.pop() {
+        let Part::Value(value) = part else {
+            let Part::Component(value) = part else {
+                unreachable!();
+            };
+            hash_component(hasher, value);
+            continue;
+        };
+        match value {
+            Value::Null => hasher.update(b"n"),
+            Value::Bool(value) => hasher.update(if *value { b"t" } else { b"f" }),
+            Value::Number(value) => {
+                hasher.update(b"d");
+                hash_component(hasher, &value.to_string());
+            }
+            Value::String(value) => {
+                hasher.update(b"s");
+                hash_component(hasher, value);
+            }
+            Value::Array(values) => {
+                hasher.update(b"a");
+                hasher.update((values.len() as u64).to_be_bytes());
+                pending.extend(values.iter().rev().map(Part::Value));
+            }
+            Value::Object(values) => {
+                hasher.update(b"o");
+                hasher.update((values.len() as u64).to_be_bytes());
+                let mut keys = values.keys().collect::<Vec<_>>();
+                keys.sort_unstable();
+                for key in keys.into_iter().rev() {
+                    pending.push(Part::Value(&values[key]));
+                    pending.push(Part::Component(key));
+                }
             }
         }
     }

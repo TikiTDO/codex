@@ -6,6 +6,8 @@ Scenario: Remote manual /compact with no prior user turn skips the remote compac
 
 ## Remote Post-Compaction History Layout
 00:message/developer:# CONTEXT COMPACTION EVENT\n\nThe conversation history was compr...
-01:message/developer:<PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <OPERATING_CONTRACT>
 02:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
 03:message/user:USER_ONE

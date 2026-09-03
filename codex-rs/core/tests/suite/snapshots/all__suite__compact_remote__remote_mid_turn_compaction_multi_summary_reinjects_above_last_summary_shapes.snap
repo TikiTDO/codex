@@ -13,6 +13,8 @@ Scenario: After a prior manual /compact produced an older remote compaction item
 00:message/developer:# CONTEXT COMPACTION EVENT\n\nThe conversation history was compr...
 01:message/user:USER_ONE
 02:compaction:encrypted=true
-03:message/developer:<PERMISSIONS_INSTRUCTIONS>
+03:message/developer[2]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <OPERATING_CONTRACT>
 04:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
 05:message/user:USER_TWO

@@ -5,12 +5,16 @@ expression: "format_labeled_requests_snapshot(\"Remote pre-turn compaction durin
 Scenario: Remote pre-turn compaction during model switch currently excludes incoming user input, strips incoming <model_switch> from the compact request payload, and restores it in the post-compaction follow-up request.
 
 ## Initial Request (Previous Model)
-00:message/developer:<PERMISSIONS_INSTRUCTIONS>
+00:message/developer[2]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <OPERATING_CONTRACT>
 01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
 02:message/user:BEFORE_SWITCH_USER
 
 ## Remote Compaction Request
-00:message/developer:<PERMISSIONS_INSTRUCTIONS>
+00:message/developer[2]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <OPERATING_CONTRACT>
 01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
 02:message/user:BEFORE_SWITCH_USER
 03:message/assistant:BEFORE_SWITCH_REPLY
@@ -19,8 +23,9 @@ Scenario: Remote pre-turn compaction during model switch currently excludes inco
 00:message/developer:# CONTEXT COMPACTION EVENT\n\nThe conversation history was compr...
 01:message/user:BEFORE_SWITCH_USER
 02:compaction:encrypted=true
-03:message/developer[2]:
+03:message/developer[3]:
     [01] <model_switch>\nThe user was previously using a different model....
     [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <OPERATING_CONTRACT>
 04:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
 05:message/user:AFTER_SWITCH_USER
