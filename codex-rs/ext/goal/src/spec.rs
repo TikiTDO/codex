@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 pub const GET_GOAL_TOOL_NAME: &str = "get_goal";
 pub const CREATE_GOAL_TOOL_NAME: &str = "create_goal";
 pub const UPDATE_GOAL_TOOL_NAME: &str = "update_goal";
+pub const CLEAR_GOAL_TOOL_NAME: &str = "clear_goal";
 
 pub fn create_get_goal_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
@@ -89,6 +90,20 @@ When marking a budgeted goal achieved with status `complete`, report the final t
             /*required*/ Some(vec!["status".to_string()]),
             Some(false.into()),
         ),
+        output_schema: None,
+    })
+}
+
+pub fn create_clear_goal_tool() -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: CLEAR_GOAL_TOOL_NAME.to_string(),
+        description: r#"Clear the current goal when you decide that retaining or continuing it is no longer appropriate.
+Clearing releases the goal without claiming that it was completed or blocked, stops automatic goal continuation, and allows a new goal to be created later.
+Use your judgment and briefly explain the decision to the user. If no goal exists, the operation succeeds without changing anything."#
+            .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(BTreeMap::new(), Some(Vec::new()), Some(false.into())),
         output_schema: None,
     })
 }

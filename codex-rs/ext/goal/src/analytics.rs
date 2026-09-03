@@ -44,8 +44,12 @@ impl GoalAnalytics {
         }
     }
 
-    pub(crate) fn cleared(&self, goal: &codex_state::ThreadGoal) {
-        self.track(goal, GoalEventAttribution::NoTurn, GoalEventKind::Cleared);
+    pub(crate) fn cleared(
+        &self,
+        goal: &codex_state::ThreadGoal,
+        attribution: GoalEventAttribution<'_>,
+    ) {
+        self.track(goal, attribution, GoalEventKind::Cleared);
     }
 
     fn track(

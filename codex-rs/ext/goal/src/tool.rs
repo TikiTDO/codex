@@ -18,11 +18,15 @@ use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::accounting::GoalAccountingState;
 use crate::analytics::GoalAnalytics;
 use crate::analytics::GoalEventAttribution;
+use crate::api::GoalService;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
+use crate::runtime::GoalRuntimeHandle;
+use crate::spec::CLEAR_GOAL_TOOL_NAME;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
 use crate::spec::GET_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
+use crate::spec::create_clear_goal_tool;
 use crate::spec::create_create_goal_tool;
 use crate::spec::create_get_goal_tool;
 use crate::spec::create_update_goal_tool;
@@ -36,6 +40,8 @@ pub(crate) struct GoalToolExecutor {
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
+    goal_service: Arc<GoalService>,
+    runtime: Arc<GoalRuntimeHandle>,
     max_goal_token_budget: Option<i64>,
 }
 
@@ -44,6 +50,7 @@ enum GoalToolKind {
     Get,
     Create,
     Update,
+    Clear,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +74,12 @@ struct GoalToolResponse {
     completion_budget_report: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClearGoalToolResponse {
+    cleared_goal: Option<ThreadGoal>,
+}
+
 #[derive(Clone, Copy)]
 enum CompletionBudgetReport {
     Include,
@@ -81,6 +94,8 @@ impl GoalToolExecutor {
         analytics: GoalAnalytics,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
+        goal_service: Arc<GoalService>,
+        runtime: Arc<GoalRuntimeHandle>,
     ) -> Self {
         Self {
             kind: GoalToolKind::Get,
@@ -90,6 +105,8 @@ impl GoalToolExecutor {
             analytics,
             event_emitter,
             metrics,
+            goal_service,
+            runtime,
             max_goal_token_budget: None,
         }
     }
@@ -101,6 +118,8 @@ impl GoalToolExecutor {
         analytics: GoalAnalytics,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
+        goal_service: Arc<GoalService>,
+        runtime: Arc<GoalRuntimeHandle>,
         max_goal_token_budget: Option<i64>,
     ) -> Self {
         Self {
@@ -111,6 +130,8 @@ impl GoalToolExecutor {
             analytics,
             event_emitter,
             metrics,
+            goal_service,
+            runtime,
             max_goal_token_budget,
         }
     }
@@ -122,6 +143,8 @@ impl GoalToolExecutor {
         analytics: GoalAnalytics,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
+        goal_service: Arc<GoalService>,
+        runtime: Arc<GoalRuntimeHandle>,
     ) -> Self {
         Self {
             kind: GoalToolKind::Update,
@@ -131,6 +154,32 @@ impl GoalToolExecutor {
             analytics,
             event_emitter,
             metrics,
+            goal_service,
+            runtime,
+            max_goal_token_budget: None,
+        }
+    }
+
+    pub(crate) fn clear(
+        thread_id: ThreadId,
+        state_db: Arc<codex_state::StateRuntime>,
+        accounting_state: Arc<GoalAccountingState>,
+        analytics: GoalAnalytics,
+        event_emitter: GoalEventEmitter,
+        metrics: GoalMetrics,
+        goal_service: Arc<GoalService>,
+        runtime: Arc<GoalRuntimeHandle>,
+    ) -> Self {
+        Self {
+            kind: GoalToolKind::Clear,
+            thread_id,
+            state_db,
+            accounting_state,
+            analytics,
+            event_emitter,
+            metrics,
+            goal_service,
+            runtime,
             max_goal_token_budget: None,
         }
     }
@@ -142,6 +191,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
             GoalToolKind::Get => GET_GOAL_TOOL_NAME,
             GoalToolKind::Create => CREATE_GOAL_TOOL_NAME,
             GoalToolKind::Update => UPDATE_GOAL_TOOL_NAME,
+            GoalToolKind::Clear => CLEAR_GOAL_TOOL_NAME,
         })
     }
 
@@ -150,6 +200,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
             GoalToolKind::Get => create_get_goal_tool(),
             GoalToolKind::Create => create_create_goal_tool(),
             GoalToolKind::Update => create_update_goal_tool(),
+            GoalToolKind::Clear => create_clear_goal_tool(),
         }
     }
 
@@ -165,6 +216,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
                 GoalToolKind::Get => self.handle_get(invocation).await,
                 GoalToolKind::Create => self.handle_create(invocation).await,
                 GoalToolKind::Update => self.handle_update(invocation).await,
+                GoalToolKind::Clear => self.handle_clear(invocation).await,
             }
         })
     }
@@ -199,6 +251,11 @@ impl GoalToolExecutor {
         request.token_budget = request.token_budget.or(self.max_goal_token_budget);
         validate_goal_budget(request.token_budget, self.max_goal_token_budget)
             .map_err(FunctionCallError::RespondToModel)?;
+
+        let _goal_state_permit =
+            self.runtime.goal_state_permit().await.map_err(|err| {
+                FunctionCallError::Fatal(format!("goal state lock closed: {err}"))
+            })?;
 
         let goal = self
             .state_db
@@ -245,6 +302,11 @@ impl GoalToolExecutor {
                     .to_string(),
             ));
         }
+
+        let _goal_state_permit =
+            self.runtime.goal_state_permit().await.map_err(|err| {
+                FunctionCallError::Fatal(format!("goal state lock closed: {err}"))
+            })?;
 
         self.account_active_goal_progress(
             match args.status {
@@ -301,6 +363,36 @@ impl GoalToolExecutor {
                 CompletionBudgetReport::Omit
             },
         )
+    }
+
+    async fn handle_clear(
+        &self,
+        invocation: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+        let _ = invocation.function_arguments()?;
+        let goal = self
+            .goal_service
+            .clear_thread_goal_from_turn(
+                self.state_db.as_ref(),
+                self.thread_id,
+                invocation.turn_id.as_str(),
+                invocation.call_id.as_str(),
+            )
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("failed to clear goal: {err}"))
+            })?;
+        let goal = goal.map(protocol_goal_from_state);
+        if goal.is_some() {
+            self.event_emitter.thread_goal_cleared(
+                invocation.call_id.clone(),
+                Some(invocation.turn_id.to_string()),
+                self.thread_id,
+            );
+        }
+        let value = serde_json::to_value(ClearGoalToolResponse { cleared_goal: goal })
+            .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+        Ok(Box::new(JsonToolOutput::new(value)))
     }
 
     fn emit_goal_updated_from_tool_call(

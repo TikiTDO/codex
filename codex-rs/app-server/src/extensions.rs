@@ -5,6 +5,7 @@ use std::time::Duration;
 use codex_analytics::AnalyticsEventsClient;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadGoal;
+use codex_app_server_protocol::ThreadGoalClearedNotification;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadQueueChangedNotification;
 use codex_app_server_protocol::WarningNotification;
@@ -243,6 +244,31 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                         .await;
                 });
             }
+            EventMsg::ThreadGoalCleared(thread_goal_event) => {
+                let thread_id = thread_goal_event.thread_id;
+                if let Some(listener_command_tx) = self
+                    .thread_state_manager
+                    .current_listener_command_tx(thread_id)
+                {
+                    let command = ThreadListenerCommand::EmitThreadGoalCleared;
+                    if listener_command_tx.send(command).is_ok() {
+                        return;
+                    }
+                    tracing::warn!(
+                        "failed to enqueue extension goal clear for {thread_id}: listener command channel is closed"
+                    );
+                }
+                let outgoing = Arc::clone(&self.outgoing);
+                tokio::spawn(async move {
+                    outgoing
+                        .send_server_notification(ServerNotification::ThreadGoalCleared(
+                            ThreadGoalClearedNotification {
+                                thread_id: thread_id.to_string(),
+                            },
+                        ))
+                        .await;
+                });
+            }
             msg => {
                 tracing::debug!(event_id = %event.id, ?msg, "dropping unsupported extension event");
             }
@@ -345,6 +371,7 @@ fn internal_session_spawner(
 #[cfg(test)]
 mod tests {
     use codex_protocol::protocol::ThreadGoal as CoreThreadGoal;
+    use codex_protocol::protocol::ThreadGoalClearedEvent;
     use codex_protocol::protocol::ThreadGoalStatus;
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
     use pretty_assertions::assert_eq;
@@ -378,9 +405,7 @@ mod tests {
             message: "catalog was shortened".to_string(),
         });
         sink.emit(thread_goal_updated_event(thread_id, "turn-2"));
-        listener_command_tx
-            .send(ThreadListenerCommand::EmitThreadGoalCleared)
-            .expect("listener command channel should be open");
+        sink.emit(thread_goal_cleared_event(thread_id, "turn-clear"));
 
         let mut observed = Vec::new();
         for _ in 0..4 {
@@ -654,6 +679,16 @@ mod tests {
                     created_at: 7,
                     updated_at: 8,
                 },
+            }),
+        }
+    }
+
+    fn thread_goal_cleared_event(thread_id: ThreadId, turn_id: &str) -> Event {
+        Event {
+            id: "goal-cleared".to_string(),
+            msg: EventMsg::ThreadGoalCleared(ThreadGoalClearedEvent {
+                thread_id,
+                turn_id: Some(turn_id.to_string()),
             }),
         }
     }
