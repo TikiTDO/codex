@@ -818,6 +818,14 @@ only bounded event metadata; app-server validates it and generates the hidden
 model marker itself. `sourceClass`, `sourceRef`, and `reference` provide
 attribution and correlation, not authentication or authority.
 
+Beside that marker, app-server supplies server-owned instructions identifying
+the event as attention rather than task content or effect authority. Those
+instructions tell Codex to follow the active receiver play for the event kind
+and, after reconciliation, continue an already accepted unfinished task in the
+same turn when it was not paused, replaced, or refused and no new hold remains.
+They do not authorize Codex to invent work or override a pause, replacement,
+refusal, or hold.
+
 ```json
 { "method": "thread/attention", "id": 27, "params": {
     "threadId": "thr_123",
