@@ -43,9 +43,12 @@ pub use remote_control::start_remote_control;
 pub use remote_control::take_remote_control_disabled_env;
 pub use stdio::start_stdio_connection;
 pub use unix_socket::AppServerStartupLock;
+pub use unix_socket::PreparedControlSocket;
 pub use unix_socket::acquire_app_server_startup_lock;
+pub use unix_socket::prepare_control_socket;
 pub use unix_socket::prepare_control_socket_path;
 pub use unix_socket::start_control_socket_acceptor;
+pub use unix_socket::start_prepared_control_socket_acceptor;
 pub use websocket::start_websocket_acceptor;
 
 const INTERNAL_ERROR_CODE: i64 = -32603;

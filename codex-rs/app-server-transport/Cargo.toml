@@ -55,6 +55,9 @@ tracing = { workspace = true, features = ["log"] }
 url = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v7"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["fs", "process"] }
+
 [dev-dependencies]
 chrono = { workspace = true }
 codex-config = { workspace = true }

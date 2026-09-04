@@ -3,7 +3,11 @@ use super::CHANNEL_CAPACITY;
 use super::TransportEvent;
 use super::acquire_app_server_startup_lock;
 use super::app_server_control_socket_path;
+#[cfg(target_os = "linux")]
+use super::prepare_control_socket;
 use super::start_control_socket_acceptor;
+#[cfg(target_os = "linux")]
+use super::start_prepared_control_socket_acceptor;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_core::config::find_codex_home;
@@ -13,6 +17,10 @@ use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use std::io::Result as IoResult;
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
@@ -166,8 +174,6 @@ async fn app_server_startup_lock_serializes_waiters() {
 #[cfg(unix)]
 #[tokio::test]
 async fn control_socket_file_is_private_after_bind() {
-    use std::os::unix::fs::PermissionsExt;
-
     let temp_dir = tempfile::TempDir::new().expect("temp dir");
     let socket_path = test_socket_path(temp_dir.path());
     let (transport_event_tx, _transport_event_rx) =
@@ -188,6 +194,184 @@ async fn control_socket_file_is_private_after_bind() {
 
     shutdown_token.cancel();
     accept_handle.await.expect("acceptor should join");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn proc_fd_preparation_pins_the_directory_through_bind_and_cleanup() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let root = temp_dir.path().join("socket-root");
+    std::fs::create_dir(&root).expect("socket root should be created");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+        .expect("socket root should be private");
+    let external_directory = std::fs::File::open(&root).expect("socket root should open");
+    let external_socket_path = AbsolutePathBuf::from_absolute_path(
+        Path::new("/proc")
+            .join(std::process::id().to_string())
+            .join("fd")
+            .join(external_directory.as_raw_fd().to_string())
+            .join("app-server.sock"),
+    )
+    .expect("proc-fd socket path should resolve lexically");
+    let prepared = prepare_control_socket(external_socket_path)
+        .await
+        .expect("proc-fd socket should prepare");
+
+    let moved = temp_dir.path().join("socket-root-moved");
+    std::fs::rename(&root, &moved).expect("socket root should move");
+    std::fs::create_dir(&root).expect("replacement root should be created");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+        .expect("replacement root should be private");
+    let sentinel = root.join("sentinel");
+    std::fs::write(&sentinel, b"unchanged").expect("replacement sentinel should be written");
+    drop(external_directory);
+
+    let (transport_event_tx, _transport_event_rx) =
+        mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
+    let shutdown_token = CancellationToken::new();
+    let accept_handle = start_prepared_control_socket_acceptor(
+        prepared,
+        transport_event_tx,
+        shutdown_token.clone(),
+    )
+    .await
+    .expect("prepared proc-fd socket should bind");
+
+    assert_eq!(
+        (
+            moved.join("app-server.sock").exists(),
+            root.join("app-server.sock").exists(),
+            std::fs::read(&sentinel).expect("replacement sentinel should remain readable"),
+        ),
+        (true, false, b"unchanged".to_vec()),
+    );
+
+    shutdown_token.cancel();
+    accept_handle.await.expect("acceptor should join");
+    assert_eq!(
+        (
+            moved.join("app-server.sock").exists(),
+            root.join("app-server.sock").exists(),
+            std::fs::read(&sentinel).expect("replacement sentinel should remain readable"),
+        ),
+        (false, false, b"unchanged".to_vec()),
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ordinary_prepared_socket_revalidates_its_parent_before_bind() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let root = temp_dir.path().join("socket-root");
+    std::fs::create_dir(&root).expect("socket root should be created");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+        .expect("socket root should be private");
+    let socket_path = AbsolutePathBuf::from_absolute_path(root.join("app-server.sock"))
+        .expect("ordinary socket path should be absolute");
+    let prepared = prepare_control_socket(socket_path)
+        .await
+        .expect("ordinary socket should prepare");
+
+    let moved = temp_dir.path().join("socket-root-moved");
+    std::fs::rename(&root, &moved).expect("socket root should move");
+    let replacement = temp_dir.path().join("replacement-root");
+    std::fs::create_dir(&replacement).expect("replacement root should be created");
+    std::os::unix::fs::symlink(&replacement, &root)
+        .expect("replacement parent symlink should be created");
+
+    let (transport_event_tx, _transport_event_rx) =
+        mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
+    let error = start_prepared_control_socket_acceptor(
+        prepared,
+        transport_event_tx,
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("replaced ordinary socket parent should be refused");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        (
+            moved.join("app-server.sock").exists(),
+            replacement.join("app-server.sock").exists(),
+        ),
+        (false, false),
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn proc_fd_preparation_refuses_non_private_and_ordinary_symlink_parents() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let root = temp_dir.path().join("socket-root");
+    std::fs::create_dir(&root).expect("socket root should be created");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))
+        .expect("socket root mode should be set");
+    let directory = std::fs::File::open(&root).expect("socket root should open");
+    let proc_fd_socket = AbsolutePathBuf::from_absolute_path(
+        Path::new("/proc")
+            .join(std::process::id().to_string())
+            .join("fd")
+            .join(directory.as_raw_fd().to_string())
+            .join("app-server.sock"),
+    )
+    .expect("proc-fd socket path should resolve lexically");
+    let proc_fd_error = prepare_control_socket(proc_fd_socket)
+        .await
+        .err()
+        .expect("non-private proc-fd parent should be refused");
+
+    let link = temp_dir.path().join("ordinary-link");
+    std::os::unix::fs::symlink(&root, &link).expect("ordinary symlink should be created");
+    let linked_socket = AbsolutePathBuf::from_absolute_path(link.join("app-server.sock"))
+        .expect("linked socket path should resolve lexically");
+    let symlink_error = prepare_control_socket(linked_socket)
+        .await
+        .err()
+        .expect("ordinary symlink parent should be refused");
+
+    assert_eq!(
+        (proc_fd_error.kind(), symlink_error.kind()),
+        (
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::AlreadyExists
+        ),
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn proc_fd_preparation_refuses_fifo_descriptor_without_blocking() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let fifo = temp_dir.path().join("socket-parent-fifo");
+    rustix::fs::mkfifoat(rustix::fs::CWD, &fifo, rustix::fs::Mode::RUSR)
+        .expect("fifo should be created");
+    let fifo_descriptor = rustix::fs::open(
+        &fifo,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .expect("fifo should open without waiting for a writer");
+    let proc_fd_socket = AbsolutePathBuf::from_absolute_path(
+        Path::new("/proc")
+            .join(std::process::id().to_string())
+            .join("fd")
+            .join(fifo_descriptor.as_raw_fd().to_string())
+            .join("app-server.sock"),
+    )
+    .expect("proc-fd socket path should resolve lexically");
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        prepare_control_socket(proc_fd_socket),
+    )
+    .await
+    .expect("non-directory proc-fd preparation should not block");
+    let error = result
+        .err()
+        .expect("non-directory proc-fd parent should be refused");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::NotADirectory);
 }
 
 fn absolute_path(path: &str) -> AbsolutePathBuf {

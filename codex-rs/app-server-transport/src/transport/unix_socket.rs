@@ -1,6 +1,16 @@
+#[cfg(target_os = "linux")]
+use std::fs::File;
+#[cfg(target_os = "linux")]
+use std::fs::Metadata;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt;
+#[cfg(target_os = "linux")]
+use std::path::Component;
 use std::path::Path;
 
 use super::TransportEvent;
@@ -26,12 +36,57 @@ pub async fn start_control_socket_acceptor(
     transport_event_tx: mpsc::Sender<TransportEvent>,
     shutdown_token: CancellationToken,
 ) -> IoResult<JoinHandle<()>> {
+    let prepared = prepare_control_socket(socket_path).await?;
+    start_prepared_control_socket_acceptor(prepared, transport_event_tx, shutdown_token).await
+}
+
+/// A checked socket path that retains procfd parent identity when applicable.
+pub struct PreparedControlSocket {
+    socket_path: AbsolutePathBuf,
+    parent: PreparedControlSocketParent,
+}
+
+enum PreparedControlSocketParent {
+    RevalidateBeforeBind,
+    #[cfg(target_os = "linux")]
+    Retained {
+        _directory: File,
+    },
+}
+
+/// Prepares a control socket path once and retains any identity needed by the acceptor.
+pub async fn prepare_control_socket(
+    socket_path: AbsolutePathBuf,
+) -> IoResult<PreparedControlSocket> {
+    #[cfg(target_os = "linux")]
+    if let Some(prepared) = prepare_proc_fd_control_socket(socket_path.as_path()).await? {
+        return Ok(prepared);
+    }
+
     prepare_control_socket_path(socket_path.as_path()).await?;
-    let listener = UnixListener::bind(socket_path.as_path()).await?;
-    let socket_guard = ControlSocketFileGuard { socket_path };
-    set_control_socket_permissions(socket_guard.socket_path.as_path()).await?;
+    Ok(PreparedControlSocket {
+        socket_path,
+        parent: PreparedControlSocketParent::RevalidateBeforeBind,
+    })
+}
+
+/// Binds a previously prepared control socket without reopening its parent coordinate.
+pub async fn start_prepared_control_socket_acceptor(
+    prepared: PreparedControlSocket,
+    transport_event_tx: mpsc::Sender<TransportEvent>,
+    shutdown_token: CancellationToken,
+) -> IoResult<JoinHandle<()>> {
+    if matches!(
+        &prepared.parent,
+        PreparedControlSocketParent::RevalidateBeforeBind
+    ) {
+        prepare_control_socket_path(prepared.socket_path.as_path()).await?;
+    }
+    let listener = UnixListener::bind(prepared.socket_path.as_path()).await?;
+    let socket_guard = ControlSocketFileGuard { prepared };
+    set_control_socket_permissions(socket_guard.socket_path().as_path()).await?;
     info!(
-        socket_path = %socket_guard.socket_path.display(),
+        socket_path = %socket_guard.socket_path().display(),
         "app-server control socket listening"
     );
 
@@ -41,6 +96,102 @@ pub async fn start_control_socket_acceptor(
         shutdown_token,
         socket_guard,
     )))
+}
+
+#[cfg(target_os = "linux")]
+async fn prepare_proc_fd_control_socket(
+    socket_path: &Path,
+) -> IoResult<Option<PreparedControlSocket>> {
+    let Some(parent) = socket_path.parent() else {
+        return Ok(None);
+    };
+    if !is_exact_proc_fd_path(parent) {
+        return Ok(None);
+    }
+    let Some(socket_name) = socket_path.file_name() else {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "proc-fd control socket path has no file name",
+        ));
+    };
+
+    let link_metadata = std::fs::symlink_metadata(parent)?;
+    if !link_metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "proc-fd control socket parent is not a descriptor link",
+        ));
+    }
+    let followed_metadata = std::fs::metadata(parent)?;
+    let directory = File::from(rustix::fs::open(
+        parent,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?);
+    let opened_metadata = directory.metadata()?;
+    let current_uid = rustix::process::geteuid().as_raw();
+    if !same_directory(&followed_metadata, &opened_metadata)
+        || !opened_metadata.is_dir()
+        || opened_metadata.mode() & 0o777 != 0o700
+        || link_metadata.uid() != current_uid
+        || opened_metadata.uid() != current_uid
+    {
+        return Err(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "proc-fd control socket parent is not one owner-private directory",
+        ));
+    }
+
+    let anchored_path = AbsolutePathBuf::from_absolute_path(
+        Path::new("/proc/self/fd")
+            .join(directory.as_raw_fd().to_string())
+            .join(socket_name),
+    )?;
+    prepare_control_socket_file(anchored_path.as_path()).await?;
+    Ok(Some(PreparedControlSocket {
+        socket_path: anchored_path,
+        parent: PreparedControlSocketParent::Retained {
+            _directory: directory,
+        },
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn is_exact_proc_fd_path(path: &Path) -> bool {
+    let mut components = path.components();
+    if components.next() != Some(Component::RootDir)
+        || components.next() != Some(Component::Normal(std::ffi::OsStr::new("proc")))
+    {
+        return false;
+    }
+    let (
+        Some(Component::Normal(pid)),
+        Some(Component::Normal(fd_directory)),
+        Some(Component::Normal(fd)),
+    ) = (components.next(), components.next(), components.next())
+    else {
+        return false;
+    };
+    fd_directory == "fd"
+        && components.next().is_none()
+        && canonical_decimal(pid).is_some_and(|value| value > 0)
+        && canonical_decimal(fd).is_some()
+}
+
+#[cfg(target_os = "linux")]
+fn canonical_decimal(value: &std::ffi::OsStr) -> Option<u32> {
+    let raw = value.to_str()?;
+    let parsed = raw.parse::<u32>().ok()?;
+    (parsed.to_string() == raw).then_some(parsed)
+}
+
+#[cfg(target_os = "linux")]
+fn same_directory(left: &Metadata, right: &Metadata) -> bool {
+    left.dev() == right.dev()
+        && left.ino() == right.ino()
+        && left.mode() == right.mode()
+        && left.uid() == right.uid()
+        && left.gid() == right.gid()
 }
 
 async fn run_control_socket_acceptor(
@@ -95,6 +246,10 @@ pub async fn prepare_control_socket_path(socket_path: &Path) -> IoResult<()> {
         codex_uds::prepare_private_socket_directory(parent).await?;
     }
 
+    prepare_control_socket_file(socket_path).await
+}
+
+async fn prepare_control_socket_file(socket_path: &Path) -> IoResult<()> {
     match UnixStream::connect(socket_path).await {
         Ok(_stream) => {
             return Err(std::io::Error::new(
@@ -172,16 +327,22 @@ async fn set_control_socket_permissions(_socket_path: &Path) -> IoResult<()> {
 }
 
 struct ControlSocketFileGuard {
-    socket_path: AbsolutePathBuf,
+    prepared: PreparedControlSocket,
+}
+
+impl ControlSocketFileGuard {
+    fn socket_path(&self) -> &AbsolutePathBuf {
+        &self.prepared.socket_path
+    }
 }
 
 impl Drop for ControlSocketFileGuard {
     fn drop(&mut self) {
-        if let Err(err) = std::fs::remove_file(self.socket_path.as_path())
+        if let Err(err) = std::fs::remove_file(self.socket_path().as_path())
             && err.kind() != ErrorKind::NotFound
         {
             warn!(
-                socket_path = %self.socket_path.display(),
+                socket_path = %self.socket_path().display(),
                 %err,
                 "failed to remove app-server control socket file"
             );
