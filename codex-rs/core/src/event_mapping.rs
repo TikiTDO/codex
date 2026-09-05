@@ -175,6 +175,7 @@ fn parse_agent_message(
         phase,
         memory_citation: None,
         delivery: None,
+        questions: None,
     }
 }
 

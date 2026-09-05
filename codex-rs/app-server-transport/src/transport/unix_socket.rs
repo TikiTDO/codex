@@ -1,3 +1,5 @@
+//! Control socket startup, guarded rendezvous paths, and WebSocket acceptance.
+
 #[cfg(target_os = "linux")]
 use std::fs::File;
 #[cfg(target_os = "linux")]
@@ -40,7 +42,7 @@ pub async fn start_control_socket_acceptor(
     start_prepared_control_socket_acceptor(prepared, transport_event_tx, shutdown_token).await
 }
 
-/// A checked socket path that retains procfd parent identity when applicable.
+/// A checked socket path that retains parent identity when the platform supports it.
 pub struct PreparedControlSocket {
     socket_path: AbsolutePathBuf,
     parent: PreparedControlSocketParent,
@@ -51,6 +53,10 @@ enum PreparedControlSocketParent {
     #[cfg(target_os = "linux")]
     Retained {
         _directory: File,
+    },
+    #[cfg(windows)]
+    RetainedWindows {
+        _directory: std::os::windows::io::OwnedHandle,
     },
 }
 
@@ -63,7 +69,25 @@ pub async fn prepare_control_socket(
         return Ok(prepared);
     }
 
+    #[cfg(windows)]
+    {
+        if let Some(parent) = socket_path.as_path().parent() {
+            codex_uds::prepare_private_socket_directory(parent).await?;
+        }
+        let (path, directory) = codex_uds::validate_private_socket_path(socket_path.as_path())?;
+        let socket_path = AbsolutePathBuf::from_absolute_path_checked(path)?;
+        prepare_control_socket_file(socket_path.as_path()).await?;
+        return Ok(PreparedControlSocket {
+            socket_path,
+            parent: PreparedControlSocketParent::RetainedWindows {
+                _directory: directory,
+            },
+        });
+    }
+
+    #[cfg(not(windows))]
     prepare_control_socket_path(socket_path.as_path()).await?;
+    #[cfg(not(windows))]
     Ok(PreparedControlSocket {
         socket_path,
         parent: PreparedControlSocketParent::RevalidateBeforeBind,
@@ -245,6 +269,13 @@ pub async fn prepare_control_socket_path(socket_path: &Path) -> IoResult<()> {
     if let Some(parent) = socket_path.parent() {
         codex_uds::prepare_private_socket_directory(parent).await?;
     }
+
+    #[cfg(windows)]
+    let (socket_path, _directory_guard) = codex_uds::validate_private_socket_path(socket_path)?;
+    #[cfg(windows)]
+    let socket_path = AbsolutePathBuf::from_absolute_path_checked(socket_path)?;
+    #[cfg(windows)]
+    let socket_path = socket_path.as_path();
 
     prepare_control_socket_file(socket_path).await
 }

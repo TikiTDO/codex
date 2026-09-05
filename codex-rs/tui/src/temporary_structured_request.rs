@@ -39,10 +39,11 @@ pub(crate) struct TemporaryStructuredThreadOptions {
     pub(crate) mcp_server_names: Vec<String>,
 }
 
-/// Start an ephemeral thread without widening permissions or exposing tools and environment access.
+/// Start an ephemeral thread without widening permissions or exposing environment access.
 ///
 /// Structured prompts can contain untrusted transcript text, so the effective app-server config is
-/// read first and every MCP server is explicitly disabled alongside built-in and extension tools.
+/// read first and every MCP server is explicitly disabled alongside environment-capable built-in
+/// and extension tools. Core context lifecycle utilities remain available to the temporary thread.
 pub(crate) async fn start_temporary_thread(
     request_handle: &AppServerRequestHandle,
     options: TemporaryStructuredThreadOptions,
@@ -60,6 +61,7 @@ pub(crate) async fn start_temporary_thread(
         ("features.apps".to_string(), false.into()),
         ("features.code_mode".to_string(), false.into()),
         ("features.code_mode_only".to_string(), false.into()),
+        ("features.context_management".to_string(), false.into()),
         ("features.current_time_reminder".to_string(), false.into()),
         ("features.deferred_executor".to_string(), false.into()),
         ("features.enable_fanout".to_string(), false.into()),
