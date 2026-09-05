@@ -277,7 +277,7 @@ impl GoalService {
         };
 
         if let Some(runtime) = runtime.as_ref() {
-            runtime.invalidate_turn_lineage().await;
+            runtime.clear_pending_turn_start_options().await;
         }
 
         if objective.is_some() {
@@ -329,7 +329,6 @@ impl GoalService {
         attribution: GoalEventAttribution<'_>,
         progress_event_id: Option<&str>,
     ) -> Result<Option<codex_state::ThreadGoal>, GoalServiceError> {
-        let clear_started_from_turn = matches!(&attribution, GoalEventAttribution::Turn(_));
         let runtime = self.runtime_for_thread(thread_id);
         // Hold this through the prepare/write window so idle continuation cannot
         // launch from goal state that this external mutation is about to change.
@@ -380,13 +379,7 @@ impl GoalService {
                 ))
             })?;
         if let Some(runtime) = runtime.as_ref() {
-            // An external clear invalidates any continuation lineage it races
-            // with. A clear_goal call is already part of the active turn, so
-            // invalidating that same turn would erase its trusted root before
-            // the tool completion and turn analytics are recorded.
-            if !clear_started_from_turn {
-                runtime.invalidate_turn_lineage().await;
-            }
+            runtime.clear_pending_turn_start_options().await;
             if let Err(err) = runtime
                 .apply_external_goal_clear(cleared_goal.clone(), attribution)
                 .await

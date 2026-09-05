@@ -374,6 +374,24 @@ async fn proc_fd_preparation_refuses_fifo_descriptor_without_blocking() {
     assert_eq!(error.kind(), std::io::ErrorKind::NotADirectory);
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn control_socket_pins_directory_until_shutdown() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp_dir.path());
+    let directory = socket_path.as_path().parent().unwrap();
+    let moved = temp_dir.path().join("moved");
+    let (tx, _rx) = mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
+    let shutdown = CancellationToken::new();
+    let acceptor = start_control_socket_acceptor(socket_path.clone(), tx, shutdown.clone())
+        .await
+        .expect("acceptor");
+    assert!(std::fs::rename(directory, &moved).is_err());
+    shutdown.cancel();
+    acceptor.await.expect("shutdown");
+    std::fs::rename(directory, moved).expect("directory unpinned after cleanup");
+}
+
 fn absolute_path(path: &str) -> AbsolutePathBuf {
     AbsolutePathBuf::from_absolute_path(path).expect("absolute path")
 }
