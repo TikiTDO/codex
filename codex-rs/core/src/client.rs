@@ -1287,6 +1287,20 @@ impl ModelClientSession {
         self.websocket_session.reset_connection();
     }
 
+    fn reconcile_auth_owner(&mut self, auth_owner_generation: Option<u64>) -> bool {
+        let owner_changed = self.websocket_session.auth_owner_generation != auth_owner_generation
+            || self.client.auth_owner_generation() != auth_owner_generation;
+        if owner_changed {
+            // A response ID and turn state belong to the account that created them. Keep token
+            // refreshes for the same owner reusable, but never carry either across an owner seam.
+            self.turn_state = Arc::new(OnceLock::new());
+            self.websocket_session.lineage.clear();
+            self.reset_websocket_session();
+            self.websocket_session.auth_owner_generation = auth_owner_generation;
+        }
+        owner_changed
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Builds shared Responses API transport options and request-body options.
     ///
@@ -1418,12 +1432,7 @@ impl ModelClientSession {
             None => true,
         };
         // Resolving an external auth provider can change ownership during client setup.
-        let owner_changed = self.websocket_session.auth_owner_generation != auth_owner_generation
-            || self.client.auth_owner_generation() != auth_owner_generation;
-        if owner_changed {
-            self.turn_state = Arc::new(OnceLock::new());
-            self.websocket_session.lineage.clear();
-        }
+        let owner_changed = self.reconcile_auth_owner(auth_owner_generation);
 
         if needs_new || owner_changed {
             self.reset_websocket_session();
@@ -1514,6 +1523,7 @@ impl ModelClientSession {
         let mut lineage_recovery_attempted = false;
         loop {
             let client_setup = self.client.current_client_setup().await?;
+            self.reconcile_auth_owner(client_setup.auth_owner_generation);
             let endpoint = self
                 .client
                 .responses_endpoint(client_setup.auth.as_ref(), &model_info.slug);
