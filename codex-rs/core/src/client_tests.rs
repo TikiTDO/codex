@@ -235,6 +235,18 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
     Ok(())
 }
 
+#[test]
+fn response_state_is_reset_at_an_auth_owner_seam() {
+    let client = test_model_client(SessionSource::Cli);
+    let mut session = client.new_session();
+    session.turn_state.set("owner-a".to_string()).unwrap();
+    session.websocket_session.auth_owner_generation = Some(7);
+
+    assert!(session.reconcile_auth_owner(/*auth_owner_generation*/ None));
+    assert!(session.turn_state.get().is_none());
+    assert_eq!(session.websocket_session.auth_owner_generation, None);
+}
+
 fn test_model_provider() -> SharedModelProvider {
     test_model_client(SessionSource::Cli).state.provider.clone()
 }
