@@ -965,7 +965,9 @@ impl ModelClient {
             tool_choice: "auto".to_string(),
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
             reasoning: Some(reasoning),
-            store: is_openai,
+            // The send path enables storage only after it has resolved ChatGPT-account auth.
+            // API-key and other providers retain the established no-storage posture.
+            store: false,
             stream: true,
             stream_options,
             include,
@@ -978,6 +980,29 @@ impl ModelClient {
         Ok(request)
     }
 
+    fn responses_server_storage_enabled(&self, auth: Option<&CodexAuth>) -> bool {
+        self.state.provider.info().is_openai() && auth.is_some_and(CodexAuth::is_chatgpt_auth)
+    }
+
+    fn filter_tool_result_metadata(input: &mut [ResponseItem], api_provider: &ApiProvider) {
+        // Check the resolved destination only when sending, not for local budget estimates.
+        // HTTP and WS (including v2 compaction) share this raw-metadata-only filter.
+        let result_metadata_allowed =
+            url::Url::parse(&api_provider.base_url)
+                .ok()
+                .is_some_and(|url| {
+                    url.scheme() == "https"
+                        && url.host_str().is_some_and(|host| {
+                            host == "api.openai.com"
+                                || codex_http_client::is_allowed_chatgpt_host(host)
+                        })
+                });
+        if !result_metadata_allowed {
+            for item in input {
+                item.clear_tool_result_metadata();
+            }
+        }
+    }
     fn prepare_response_items_for_request(&self, input: &mut [ResponseItem]) {
         for item in input {
             if item.id().is_some_and(|id| !id.is_prefixed()) {
@@ -1525,6 +1550,13 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
             )?;
+            request.store = self
+                .client
+                .responses_server_storage_enabled(client_setup.auth.as_ref());
+            ModelClient::filter_tool_result_metadata(
+                &mut request.input,
+                &client_setup.api_provider,
+            );
             self.client.set_guardian_ticket_request(
                 &mut request.client_metadata,
                 client_setup.auth.as_ref(),
@@ -1705,6 +1737,13 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
             )?;
+            request.store = self
+                .client
+                .responses_server_storage_enabled(client_setup.auth.as_ref());
+            ModelClient::filter_tool_result_metadata(
+                &mut request.input,
+                &client_setup.api_provider,
+            );
             if endpoint == ResponsesEndpoint::Guardian {
                 request.service_tier = None;
             }

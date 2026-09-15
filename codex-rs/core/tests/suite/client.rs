@@ -217,7 +217,11 @@ async fn openai_responses_requests_reuse_stored_response_state_across_turns() {
         ],
     )
     .await;
-    let test = test_codex().build(&server).await.unwrap();
+    let test = test_codex()
+        .with_auth(create_dummy_codex_auth())
+        .build(&server)
+        .await
+        .unwrap();
 
     test.submit_turn("turn one").await.unwrap();
     test.submit_turn("turn two").await.unwrap();
@@ -267,6 +271,46 @@ async fn openai_responses_requests_reuse_stored_response_state_across_turns() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_key_responses_requests_do_not_store_or_reuse_server_state() {
+    let server = MockServer::start().await;
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp1"),
+                ev_assistant_message("msg-1", "first answer"),
+                ev_completed("resp1"),
+            ]),
+            sse(vec![ev_response_created("resp2"), ev_completed("resp2")]),
+        ],
+    )
+    .await;
+    let test = test_codex().build(&server).await.unwrap();
+
+    test.submit_turn("turn one").await.unwrap();
+    test.submit_turn("turn two").await.unwrap();
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
+    let first = requests[0].body_json();
+    let second = requests[1].body_json();
+    assert_eq!(first["store"], false);
+    assert_eq!(second["store"], false);
+    assert_eq!(first.get("previous_response_id"), None);
+    assert_eq!(second.get("previous_response_id"), None);
+
+    let second_input_texts = second["input"]
+        .as_array()
+        .expect("second input")
+        .iter()
+        .flat_map(message_input_texts)
+        .collect::<Vec<_>>();
+    assert!(second_input_texts.contains(&"turn one"));
+    assert!(second_input_texts.contains(&"first answer"));
+    assert!(second_input_texts.contains(&"turn two"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn openai_responses_missing_stored_state_retries_with_full_history() {
     let server = MockServer::start().await;
     let response_mock = mount_sse_sequence(
@@ -290,7 +334,11 @@ async fn openai_responses_missing_stored_state_retries_with_full_history() {
         ],
     )
     .await;
-    let test = test_codex().build(&server).await.unwrap();
+    let test = test_codex()
+        .with_auth(create_dummy_codex_auth())
+        .build(&server)
+        .await
+        .unwrap();
 
     test.submit_turn("turn one").await.unwrap();
     test.submit_turn("turn two").await.unwrap();
