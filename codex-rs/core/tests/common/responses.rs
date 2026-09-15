@@ -1766,10 +1766,9 @@ fn validate_request_body_invariants(request: &wiremock::Request) {
         "orphan custom_tool_call_output with empty call_id should be dropped",
     );
 
-    // A request that continues a stored response contains only the incremental input. Its
-    // matching call or output can therefore live in the server-side prefix rather than this
-    // request body. Keep validating item-local requirements above, but only enforce pair
-    // symmetry when the request carries its complete history.
+    // A request that continues a stored response contains only the incremental input. An output's
+    // matching call can therefore live in the server-side prefix rather than this request body.
+    // A call introduced by the delta must still carry its output in that same delta.
     if !uses_stored_response {
         for cid in &function_call_outputs {
             assert!(
@@ -1789,24 +1788,24 @@ fn validate_request_body_invariants(request: &wiremock::Request) {
                 "tool_search_output without matching call in input: {cid}",
             );
         }
+    }
 
-        for cid in &function_calls {
-            assert!(
-                function_call_outputs.contains(cid),
-                "Function call output is missing for call id: {cid}",
-            );
-        }
-        for cid in &custom_tool_calls {
-            assert!(
-                custom_tool_call_outputs.contains(cid),
-                "Custom tool call output is missing for call id: {cid}",
-            );
-        }
-        for cid in &tool_search_calls {
-            assert!(
-                tool_search_outputs.contains(cid),
-                "Tool search output is missing for call id: {cid}",
-            );
-        }
+    for cid in &function_calls {
+        assert!(
+            function_call_outputs.contains(cid),
+            "Function call output is missing for call id: {cid}",
+        );
+    }
+    for cid in &custom_tool_calls {
+        assert!(
+            custom_tool_call_outputs.contains(cid),
+            "Custom tool call output is missing for call id: {cid}",
+        );
+    }
+    for cid in &tool_search_calls {
+        assert!(
+            tool_search_outputs.contains(cid),
+            "Tool search output is missing for call id: {cid}",
+        );
     }
 }

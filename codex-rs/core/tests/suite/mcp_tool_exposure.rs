@@ -966,6 +966,11 @@ enabled = false
         .collect::<Vec<_>>();
     assert_eq!(tools_states[0].len(), 1);
     assert!(tools_states[1].is_empty());
+    assert_eq!(
+        requests[1].body_json()["previous_response_id"].as_str(),
+        Some("resp-1"),
+        "the unchanged tool state should be inherited from the stored response"
+    );
     assert_eq!(tools_states[2].len(), 2);
     assert!(tools_states[2][1].contains("Removed deferred tool namespaces:\n"));
     assert!(tools_states[2][1].contains("No deferred tool namespaces remain.\n"));
