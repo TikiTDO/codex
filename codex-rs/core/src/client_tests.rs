@@ -1,8 +1,10 @@
 use super::AuthRequestTelemetryContext;
 use super::CompactConversationRequestSettings;
+use super::LastResponse;
 use super::ModelClient;
 use super::PendingUnauthorizedRetry;
 use super::Prompt;
+use super::ResponsesLineageUpdate;
 use super::UnauthorizedRecoveryExecution;
 use super::WEBSOCKET_CIRCUIT_BASE_COOLDOWN;
 use super::WebsocketCircuitBreaker;
@@ -105,6 +107,89 @@ fn websocket_circuit_recovers_and_backs_off_until_success() {
     assert!(circuit.allows_attempt(second_attempt));
     let (_, reset_cooldown) = circuit.open(second_attempt);
     assert_eq!(reset_cooldown, WEBSOCKET_CIRCUIT_BASE_COOLDOWN);
+}
+
+#[test]
+fn websocket_connection_reset_preserves_response_lineage_for_http_fallback() {
+    let client = test_model_client(SessionSource::Cli);
+    let metadata = test_responses_metadata_for_client(
+        &client,
+        /*turn_id*/ None,
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let first_input = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "first".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let first_output = output_message("first", "answer");
+    let second_input = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "second".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let mut first_request = client
+        .build_responses_request(
+            &Prompt {
+                input: vec![first_input.clone()],
+                ..Default::default()
+            },
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            /*service_tier*/ None,
+            &metadata,
+        )
+        .expect("build first request");
+    first_request.store = true;
+
+    let mut session = client.new_session();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    session.websocket_session.lineage.record_pending(
+        first_request,
+        receiver,
+        /*from_untraced_warmup*/ false,
+    );
+    sender
+        .send(ResponsesLineageUpdate::Completed(LastResponse {
+            response_id: "resp-first".to_string(),
+            items_added: vec![first_output.clone()],
+        }))
+        .expect("record completed response");
+
+    session.reset_websocket_session();
+    let mut second_request = client
+        .build_responses_request(
+            &Prompt {
+                input: vec![first_input, first_output, second_input.clone()],
+                ..Default::default()
+            },
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            /*service_tier*/ None,
+            &metadata,
+        )
+        .expect("build second request");
+    second_request.store = true;
+    let incremental = session
+        .websocket_session
+        .lineage
+        .prepare_incremental_request(&second_request, /*allow_empty_delta*/ false)
+        .expect("connection reset should preserve server response lineage");
+
+    assert_eq!(incremental.previous_response_id, "resp-first");
+    assert_eq!(incremental.input, vec![second_input]);
 }
 use tempfile::TempDir;
 use tokio::sync::Notify;
