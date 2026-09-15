@@ -964,7 +964,8 @@ enabled = false
         .iter()
         .map(tools_state_sections)
         .collect::<Vec<_>>();
-    assert_eq!(tools_states[0], tools_states[1]);
+    assert_eq!(tools_states[0].len(), 1);
+    assert!(tools_states[1].is_empty());
     assert_eq!(tools_states[2].len(), 2);
     assert!(tools_states[2][1].contains("Removed deferred tool namespaces:\n"));
     assert!(tools_states[2][1].contains("No deferred tool namespaces remain.\n"));

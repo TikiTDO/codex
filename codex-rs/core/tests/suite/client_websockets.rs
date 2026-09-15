@@ -1073,10 +1073,10 @@ async fn responses_websocket_prewarm_includes_model_and_tier_routing_hint() {
 async fn responses_websocket_prewarm_uses_v2_when_provider_supports_websockets() {
     skip_if_no_network!();
 
-    let server = start_websocket_server(vec![vec![vec![
-        ev_response_created("resp-1"),
-        ev_completed("resp-1"),
-    ]]])
+    let server = start_websocket_server(vec![vec![
+        vec![ev_response_created("warm-1"), ev_completed("warm-1")],
+        vec![ev_response_created("resp-1"), ev_completed("resp-1")],
+    ]])
     .await;
 
     let harness = websocket_harness_with_options(&server, /*runtime_metrics_enabled*/ false).await;
@@ -1113,7 +1113,7 @@ async fn responses_websocket_prewarm_uses_v2_when_provider_supports_websockets()
     stream_until_complete(&mut client_session, &harness, &prompt).await;
     assert_eq!(server.handshakes().len(), 1);
     let connection = server.single_connection();
-    assert_eq!(connection.len(), 1);
+    assert_eq!(connection.len(), 2);
     let prewarm = connection
         .first()
         .expect("missing prewarm request")
@@ -1123,6 +1123,12 @@ async fn responses_websocket_prewarm_uses_v2_when_provider_supports_websockets()
         prewarm["input"],
         serde_json::to_value(&prompt.input).unwrap()
     );
+    let first_turn = connection
+        .get(1)
+        .expect("missing first turn request")
+        .body_json();
+    assert_eq!(first_turn["previous_response_id"].as_str(), Some("warm-1"));
+    assert_eq!(first_turn["input"], json!([]));
 
     server.shutdown().await;
 }

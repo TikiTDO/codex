@@ -630,8 +630,7 @@ fn retained_input_image_metrics(item: &ResponseItem) -> RetainedImageMetrics {
     content
         .iter()
         .fold(RetainedImageMetrics::default(), |mut metrics, item| {
-            if let ContentItem::InputImage { image_url, .. } = item
-            {
+            if let ContentItem::InputImage { image_url, .. } = item {
                 metrics.count = metrics.count.saturating_add(1);
                 metrics.inline_bytes = metrics.inline_bytes.saturating_add(image_url.len());
             }

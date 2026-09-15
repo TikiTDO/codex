@@ -5587,7 +5587,16 @@ async fn remote_v2_compaction_keeps_creation_time_instructions_after_same_path_m
     assert_eq!(requests.len(), 3);
     let old_fragment = expected_instruction_fragment(OLD_GLOBAL_INSTRUCTIONS);
     assert_single_instruction_fragment(&requests[0], &old_fragment);
-    assert_single_instruction_fragment(&requests[1], &old_fragment);
+    assert_eq!(
+        requests[1].body_json()["previous_response_id"].as_str(),
+        Some("remote-v2-initial-response"),
+        "remote-v2 compaction should inherit the creation-time instructions from stored state"
+    );
+    assert_eq!(
+        instruction_fragments(&requests[1]),
+        Vec::<String>::new(),
+        "the incremental compact request should not resend creation-time instructions"
+    );
     assert_single_instruction_fragment(&requests[2], &old_fragment);
     assert_eq!(
         requests[1].input().last(),

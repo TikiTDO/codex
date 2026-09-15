@@ -227,8 +227,10 @@ fn assert_capture_eq(label: &str, legacy: &Capture, v2: &Capture) {
         "v2 should not call /responses/compact for {label}",
     );
 
-    let legacy_compact = compact_request_view(&legacy.compact_body, Mode::Legacy);
-    let v2_compact = compact_request_view(&v2.compact_body, Mode::V2);
+    let v2_uses_stored_response = v2.compact_body["previous_response_id"].is_string();
+    let legacy_compact =
+        compact_request_view(&legacy.compact_body, Mode::Legacy, v2_uses_stored_response);
+    let v2_compact = compact_request_view(&v2.compact_body, Mode::V2, v2_uses_stored_response);
     assert_json_eq(
         &format!("compact request parity mismatch for {label}"),
         &legacy_compact,
@@ -269,8 +271,16 @@ fn assert_compact_requests_eq_except_v2_service_tier(label: &str, legacy: &Captu
         "v2 should not call /responses/compact for {label}",
     );
 
-    let legacy_compact = compact_request_view(&legacy.compact_body, Mode::Legacy);
-    let mut v2_compact = compact_request_view(&v2.compact_body, Mode::V2);
+    let legacy_compact = compact_request_view(
+        &legacy.compact_body,
+        Mode::Legacy,
+        /*omit_input_for_stored_response*/ false,
+    );
+    let mut v2_compact = compact_request_view(
+        &v2.compact_body,
+        Mode::V2,
+        /*omit_input_for_stored_response*/ false,
+    );
     remove_object_field(&mut v2_compact, "service_tier");
     assert_json_eq(
         &format!("compact request parity mismatch for {label} after service_tier upgrade"),
@@ -750,7 +760,7 @@ fn after_compact_response_body(scenario_name: &str) -> String {
     ])
 }
 
-fn compact_request_view(body: &Value, mode: Mode) -> Value {
+fn compact_request_view(body: &Value, mode: Mode, omit_input_for_stored_response: bool) -> Value {
     let mut input = body
         .get("input")
         .and_then(Value::as_array)
@@ -768,7 +778,17 @@ fn compact_request_view(body: &Value, mode: Mode) -> Value {
     }
 
     let mut selected = selected_request_fields(body, SelectedFieldsMode::Compact);
-    selected["input"] = normalize_value(strip_response_item_ids_from_json(Value::Array(input)));
+    if omit_input_for_stored_response {
+        if mode == Mode::V2 {
+            assert!(
+                input.is_empty(),
+                "stored v2 compact should send only its trigger"
+            );
+        }
+        remove_object_field(&mut selected, "previous_response_id");
+    } else {
+        selected["input"] = normalize_value(strip_response_item_ids_from_json(Value::Array(input)));
+    }
     canonical_json(&normalize_value(selected))
 }
 

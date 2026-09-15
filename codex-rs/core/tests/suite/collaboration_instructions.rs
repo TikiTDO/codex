@@ -292,14 +292,14 @@ async fn catalog_collaboration_messages_refresh_without_mode_or_model_change(
     )
     .await?;
 
-    let history = [ORIGINAL, UPDATED, ""];
     let mut requests = Vec::new();
-    for (turn, etag, refreshed_instructions, expected) in [
-        ("original", ETAG_2, Some(UPDATED), &history[..1]),
-        ("updated", ETAG_2, None, &history[..2]),
-        ("unchanged", ETAG_3, Some(""), &history[..2]),
-        ("cleared", ETAG_3, None, &history[..]),
-        ("still-cleared", ETAG_3, None, &history[..]),
+    let mut previous_response_id = None;
+    for (turn, etag, refreshed_instructions, expected_delta) in [
+        ("original", ETAG_2, Some(UPDATED), &[ORIGINAL][..]),
+        ("updated", ETAG_2, None, &[UPDATED][..]),
+        ("unchanged", ETAG_3, Some(""), &[][..]),
+        ("cleared", ETAG_3, None, &[""][..]),
+        ("still-cleared", ETAG_3, None, &[][..]),
     ] {
         if let Some(instructions) = refreshed_instructions {
             models_mocks
@@ -324,7 +324,20 @@ async fn catalog_collaboration_messages_refresh_without_mode_or_model_change(
                     .0
             })
             .collect::<Vec<_>>();
-        assert_eq!(collaboration_instructions.as_slice(), expected, "{turn}");
+        assert_eq!(
+            request
+                .body_json()
+                .get("previous_response_id")
+                .and_then(Value::as_str),
+            previous_response_id,
+            "{turn}"
+        );
+        assert_eq!(
+            collaboration_instructions.as_slice(),
+            expected_delta,
+            "{turn}"
+        );
+        previous_response_id = Some(turn);
         requests.push(request);
     }
 
@@ -336,11 +349,6 @@ async fn catalog_collaboration_messages_refresh_without_mode_or_model_change(
         [1, 1, 1]
     );
     for pair in requests.windows(2) {
-        let previous_input = pair[0].input();
-        assert_eq!(
-            pair[1].input().get(..previous_input.len()),
-            Some(previous_input.as_slice())
-        );
         assert_eq!(pair[0].instructions_text(), pair[1].instructions_text());
     }
 
