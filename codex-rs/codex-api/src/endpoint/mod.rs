@@ -10,6 +10,39 @@ pub(crate) mod search;
 mod session;
 
 pub use compact::CompactClient;
+
+const LARGE_RESPONSES_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+
+fn log_responses_request(
+    transport: &'static str,
+    request_mode: &'static str,
+    input_items: usize,
+    body_bytes: usize,
+    connection_reused: Option<bool>,
+) {
+    tracing::info!(
+        target: "codex_api::responses_request",
+        transport,
+        request.mode = request_mode,
+        request.input_items = input_items,
+        request.body_bytes = body_bytes,
+        transport.connection_reused = ?connection_reused,
+        "Responses request prepared"
+    );
+
+    if body_bytes >= LARGE_RESPONSES_REQUEST_BYTES {
+        tracing::warn!(
+            target: "codex_api::responses_request",
+            transport,
+            request.mode = request_mode,
+            request.input_items = input_items,
+            request.body_bytes = body_bytes,
+            transport.connection_reused = ?connection_reused,
+            "large Responses request prepared"
+        );
+    }
+}
+
 pub use images::ImagesClient;
 pub use memories::MemoriesClient;
 pub use models::ModelsClient;

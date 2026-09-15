@@ -5,6 +5,7 @@ use crate::common::ResponsesWsRequest;
 use crate::common::SafetyBufferingTreatment;
 use crate::common::WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY;
 use crate::endpoint::responses::ResponsesEndpoint;
+use crate::endpoint::log_responses_request;
 use crate::error::ApiError;
 use crate::error::PREVIOUS_RESPONSE_NOT_FOUND_CODE;
 use crate::provider::Provider;
@@ -297,14 +298,21 @@ impl ResponsesWebsocketConnection {
                 } else {
                     "full"
                 },
-                ws_request.input.len() as u64,
+                ws_request.input.len(),
             )
         };
         let request_text = serialize_websocket_request(&request)?;
         let span = Span::current();
         span.record("request.mode", request_mode);
-        span.record("request.input_items", input_items);
+        span.record("request.input_items", input_items as u64);
         span.record("request.body_bytes", request_text.len() as u64);
+        log_responses_request(
+            "responses_websocket",
+            request_mode,
+            input_items,
+            request_text.len(),
+            Some(connection_reused),
+        );
 
         let current_span = span;
         tokio::spawn(

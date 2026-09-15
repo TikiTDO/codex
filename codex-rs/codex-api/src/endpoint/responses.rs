@@ -1,6 +1,7 @@
 use crate::auth::SharedAuthProvider;
 use crate::common::ResponseStream;
 use crate::common::ResponsesApiRequest;
+use crate::endpoint::log_responses_request;
 use crate::endpoint::session::EndpointSession;
 use crate::error::ApiError;
 use crate::error::PREVIOUS_RESPONSE_NOT_FOUND_CODE;
@@ -141,6 +142,13 @@ impl<T: HttpTransport> ResponsesClient<T> {
         span.record("request.mode", request_mode);
         span.record("request.input_items", input_items);
         span.record("request.body_bytes", body.as_bytes().len() as u64);
+        log_responses_request(
+            "responses_http",
+            request_mode,
+            input_items as usize,
+            body.as_bytes().len(),
+            None,
+        );
 
         let mut headers = extra_headers;
         if let Some(ref thread_id) = thread_id {
