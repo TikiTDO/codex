@@ -18,8 +18,9 @@ use crate::RouteAwareClientPool;
 
 #[tokio::test]
 async fn route_aware_pool_re_resolves_redirects_and_logs_only_final_outcome() {
-    let (proxy_addr, proxy_thread) =
-        spawn_response("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+    let (proxy_addr, proxy_thread) = spawn_response(
+        "HTTP/1.1 200 OK\r\nSet-Cookie: response-header-secret\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+    );
     let (redirect_addr, redirect_thread) = spawn_response(
         "HTTP/1.1 302 Found\r\nLocation: /final?token=redirect-target-secret\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
     );
@@ -78,6 +79,7 @@ async fn route_aware_pool_re_resolves_redirects_and_logs_only_final_outcome() {
     assert!(logs.contains(&initial_url));
     assert_eq!(logs.matches("Request completed").count(), 1);
     assert!(!logs.contains("redirect-target-secret"));
+    assert!(!logs.contains("response-header-secret"));
 }
 
 fn spawn_response(
