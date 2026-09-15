@@ -284,23 +284,26 @@ impl ResponsesWebsocketConnection {
             warmup: ws_request.generate == Some(false),
             connection_reused,
         };
-        let ResponsesWsRequest::ResponseCreate(ws_request) = &mut request;
-        crate::guardian_ticket::attach(
-            &mut ws_request.client_metadata,
-            guardian_ticket,
-            self.endpoint,
-        );
+        let (request_mode, input_items) = {
+            let ResponsesWsRequest::ResponseCreate(ws_request) = &mut request;
+            crate::guardian_ticket::attach(
+                &mut ws_request.client_metadata,
+                guardian_ticket,
+                self.endpoint,
+            );
+            (
+                if ws_request.previous_response_id.is_some() {
+                    "incremental"
+                } else {
+                    "full"
+                },
+                ws_request.input.len() as u64,
+            )
+        };
         let request_text = serialize_websocket_request(&request)?;
         let span = Span::current();
-        span.record(
-            "request.mode",
-            if ws_request.previous_response_id.is_some() {
-                "incremental"
-            } else {
-                "full"
-            },
-        );
-        span.record("request.input_items", ws_request.input.len() as u64);
+        span.record("request.mode", request_mode);
+        span.record("request.input_items", input_items);
         span.record("request.body_bytes", request_text.len() as u64);
 
         let current_span = span;

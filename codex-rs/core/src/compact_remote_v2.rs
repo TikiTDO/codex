@@ -46,7 +46,6 @@ use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TokenUsage;
@@ -631,10 +630,7 @@ fn retained_input_image_metrics(item: &ResponseItem) -> RetainedImageMetrics {
     content
         .iter()
         .fold(RetainedImageMetrics::default(), |mut metrics, item| {
-            if let ContentItem::InputImage {
-                image: ImageReference::Inline { image_url },
-                ..
-            } = item
+            if let ContentItem::InputImage { image_url, .. } = item
             {
                 metrics.count = metrics.count.saturating_add(1);
                 metrics.inline_bytes = metrics.inline_bytes.saturating_add(image_url.len());
