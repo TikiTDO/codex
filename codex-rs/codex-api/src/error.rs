@@ -5,6 +5,10 @@ use http::StatusCode;
 use std::time::Duration;
 use thiserror::Error;
 
+pub const PREVIOUS_RESPONSE_NOT_FOUND_CODE: &str = "previous_response_not_found";
+pub const PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE: &str =
+    "Previous response was not found. Retrying the full request.";
+
 #[derive(Debug, Error)]
 pub enum ApiError {
     #[error(transparent)]
@@ -19,6 +23,8 @@ pub enum ApiError {
     QuotaExceeded,
     #[error("usage not included")]
     UsageNotIncluded,
+    #[error("{PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE}")]
+    PreviousResponseNotFound,
     #[error("retryable error: {message}")]
     Retryable {
         message: String,

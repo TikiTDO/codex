@@ -106,12 +106,10 @@ use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::sync::oneshot::error::TryRecvError;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
-use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -125,6 +123,9 @@ use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
 use crate::cyber_access_program;
 use crate::feedback_tags;
+use crate::responses_lineage::LastResponse;
+use crate::responses_lineage::ResponsesLineage;
+use crate::responses_lineage::ResponsesLineageUpdate;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
 use crate::util::emit_feedback_auth_recovery_tags;
@@ -262,6 +263,7 @@ struct ModelClientState {
 /// share the same auth/provider setup flow.
 struct CurrentClientSetup {
     auth: Option<CodexAuth>,
+    auth_owner_generation: Option<u64>,
     api_provider: ApiProvider,
     api_auth: SharedAuthProvider,
     agent_identity_telemetry: Option<AgentIdentityTelemetry>,
@@ -328,99 +330,23 @@ pub struct ModelClientSession {
     turn_state: Arc<OnceLock<String>>,
 }
 
-#[derive(Debug, Clone)]
-struct LastResponse {
-    response_id: String,
-    items_added: Vec<ResponseItem>,
-}
-
 #[derive(Debug, Default)]
 struct WebsocketSession {
     connection: Option<ApiWebSocketConnection>,
     endpoint: Option<ResponsesEndpoint>,
-    last_request: Option<ResponsesApiRequest>,
-    last_response_rx: Option<oneshot::Receiver<LastResponse>>,
-    last_response_from_untraced_warmup: bool,
+    /// Owner of the cached state, including before a connection is opened.
+    auth_owner_generation: Option<u64>,
+    lineage: ResponsesLineage,
     connection_reused: StdMutex<bool>,
 }
 
-// This is intentionally not a `PartialEq` implementation: request equality includes `input` and
-// `client_metadata`, while websocket reuse compares the input separately and ignores metadata.
-// Access programs are authorized per response, including continuations, without replaying input.
-// Keep the destructuring exhaustive so new request fields require an explicit reuse decision.
-fn responses_request_properties_match(
-    previous: &ResponsesApiRequest,
-    current: &ResponsesApiRequest,
-) -> bool {
-    let ResponsesApiRequest {
-        model: previous_model,
-        instructions: previous_instructions,
-        input: _,
-        tools: previous_tools,
-        tool_choice: previous_tool_choice,
-        parallel_tool_calls: previous_parallel_tool_calls,
-        reasoning: previous_reasoning,
-        store: previous_store,
-        stream: previous_stream,
-        stream_options: _,
-        include: previous_include,
-        service_tier: previous_service_tier,
-        prompt_cache_key: previous_prompt_cache_key,
-        text: previous_text,
-        client_metadata: _,
-        access_programs: _,
-    } = previous;
-    let ResponsesApiRequest {
-        model: current_model,
-        instructions: current_instructions,
-        input: _,
-        tools: current_tools,
-        tool_choice: current_tool_choice,
-        parallel_tool_calls: current_parallel_tool_calls,
-        reasoning: current_reasoning,
-        store: current_store,
-        stream: current_stream,
-        stream_options: _,
-        include: current_include,
-        service_tier: current_service_tier,
-        prompt_cache_key: current_prompt_cache_key,
-        text: current_text,
-        client_metadata: _,
-        access_programs: _,
-    } = current;
-
-    previous_model == current_model
-        && previous_instructions == current_instructions
-        && previous_tools == current_tools
-        && previous_tool_choice == current_tool_choice
-        && previous_parallel_tool_calls == current_parallel_tool_calls
-        && previous_reasoning == current_reasoning
-        && previous_store == current_store
-        && previous_stream == current_stream
-        // Stream options control delivery for this response, not the context
-        // referenced by `previous_response_id`.
-        && previous_include == current_include
-        && previous_service_tier == current_service_tier
-        && previous_prompt_cache_key == current_prompt_cache_key
-        && previous_text == current_text
-}
-
-fn response_items_equal_ignoring_internal_metadata(
-    previous: &ResponseItem,
-    current: &ResponseItem,
-) -> bool {
-    if previous == current {
-        return true;
+impl WebsocketSession {
+    fn reset_connection(&mut self) {
+        self.connection = None;
+        self.endpoint = None;
+        self.set_connection_reused(/*connection_reused*/ false);
     }
 
-    let mut previous = previous.clone();
-    previous.clear_internal_chat_message_metadata_passthrough();
-    let mut current = current.clone();
-    current.clear_internal_chat_message_metadata_passthrough();
-    previous == current
-}
-
-impl WebsocketSession {
     fn set_connection_reused(&self, connection_reused: bool) {
         *self
             .connection_reused
@@ -556,15 +482,32 @@ impl ModelClient {
     /// This constructor does not perform network I/O itself; the session opens a websocket lazily
     /// when the first stream request is issued.
     pub fn new_session(&self) -> ModelClientSession {
+        let auth_owner_generation = self.auth_owner_generation();
+        let mut websocket_session = self.take_cached_websocket_session();
+        if websocket_session.auth_owner_generation != auth_owner_generation {
+            websocket_session = WebsocketSession {
+                auth_owner_generation,
+                ..Default::default()
+            };
+        }
         ModelClientSession {
             client: self.clone(),
-            websocket_session: self.take_cached_websocket_session(),
+            websocket_session,
             turn_state: Arc::new(OnceLock::new()),
         }
     }
 
     pub(crate) fn auth_manager(&self) -> Option<Arc<AuthManager>> {
         self.state.provider.auth_manager()
+    }
+
+    fn auth_owner_generation(&self) -> Option<u64> {
+        self.auth_manager().map(|manager| {
+            manager
+                .auth_change_state_receiver()
+                .borrow()
+                .owner_generation
+        })
     }
 
     fn take_cached_websocket_session(&self) -> WebsocketSession {
@@ -601,7 +544,9 @@ impl ModelClient {
             );
         }
 
-        self.store_cached_websocket_session(WebsocketSession::default());
+        let mut websocket_session = self.take_cached_websocket_session();
+        websocket_session.reset_connection();
+        self.store_cached_websocket_session(websocket_session);
         activated
     }
 
@@ -1014,12 +959,13 @@ impl ModelClient {
         let request = ResponsesApiRequest {
             model: model_info.slug.clone(),
             instructions,
+            previous_response_id: None,
             input,
             tools,
             tool_choice: "auto".to_string(),
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
             reasoning: Some(reasoning),
-            store: false,
+            store: is_openai,
             stream: true,
             stream_options,
             include,
@@ -1061,6 +1007,9 @@ impl ModelClient {
     /// This centralizes setup used by both prewarm and normal request paths so they stay in
     /// lockstep when auth/provider resolution changes.
     async fn current_client_setup(&self) -> Result<CurrentClientSetup> {
+        // Capture before resolving credentials so an account switch during setup cannot label
+        // an old connection with the new owner's revision.
+        let auth_owner_generation = self.auth_owner_generation();
         let auth = self.state.provider.auth().await;
         let api_provider = self.state.provider.api_provider().await?;
         let resolved_auth = self
@@ -1074,6 +1023,7 @@ impl ModelClient {
             .await?;
         Ok(CurrentClientSetup {
             auth,
+            auth_owner_generation,
             api_provider,
             api_auth: resolved_auth.auth,
             agent_identity_telemetry: resolved_auth.agent_identity_telemetry,
@@ -1309,13 +1259,7 @@ impl ModelClientSession {
     }
 
     fn reset_websocket_session(&mut self) {
-        self.websocket_session.connection = None;
-        self.websocket_session.endpoint = None;
-        self.websocket_session.last_request = None;
-        self.websocket_session.last_response_rx = None;
-        self.websocket_session.last_response_from_untraced_warmup = false;
-        self.websocket_session
-            .set_connection_reused(/*connection_reused*/ false);
+        self.websocket_session.reset_connection();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1355,85 +1299,20 @@ impl ModelClientSession {
         }
     }
 
-    /// Checks whether the current request is an incremental extension of the previous request.
-    /// We only reuse an incremental input delta when non-input request fields are unchanged and
-    /// `input` is a strict extension of the previous known input. Server-returned output items
-    /// are treated as part of the baseline so we do not resend them.
-    fn get_incremental_items(
-        &self,
-        request: &ResponsesApiRequest,
-        last_response: Option<&LastResponse>,
-        allow_empty_delta: bool,
-    ) -> Option<Vec<ResponseItem>> {
-        let previous_request = self.websocket_session.last_request.as_ref()?;
-        if !responses_request_properties_match(previous_request, request) {
-            trace!("incremental request failed, websocket reuse properties didn't match");
-            return None;
-        }
-
-        let response_items =
-            last_response.map_or(&[][..], |response| response.items_added.as_slice());
-        let previous_items_len = previous_request
-            .input
-            .len()
-            .checked_add(response_items.len())?;
-        let Some((request_items_to_compare, incremental_items)) =
-            request.input.split_at_checked(previous_items_len)
-        else {
-            trace!("incremental request failed, incompatible request length");
-            return None;
-        };
-        let previous_items = previous_request.input.iter().chain(response_items);
-        if !previous_items
-            .zip(request_items_to_compare)
-            .all(|(previous, current)| {
-                response_items_equal_ignoring_internal_metadata(previous, current)
-            })
-        {
-            trace!("incremental request failed, items didn't match");
-            return None;
-        }
-        if !allow_empty_delta && incremental_items.is_empty() {
-            return None;
-        }
-        Some(incremental_items.to_vec())
-    }
-
-    fn get_last_response(&mut self) -> Option<LastResponse> {
-        self.websocket_session
-            .last_response_rx
-            .take()
-            .and_then(|mut receiver| match receiver.try_recv() {
-                Ok(last_response) => Some(last_response),
-                Err(TryRecvError::Closed) | Err(TryRecvError::Empty) => None,
-            })
-    }
-
     fn prepare_websocket_request(
         &mut self,
         request: &ResponsesApiRequest,
     ) -> (Option<(String, Vec<ResponseItem>)>, bool) {
-        let Some(last_response) = self.get_last_response() else {
+        let Some(incremental) = self
+            .websocket_session
+            .lineage
+            .prepare_incremental_request(request, /*allow_empty_delta*/ true)
+        else {
             return (None, false);
         };
-        let previous_response_id_from_untraced_warmup =
-            self.websocket_session.last_response_from_untraced_warmup;
-        let Some(incremental_items) = self.get_incremental_items(
-            request,
-            Some(&last_response),
-            /*allow_empty_delta*/ true,
-        ) else {
-            return (None, false);
-        };
-
-        if last_response.response_id.is_empty() {
-            trace!("incremental request failed, no previous response id");
-            return (None, false);
-        }
-
         (
-            Some((last_response.response_id, incremental_items)),
-            previous_response_id_from_untraced_warmup,
+            Some((incremental.previous_response_id, incremental.input)),
+            incremental.previous_response_from_untraced_warmup,
         )
     }
 
@@ -1467,22 +1346,17 @@ impl ModelClientSession {
         let endpoint = self
             .client
             .responses_endpoint(client_setup.auth.as_ref(), &model_info.slug);
-        let connection = self
-            .client
-            .connect_websocket(
-                session_telemetry,
-                client_setup.api_provider,
-                client_setup.api_auth,
-                responses_metadata,
-                auth_context,
-                RequestRouteTelemetry::for_endpoint(endpoint.path()),
-                endpoint,
-            )
-            .await?;
-        self.websocket_session.connection = Some(connection);
-        self.websocket_session.endpoint = Some(endpoint);
-        self.websocket_session
-            .set_connection_reused(/*connection_reused*/ false);
+        self.websocket_connection(WebsocketConnectParams {
+            session_telemetry,
+            api_provider: client_setup.api_provider,
+            api_auth: client_setup.api_auth,
+            auth_owner_generation: client_setup.auth_owner_generation,
+            responses_metadata,
+            auth_context,
+            request_route_telemetry: RequestRouteTelemetry::for_endpoint(endpoint.path()),
+            endpoint,
+        })
+        .await?;
         Ok(())
     }
     /// Returns a websocket connection for this turn.
@@ -1506,6 +1380,7 @@ impl ModelClientSession {
             session_telemetry,
             api_provider,
             api_auth,
+            auth_owner_generation,
             responses_metadata,
             auth_context,
             request_route_telemetry,
@@ -1517,8 +1392,15 @@ impl ModelClientSession {
             }
             None => true,
         };
+        // Resolving an external auth provider can change ownership during client setup.
+        let owner_changed = self.websocket_session.auth_owner_generation != auth_owner_generation
+            || self.client.auth_owner_generation() != auth_owner_generation;
+        if owner_changed {
+            self.turn_state = Arc::new(OnceLock::new());
+            self.websocket_session.lineage.clear();
+        }
 
-        if needs_new {
+        if needs_new || owner_changed {
             self.reset_websocket_session();
             let new_conn = match self
                 .client
@@ -1543,6 +1425,7 @@ impl ModelClientSession {
             };
             self.websocket_session.connection = Some(new_conn);
             self.websocket_session.endpoint = Some(endpoint);
+            self.websocket_session.auth_owner_generation = auth_owner_generation;
             self.websocket_session
                 .set_connection_reused(/*connection_reused*/ false);
         } else {
@@ -1587,7 +1470,7 @@ impl ModelClientSession {
         )
     )]
     async fn stream_responses_api(
-        &self,
+        &mut self,
         prompt: &Prompt,
         model_info: &ModelInfo,
         session_telemetry: &SessionTelemetry,
@@ -1603,6 +1486,7 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut provider_auth_recovery_attempted = false;
         let mut pending_retry = PendingUnauthorizedRetry::default();
+        let mut lineage_recovery_attempted = false;
         loop {
             let client_setup = self.client.current_client_setup().await?;
             let endpoint = self
@@ -1664,6 +1548,21 @@ impl ModelClientSession {
                 client_setup.auth.as_ref(),
                 prompt.cyber_access_program,
             );
+            let lineage_request = request.clone();
+            if crate::guardian::is_basic_session_source(&self.client.state.session_source) {
+                crate::guardian::observe_guardian_request(session_telemetry, &lineage_request);
+            }
+            let mut used_incremental_lineage = false;
+            if request.store
+                && let Some(incremental) = self
+                    .websocket_session
+                    .lineage
+                    .prepare_incremental_request(&lineage_request, /*allow_empty_delta*/ false)
+            {
+                used_incremental_lineage = true;
+                request.previous_response_id = Some(incremental.previous_response_id);
+                request.input = incremental.input;
+            }
             self.client
                 .prepare_response_items_for_request(&mut request.input);
             let request_session_telemetry =
@@ -1682,11 +1581,16 @@ impl ModelClientSession {
 
             match stream_result {
                 Ok(stream) => {
-                    let (stream, _) = map_response_stream(
+                    let (stream, response_rx) = map_response_stream(
                         stream,
                         request_session_telemetry,
                         inference_trace_attempt,
                         Arc::clone(&self.client.state.provider),
+                    );
+                    self.websocket_session.lineage.record_pending(
+                        lineage_request,
+                        response_rx,
+                        /*from_untraced_warmup*/ false,
                     );
                     return Ok(stream);
                 }
@@ -1715,6 +1619,18 @@ impl ModelClientSession {
                             responses_metadata.turn_id.as_deref(),
                         )
                         .await?,
+                    );
+                    continue;
+                }
+                Err(ApiError::PreviousResponseNotFound)
+                    if used_incremental_lineage && !lineage_recovery_attempted =>
+                {
+                    lineage_recovery_attempted = true;
+                    self.websocket_session.lineage.clear();
+                    inference_trace_attempt.record_failed(
+                        "previous response was not found; retrying full request",
+                        /*upstream_request_id*/ None,
+                        /*output_items*/ &[],
                     );
                     continue;
                 }
@@ -1823,6 +1739,7 @@ impl ModelClientSession {
                     session_telemetry,
                     api_provider: client_setup.api_provider,
                     api_auth: client_setup.api_auth,
+                    auth_owner_generation: client_setup.auth_owner_generation,
                     responses_metadata: &websocket_metadata,
                     auth_context: request_auth_context,
                     request_route_telemetry: RequestRouteTelemetry::for_endpoint(endpoint.path()),
@@ -1930,8 +1847,6 @@ impl ModelClientSession {
                     item.set_id(original_item_id);
                 }
             }
-            self.websocket_session.last_request = Some(request);
-            self.websocket_session.last_response_from_untraced_warmup = warmup;
             let stream_result = stream_result.map_err(|err| {
                 let response_debug_context = extract_response_debug_context_from_api_error(&err);
                 let err = self.client.state.provider.map_api_error(err);
@@ -1942,13 +1857,15 @@ impl ModelClientSession {
                 );
                 err
             })?;
-            let (stream, last_request_rx) = map_response_stream(
+            let (stream, response_rx) = map_response_stream(
                 stream_result,
                 request_session_telemetry,
                 inference_trace_attempt,
                 Arc::clone(&self.client.state.provider),
             );
-            self.websocket_session.last_response_rx = Some(last_request_rx);
+            self.websocket_session
+                .lineage
+                .record_pending(request, response_rx, warmup);
             return Ok(WebsocketStreamOutcome::Stream(stream));
         }
     }
@@ -2002,7 +1919,7 @@ impl ModelClientSession {
         if !self.client.responses_websocket_enabled() {
             return Ok(());
         }
-        if self.websocket_session.last_request.is_some() {
+        if self.websocket_session.lineage.has_state() {
             return Ok(());
         }
 
@@ -2117,7 +2034,7 @@ impl ModelClientSession {
         let activated = self
             .client
             .force_http_fallback(session_telemetry, model_info);
-        self.websocket_session = WebsocketSession::default();
+        self.reset_websocket_session();
         activated
     }
 }
@@ -2180,7 +2097,7 @@ fn map_response_stream(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
-) -> (ResponseStream, oneshot::Receiver<LastResponse>) {
+) -> (ResponseStream, oneshot::Receiver<ResponsesLineageUpdate>) {
     let codex_api::ResponseStream {
         rx_event,
         upstream_request_id,
@@ -2204,7 +2121,7 @@ fn map_response_events<S>(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
-) -> (ResponseStream, oneshot::Receiver<LastResponse>)
+) -> (ResponseStream, oneshot::Receiver<ResponsesLineageUpdate>)
 where
     S: futures::Stream<Item = std::result::Result<ResponseEvent, ApiError>>
         + Unpin
@@ -2213,7 +2130,7 @@ where
 {
     let (tx_event, rx_event) =
         mpsc::channel::<Result<ResponseEvent>>(RESPONSE_STREAM_CHANNEL_CAPACITY);
-    let (tx_last_response, rx_last_response) = oneshot::channel::<LastResponse>();
+    let (tx_last_response, rx_last_response) = oneshot::channel::<ResponsesLineageUpdate>();
     let consumer_dropped = CancellationToken::new();
     let consumer_dropped_for_stream = consumer_dropped.clone();
 
@@ -2275,10 +2192,10 @@ where
                         &items_added,
                     );
                     if let Some(sender) = tx_last_response.take() {
-                        let _ = sender.send(LastResponse {
+                        let _ = sender.send(ResponsesLineageUpdate::Completed(LastResponse {
                             response_id: response_id.clone(),
                             items_added: std::mem::take(&mut items_added),
-                        });
+                        }));
                     }
                     if tx_event
                         .send(Ok(ResponseEvent::Completed {
@@ -2309,6 +2226,11 @@ where
                     }
                 }
                 Err(err) => {
+                    if matches!(err, ApiError::PreviousResponseNotFound)
+                        && let Some(sender) = tx_last_response.take()
+                    {
+                        let _ = sender.send(ResponsesLineageUpdate::PreviousResponseNotFound);
+                    }
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let upstream_request_id =
@@ -2423,6 +2345,7 @@ struct WebsocketConnectParams<'a> {
     session_telemetry: &'a SessionTelemetry,
     api_provider: codex_api::Provider,
     api_auth: SharedAuthProvider,
+    auth_owner_generation: Option<u64>,
     responses_metadata: &'a CodexResponsesMetadata,
     auth_context: AuthRequestTelemetryContext,
     request_route_telemetry: RequestRouteTelemetry,

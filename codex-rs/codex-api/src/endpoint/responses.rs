@@ -3,6 +3,7 @@ use crate::common::ResponseStream;
 use crate::common::ResponsesApiRequest;
 use crate::endpoint::session::EndpointSession;
 use crate::error::ApiError;
+use crate::error::PREVIOUS_RESPONSE_NOT_FOUND_CODE;
 use crate::provider::Provider;
 use crate::requests::Compression;
 use crate::requests::headers::build_session_headers;
@@ -14,6 +15,7 @@ use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
 use codex_client::RequestCompression;
 use codex_client::RequestTelemetry;
+use codex_client::TransportError;
 use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
 use http::HeaderValue;
@@ -191,7 +193,8 @@ impl<T: HttpTransport> ResponsesClient<T> {
                     req.compression = request_compression;
                 },
             )
-            .await?;
+            .await
+            .map_err(classify_previous_response_not_found)?;
 
         Ok(spawn_response_stream(
             stream_response,
@@ -199,5 +202,51 @@ impl<T: HttpTransport> ResponsesClient<T> {
             self.sse_telemetry.clone(),
             turn_state,
         ))
+    }
+}
+
+fn classify_previous_response_not_found(error: ApiError) -> ApiError {
+    let ApiError::Transport(TransportError::Http {
+        body: Some(body), ..
+    }) = &error
+    else {
+        return error;
+    };
+    let is_missing = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| value.get("error")?.get("code")?.as_str().map(str::to_owned))
+        .is_some_and(|code| code == PREVIOUS_RESPONSE_NOT_FOUND_CODE);
+    if is_missing {
+        ApiError::PreviousResponseNotFound
+    } else {
+        error
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::StatusCode;
+
+    #[test]
+    fn classifies_missing_previous_response_http_error() {
+        let error = ApiError::Transport(TransportError::Http {
+            status: StatusCode::BAD_REQUEST,
+            url: None,
+            headers: None,
+            body: Some(
+                serde_json::json!({
+                    "error": {
+                        "code": "previous_response_not_found",
+                        "message": "The referenced response expired."
+                    }
+                })
+                .to_string(),
+            ),
+        });
+        assert!(matches!(
+            classify_previous_response_not_found(error),
+            ApiError::PreviousResponseNotFound
+        ));
     }
 }

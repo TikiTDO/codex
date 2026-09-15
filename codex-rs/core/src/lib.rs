@@ -13,6 +13,7 @@ mod realtime_context;
 mod realtime_conversation;
 mod realtime_history;
 mod realtime_prompt;
+mod responses_lineage;
 mod responses_metadata;
 mod responses_retry;
 pub(crate) mod session;

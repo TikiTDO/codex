@@ -6,6 +6,7 @@ use crate::common::SafetyBufferingTreatment;
 use crate::common::WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY;
 use crate::endpoint::responses::ResponsesEndpoint;
 use crate::error::ApiError;
+use crate::error::PREVIOUS_RESPONSE_NOT_FOUND_CODE;
 use crate::provider::Provider;
 use crate::rate_limits::parse_rate_limit_event;
 use crate::safety_buffering::treatment_from_headers;
@@ -158,9 +159,6 @@ const X_REASONING_INCLUDED_HEADER: &str = "x-reasoning-included";
 const OPENAI_MODEL_HEADER: &str = "openai-model";
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str = "websocket_connection_limit_reached";
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE: &str = "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.";
-const PREVIOUS_RESPONSE_NOT_FOUND_CODE: &str = "previous_response_not_found";
-const PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE: &str =
-    "Previous response was not found. Retrying the full request.";
 const RESPONSES_WEBSOCKET_TIMING_KIND: &str = "responsesapi.websocket_timing";
 const RESPONSES_WEBSOCKET_TIMING_EVENT_TARGET: &str = "codex_api::responses_websocket_timing";
 const SESSION_ID_CLIENT_METADATA_KEY: &str = "session_id";
@@ -639,7 +637,7 @@ fn map_wrapped_websocket_error_event(
             WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE => {
                 Some(WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE)
             }
-            PREVIOUS_RESPONSE_NOT_FOUND_CODE => Some(PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE),
+            PREVIOUS_RESPONSE_NOT_FOUND_CODE => return Some(ApiError::PreviousResponseNotFound),
             _ => None,
         }
     {
@@ -949,6 +947,7 @@ mod tests {
         let api_request = ResponsesApiRequest {
             model: "gpt-test".to_string(),
             instructions: "Use the available tools.".to_string(),
+            previous_response_id: None,
             input: vec![ResponseItem::Message {
                 id: Some(ResponseItemId::with_suffix("msg", "1")),
                 role: "user".to_string(),

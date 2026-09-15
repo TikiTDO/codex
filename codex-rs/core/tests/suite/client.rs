@@ -198,7 +198,7 @@ fn assert_codex_client_metadata(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn openai_stateless_responses_requests_preserve_item_turn_metadata_across_turns() {
+async fn openai_responses_requests_reuse_stored_response_state_across_turns() {
     let server = MockServer::start().await;
     let assistant_create_time = 1_785_276_138.422709;
     let mut assistant_message = ev_assistant_message("msg-1", "first answer");
@@ -226,6 +226,10 @@ async fn openai_stateless_responses_requests_preserve_item_turn_metadata_across_
     assert_eq!(requests.len(), 2);
     let first = requests[0].body_json();
     let second = requests[1].body_json();
+    assert_eq!(first["store"], true);
+    assert_eq!(first.get("previous_response_id"), None);
+    assert_eq!(second["store"], true);
+    assert_eq!(second["previous_response_id"], "resp1");
     let first_turn_id = first["client_metadata"]["turn_id"]
         .as_str()
         .expect("first request should include turn id");
@@ -236,7 +240,6 @@ async fn openai_stateless_responses_requests_preserve_item_turn_metadata_across_
 
     let first_input = first["input"].as_array().expect("first input");
     let second_input = second["input"].as_array().expect("second input");
-    assert_eq!(&second_input[..first_input.len()], first_input.as_slice());
     for item in first_input {
         assert_eq!(
             item["internal_chat_message_metadata_passthrough"]["turn_id"].as_str(),
@@ -252,41 +255,70 @@ async fn openai_stateless_responses_requests_preserve_item_turn_metadata_across_
         }));
     }
 
-    let item_turn_id = |text: &str| {
-        second_input
-            .iter()
-            .find(|item| {
-                item["content"].as_array().is_some_and(|content| {
-                    content
-                        .iter()
-                        .any(|content_item| content_item["text"].as_str() == Some(text))
-                })
-            })
-            .and_then(|item| item["internal_chat_message_metadata_passthrough"]["turn_id"].as_str())
-    };
-    assert_eq!(item_turn_id("turn one"), Some(first_turn_id));
-    assert_eq!(item_turn_id("first answer"), Some(first_turn_id));
-    assert_eq!(item_turn_id("turn two"), Some(second_turn_id));
+    let second_input_texts = second_input
+        .iter()
+        .flat_map(message_input_texts)
+        .collect::<Vec<_>>();
+    assert_eq!(second_input_texts, vec!["turn two"]);
+    assert!(second_input.iter().all(|item| {
+        item["internal_chat_message_metadata_passthrough"]["turn_id"].as_str()
+            == Some(second_turn_id)
+    }));
+}
 
-    let item_create_time = |text: &str| {
-        second_input
-            .iter()
-            .find(|item| {
-                item["content"].as_array().is_some_and(|content| {
-                    content
-                        .iter()
-                        .any(|content_item| content_item["text"].as_str() == Some(text))
-                })
-            })
-            .and_then(|item| {
-                item["internal_chat_message_metadata_passthrough"]["create_time"].as_f64()
-            })
-    };
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn openai_responses_missing_stored_state_retries_with_full_history() {
+    let server = MockServer::start().await;
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp1"),
+                ev_assistant_message("msg-1", "first answer"),
+                ev_completed("resp1"),
+            ]),
+            sse(vec![json!({
+                "type": "response.failed",
+                "response": {
+                    "error": {
+                        "code": "previous_response_not_found",
+                        "message": "The referenced response expired."
+                    }
+                }
+            })]),
+            sse(vec![ev_response_created("resp2"), ev_completed("resp2")]),
+        ],
+    )
+    .await;
+    let test = test_codex().build(&server).await.unwrap();
+
+    test.submit_turn("turn one").await.unwrap();
+    test.submit_turn("turn two").await.unwrap();
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 3);
+    let incremental = requests[1].body_json();
+    let recovered = requests[2].body_json();
+    assert_eq!(incremental["previous_response_id"], "resp1");
     assert_eq!(
-        item_create_time("first answer"),
-        Some(assistant_create_time)
+        incremental["input"]
+            .as_array()
+            .expect("incremental input")
+            .iter()
+            .flat_map(message_input_texts)
+            .collect::<Vec<_>>(),
+        vec!["turn two"]
     );
-    assert!(item_create_time("turn two").is_some_and(|create_time| create_time > 0.0));
+    assert_eq!(recovered.get("previous_response_id"), None);
+    let recovered_texts = recovered["input"]
+        .as_array()
+        .expect("recovered input")
+        .iter()
+        .flat_map(message_input_texts)
+        .collect::<Vec<_>>();
+    assert!(recovered_texts.contains(&"turn one"));
+    assert!(recovered_texts.contains(&"first answer"));
+    assert!(recovered_texts.contains(&"turn two"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

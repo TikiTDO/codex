@@ -1,5 +1,6 @@
 use crate::TransportError;
 use crate::error::ApiError;
+use crate::error::PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE;
 use crate::rate_limits::parse_promo_message;
 use crate::rate_limits::parse_rate_limit_for_limit;
 use crate::rate_limits::parse_rate_limit_reached_type;
@@ -23,6 +24,9 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::ContextWindowExceeded => CodexErr::ContextWindowExceeded,
         ApiError::QuotaExceeded => CodexErr::QuotaExceeded,
         ApiError::UsageNotIncluded => CodexErr::UsageNotIncluded,
+        ApiError::PreviousResponseNotFound => {
+            CodexErr::Stream(PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE.to_string())
+        }
         ApiError::Retryable { message, delay } => {
             let error = CodexErr::Stream(message);
             match delay {
