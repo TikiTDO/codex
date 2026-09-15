@@ -27,8 +27,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 
 use async_channel::Sender;
 use codex_api::AgentIdentityTelemetry;
@@ -252,7 +250,7 @@ struct ModelClientState {
     concurrent_reasoning_summaries_enabled: bool,
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
-    disable_websockets: AtomicBool,
+    websocket_circuit: Arc<StdMutex<WebsocketCircuitBreaker>>,
     agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
 }
@@ -285,8 +283,9 @@ impl RequestRouteTelemetry {
 /// This holds configuration and state that should be shared across turns within a Codex session
 /// (auth, provider selection, thread id, and transport fallback state).
 ///
-/// WebSocket fallback is session-scoped: once a turn activates the HTTP fallback, subsequent turns
-/// will also use HTTP for the remainder of the session.
+/// WebSocket fallback is session-scoped and recoverable: repeated failures temporarily open a
+/// circuit, while HTTP continues against the same durable Responses lineage. After a cooldown, a
+/// later turn can try WebSocket again without replaying the complete local history.
 ///
 /// Turn-scoped settings (model selection, reasoning controls, telemetry context, and turn
 /// metadata) are passed explicitly to the relevant methods to keep turn lifetime visible at the
@@ -299,6 +298,48 @@ pub struct ModelClient {
     free_guardian_enabled: bool,
     event_sender: Option<Sender<ProtocolEvent>>,
     http_client_factory: HttpClientFactory,
+}
+
+const WEBSOCKET_CIRCUIT_BASE_COOLDOWN: Duration = Duration::from_secs(30);
+const WEBSOCKET_CIRCUIT_MAX_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Debug, Default)]
+struct WebsocketCircuitBreaker {
+    consecutive_openings: u32,
+    open_until: Option<Instant>,
+}
+
+impl WebsocketCircuitBreaker {
+    fn allows_attempt(&mut self, now: Instant) -> bool {
+        match self.open_until {
+            Some(open_until) if now < open_until => false,
+            Some(_) => {
+                self.open_until = None;
+                true
+            }
+            None => true,
+        }
+    }
+
+    fn open(&mut self, now: Instant) -> (bool, Duration) {
+        if let Some(open_until) = self.open_until
+            && now < open_until
+        {
+            return (false, open_until.duration_since(now));
+        }
+        self.consecutive_openings = self.consecutive_openings.saturating_add(1);
+        let exponent = self.consecutive_openings.saturating_sub(1).min(4);
+        let cooldown = WEBSOCKET_CIRCUIT_BASE_COOLDOWN
+            .saturating_mul(1_u32 << exponent)
+            .min(WEBSOCKET_CIRCUIT_MAX_COOLDOWN);
+        self.open_until = Some(now + cooldown);
+        (true, cooldown)
+    }
+
+    fn record_success(&mut self) {
+        self.consecutive_openings = 0;
+        self.open_until = None;
+    }
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -436,7 +477,7 @@ impl ModelClient {
                 concurrent_reasoning_summaries_enabled,
                 include_attestation,
                 attestation_provider,
-                disable_websockets: AtomicBool::new(false),
+                websocket_circuit: Arc::new(StdMutex::new(WebsocketCircuitBreaker::default())),
                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
             }),
@@ -532,11 +573,17 @@ impl ModelClient {
         session_telemetry: &SessionTelemetry,
         _model_info: &ModelInfo,
     ) -> bool {
-        let websocket_enabled = self.responses_websocket_enabled();
-        let activated =
-            websocket_enabled && !self.state.disable_websockets.swap(true, Ordering::Relaxed);
+        let (activated, cooldown) = if self.state.provider.info().supports_websockets {
+            self.state
+                .websocket_circuit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .open(Instant::now())
+        } else {
+            (false, Duration::ZERO)
+        };
         if activated {
-            warn!("falling back to HTTP");
+            warn!(?cooldown, "temporarily falling back to HTTP");
             session_telemetry.counter(
                 "codex.transport.fallback_to_http",
                 /*inc*/ 1,
@@ -1016,15 +1063,16 @@ impl ModelClient {
 
     /// Returns whether the Responses-over-WebSocket transport is active for this session.
     ///
-    /// WebSocket use is controlled by provider capability and session-scoped fallback state.
+    /// WebSocket use is controlled by provider capability and a recoverable session circuit.
     pub fn responses_websocket_enabled(&self) -> bool {
-        if !self.state.provider.info().supports_websockets
-            || self.state.disable_websockets.load(Ordering::Relaxed)
-        {
+        if !self.state.provider.info().supports_websockets {
             return false;
         }
-
-        true
+        self.state
+            .websocket_circuit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .allows_attempt(Instant::now())
     }
 
     /// Returns auth + provider configuration resolved from the current session auth state.
@@ -1628,6 +1676,7 @@ impl ModelClientSession {
                         request_session_telemetry,
                         inference_trace_attempt,
                         Arc::clone(&self.client.state.provider),
+                        /*websocket_circuit*/ None,
                     );
                     self.websocket_session.lineage.record_pending(
                         lineage_request,
@@ -1911,6 +1960,7 @@ impl ModelClientSession {
                 request_session_telemetry,
                 inference_trace_attempt,
                 Arc::clone(&self.client.state.provider),
+                Some(Arc::clone(&self.client.state.websocket_circuit)),
             );
             self.websocket_session
                 .lineage
@@ -2069,10 +2119,10 @@ impl ModelClientSession {
         }
     }
 
-    /// Permanently disables WebSockets for this Codex session and resets WebSocket state.
+    /// Opens the recoverable WebSocket circuit and resets socket-local state.
     ///
-    /// This is used after exhausting the provider retry budget, to force subsequent requests onto
-    /// the HTTP transport.
+    /// This is used after exhausting the provider retry budget, forcing requests onto HTTP until
+    /// the circuit cooldown expires.
     ///
     /// Returns `true` if this call activated fallback, or `false` if fallback was already active.
     pub(crate) fn try_switch_fallback_transport(
@@ -2146,6 +2196,7 @@ fn map_response_stream(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
+    websocket_circuit: Option<Arc<StdMutex<WebsocketCircuitBreaker>>>,
 ) -> (ResponseStream, oneshot::Receiver<ResponsesLineageUpdate>) {
     let codex_api::ResponseStream {
         rx_event,
@@ -2161,6 +2212,7 @@ fn map_response_stream(
         session_telemetry,
         inference_trace_attempt,
         provider,
+        websocket_circuit,
     )
 }
 
@@ -2170,6 +2222,7 @@ fn map_response_events<S>(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
+    websocket_circuit: Option<Arc<StdMutex<WebsocketCircuitBreaker>>>,
 ) -> (ResponseStream, oneshot::Receiver<ResponsesLineageUpdate>)
 where
     S: futures::Stream<Item = std::result::Result<ResponseEvent, ApiError>>
@@ -2230,6 +2283,12 @@ where
                     usage_metadata,
                     end_turn,
                 }) => {
+                    if let Some(circuit) = &websocket_circuit {
+                        circuit
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .record_success();
+                    }
                     feedback_tags!(last_model_response_id = &response_id);
                     if let Some(usage) = &token_usage {
                         session_telemetry.sse_event_completed(usage, ttft_ms);

@@ -100,7 +100,10 @@ impl<T: HttpTransport> ResponsesClient<T> {
         fields(
             transport = "responses_http",
             http.method = "POST",
-            api.path = self.endpoint.path()
+            api.path = self.endpoint.path(),
+            request.mode = tracing::field::Empty,
+            request.input_items = tracing::field::Empty,
+            request.body_bytes = tracing::field::Empty
         )
     )]
     pub async fn stream_request(
@@ -117,6 +120,12 @@ impl<T: HttpTransport> ResponsesClient<T> {
             turn_state,
             guardian_ticket,
         } = options;
+        let request_mode = if request.previous_response_id.is_some() {
+            "incremental"
+        } else {
+            "full"
+        };
+        let input_items = request.input.len() as u64;
         crate::guardian_ticket::attach(
             &mut request.client_metadata,
             guardian_ticket.as_ref(),
@@ -128,6 +137,10 @@ impl<T: HttpTransport> ResponsesClient<T> {
         if guardian_ticket.is_some() {
             body = body.without_body_logging();
         }
+        let span = tracing::Span::current();
+        span.record("request.mode", request_mode);
+        span.record("request.input_items", input_items);
+        span.record("request.body_bytes", body.as_bytes().len() as u64);
 
         let mut headers = extra_headers;
         if let Some(ref thread_id) = thread_id {

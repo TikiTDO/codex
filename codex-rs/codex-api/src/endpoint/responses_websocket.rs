@@ -145,6 +145,10 @@ impl WsStream {
     async fn next(&mut self) -> Option<Result<Message, WsError>> {
         self.rx_message.recv().await
     }
+
+    fn is_closed(&self) -> bool {
+        self.pump_task.is_finished()
+    }
 }
 
 impl Drop for WsStream {
@@ -221,14 +225,25 @@ impl ResponsesWebsocketConnection {
     }
 
     pub async fn is_closed(&self) -> bool {
-        self.stream.lock().await.is_none()
+        self.stream
+            .lock()
+            .await
+            .as_ref()
+            .is_none_or(WsStream::is_closed)
     }
 
     #[instrument(
         name = "responses_websocket.stream_request",
         level = "info",
         skip_all,
-        fields(transport = "responses_websocket", api.path = self.endpoint.path())
+        fields(
+            transport = "responses_websocket",
+            api.path = self.endpoint.path(),
+            transport.connection_reused = connection_reused,
+            request.mode = tracing::field::Empty,
+            request.input_items = tracing::field::Empty,
+            request.body_bytes = tracing::field::Empty
+        )
     )]
     pub async fn stream_request(
         &self,
@@ -276,8 +291,19 @@ impl ResponsesWebsocketConnection {
             self.endpoint,
         );
         let request_text = serialize_websocket_request(&request)?;
+        let span = Span::current();
+        span.record(
+            "request.mode",
+            if ws_request.previous_response_id.is_some() {
+                "incremental"
+            } else {
+                "full"
+            },
+        );
+        span.record("request.input_items", ws_request.input.len() as u64);
+        span.record("request.body_bytes", request_text.len() as u64);
 
-        let current_span = Span::current();
+        let current_span = span;
         tokio::spawn(
             #[expect(
                 clippy::await_holding_invalid_type,
@@ -836,17 +862,35 @@ async fn run_websocket_response_stream(
             Message::Binary(_) => {
                 return Err(ApiError::Stream("unexpected binary websocket event".into()));
             }
-            Message::Close(_) => {
-                return Err(ApiError::Stream(
-                    "websocket closed by server before response.completed".into(),
-                ));
-            }
+            Message::Close(frame) => return Err(websocket_close_error(frame)),
             Message::Frame(_) => {}
             Message::Ping(_) | Message::Pong(_) => {}
         }
     }
 
     Ok(())
+}
+
+fn websocket_close_error(frame: Option<CloseFrame>) -> ApiError {
+    let message = match frame {
+        Some(frame) => {
+            let reason = frame.reason.to_string();
+            let reason = reason.chars().take(256).collect::<String>();
+            if reason.is_empty() {
+                format!(
+                    "websocket closed by server before response.completed (code {})",
+                    frame.code
+                )
+            } else {
+                format!(
+                    "websocket closed by server before response.completed (code {}: {reason})",
+                    frame.code
+                )
+            }
+        }
+        None => "websocket closed by server before response.completed (no close frame)".to_string(),
+    };
+    ApiError::Stream(message)
 }
 
 fn emit_responses_websocket_timing_event(
@@ -941,6 +985,20 @@ mod tests {
     use serde_json::value::to_raw_value;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    #[test]
+    fn websocket_close_error_preserves_code_and_bounded_reason() {
+        let error = websocket_close_error(Some(CloseFrame {
+            code: CloseCode::Size,
+            reason: "payload too large".into(),
+        }));
+        let ApiError::Stream(message) = error else {
+            panic!("expected stream error");
+        };
+        assert!(message.contains("1009"));
+        assert!(message.contains("payload too large"));
+    }
 
     #[test]
     fn direct_serialization_preserves_websocket_request_payload() {
