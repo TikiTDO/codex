@@ -1111,13 +1111,13 @@ async fn generated_image_is_replayed_for_image_capable_models() -> Result<()> {
     let image_generation_calls = second_request.inputs_of_type("image_generation_call");
     assert_eq!(
         image_generation_calls.len(),
-        0,
-        "stored response lineage should avoid resending the generated image payload"
+        1,
+        "expected generated image history to be replayed as an image_generation_call"
     );
     assert_eq!(
-        second_request.body_json()["previous_response_id"].as_str(),
-        Some("resp-1"),
-        "the second request should inherit the generated image from server-side state"
+        image_generation_calls[0]["result"].as_str(),
+        Some("Zm9v"),
+        "expected the original generated image payload to be preserved"
     );
     Ok(())
 }

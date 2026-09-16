@@ -36,11 +36,11 @@ pub(crate) struct IncrementalResponseRequest {
     pub(crate) previous_response_from_untraced_warmup: bool,
 }
 
-/// Tracks the last server-confirmed Responses state independently of its transport connection.
+/// Tracks the last server-confirmed Responses state for one WebSocket connection.
 ///
 /// A pending request never replaces the confirmed baseline until `response.completed` arrives.
-/// This lets an HTTP retry or a replacement WebSocket continue from the last durable response
-/// rather than expanding a failed delta back into the complete local history.
+/// The ChatGPT Codex endpoint requires `store: false`, so callers clear this state whenever the
+/// connection changes and rebuild from complete local history on HTTP fallback.
 #[derive(Debug, Default)]
 pub(crate) struct ResponsesLineage {
     confirmed: Option<ConfirmedResponse>,

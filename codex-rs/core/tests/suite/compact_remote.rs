@@ -1317,7 +1317,6 @@ async fn assert_remote_manual_compact_request_parity(
         "input",
         "client_metadata",
         "include",
-        "previous_response_id",
         "store",
         "stream",
         "tool_choice",
@@ -1354,25 +1353,17 @@ async fn assert_remote_manual_compact_request_parity(
         "compact requests should carry the same shared request fields as /responses"
     );
 
-    if uses_codex_backend {
-        assert!(
-            normal_body["previous_response_id"].is_string(),
-            "ChatGPT-auth turns should continue stored response state"
-        );
-        assert_eq!(normal_body["store"], true);
-    } else {
-        insta::assert_snapshot!(
-            snapshot_name,
-            context_snapshot::format_request_body_diff_snapshot(
-                scenario,
-                "Last Normal /responses Request",
-                &normal_request,
-                "Remote /responses/compact Request",
-                &compact_request,
-                &ContextSnapshotOptions::default().strip_response_item_ids(),
-            )
-        );
-    }
+    insta::assert_snapshot!(
+        snapshot_name,
+        context_snapshot::format_request_body_diff_snapshot(
+            scenario,
+            "Last Normal /responses Request",
+            &normal_request,
+            "Remote /responses/compact Request",
+            &compact_request,
+            &ContextSnapshotOptions::default().strip_response_item_ids(),
+        )
+    );
 
     Ok(())
 }
@@ -1749,44 +1740,35 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
     let original_user_create_time = item_create_time(&response_requests[0], "hello remote compact");
     let delegated_task_create_time =
         item_create_time(&response_requests[1], &delegated_task_ciphertext);
-    let compact_prefix_items = response_requests[..=3]
-        .iter()
-        .flat_map(responses::ResponsesRequest::input)
-        .collect::<Vec<_>>();
     assert!(
-        compact_prefix_items
+        compact_request
+            .inputs_of_type("agent_message")
             .iter()
-            .filter(|item| item["type"] == "agent_message")
             .any(|item| item["content"][1]["encrypted_content"].as_str()
                 == Some(delegated_task_ciphertext.as_str())),
-        "expected stored v2 compaction context to include the encrypted delegated task"
+        "expected v2 compaction input to include the encrypted delegated task"
     );
     assert!(
-        compact_prefix_items
+        compact_request
+            .inputs_of_type("agent_message")
             .iter()
-            .filter(|item| item["type"] == "agent_message")
             .any(|item| item["content"][1]["encrypted_content"].as_str()
                 == Some(descendant_followup_ciphertext)),
-        "expected stored v2 compaction context to include the descendant-authored follow-up task"
+        "expected v2 compaction input to include the descendant-authored follow-up task"
     );
     assert!(
-        compact_prefix_items
+        compact_request
+            .inputs_of_type("agent_message")
             .iter()
-            .filter(|item| item["type"] == "agent_message")
             .any(|item| item.to_string().contains("child progress")),
-        "expected stored v2 compaction context to include the child progress update"
+        "expected v2 compaction input to include the child progress update"
     );
     assert!(
-        compact_prefix_items
+        compact_request
+            .inputs_of_type("agent_message")
             .iter()
-            .filter(|item| item["type"] == "agent_message")
             .any(|item| item.to_string().contains("child completion")),
-        "expected stored v2 compaction context to include the child completion"
-    );
-    assert_eq!(
-        compact_request.body_json()["previous_response_id"].as_str(),
-        Some("resp-descendant"),
-        "v2 compaction should continue the server-side context assembled above"
+        "expected v2 compaction input to include the child completion"
     );
     assert!(
         compact_request

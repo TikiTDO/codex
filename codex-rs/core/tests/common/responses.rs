@@ -1691,10 +1691,6 @@ fn validate_request_body_invariants(request: &wiremock::Request) {
         .get("input")
         .and_then(Value::as_array)
         .expect("input array not found in request");
-    let uses_stored_response = body
-        .get("previous_response_id")
-        .and_then(Value::as_str)
-        .is_some_and(|response_id| !response_id.is_empty());
 
     use std::collections::HashSet;
 
@@ -1766,28 +1762,23 @@ fn validate_request_body_invariants(request: &wiremock::Request) {
         "orphan custom_tool_call_output with empty call_id should be dropped",
     );
 
-    // A request that continues a stored response contains only the incremental input. An output's
-    // matching call can therefore live in the server-side prefix rather than this request body.
-    // A call introduced by the delta must still carry its output in that same delta.
-    if !uses_stored_response {
-        for cid in &function_call_outputs {
-            assert!(
-                function_calls.contains(cid) || local_shell_calls.contains(cid),
-                "function_call_output without matching call in input: {cid}",
-            );
-        }
-        for cid in &custom_tool_call_outputs {
-            assert!(
-                custom_tool_calls.contains(cid),
-                "custom_tool_call_output without matching call in input: {cid}",
-            );
-        }
-        for cid in &tool_search_outputs {
-            assert!(
-                tool_search_calls.contains(cid),
-                "tool_search_output without matching call in input: {cid}",
-            );
-        }
+    for cid in &function_call_outputs {
+        assert!(
+            function_calls.contains(cid) || local_shell_calls.contains(cid),
+            "function_call_output without matching call in input: {cid}",
+        );
+    }
+    for cid in &custom_tool_call_outputs {
+        assert!(
+            custom_tool_calls.contains(cid),
+            "custom_tool_call_output without matching call in input: {cid}",
+        );
+    }
+    for cid in &tool_search_outputs {
+        assert!(
+            tool_search_calls.contains(cid),
+            "tool_search_output without matching call in input: {cid}",
+        );
     }
 
     for cid in &function_calls {

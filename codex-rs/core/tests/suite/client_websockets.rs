@@ -1215,8 +1215,11 @@ async fn responses_websocket_v2_requests_use_v2_when_provider_supports_websocket
 
     let connection = server.single_connection();
     assert_eq!(connection.len(), 2);
+    let first = connection.first().expect("missing request").body_json();
     let second = connection.get(1).expect("missing request").body_json();
+    assert_eq!(first["store"], false);
     assert_eq!(second["type"].as_str(), Some("response.create"));
+    assert_eq!(second["store"], false);
     assert_eq!(second["previous_response_id"].as_str(), Some("resp-1"));
     assert_eq!(
         second["input"],
@@ -2003,7 +2006,9 @@ async fn responses_websocket_forwards_turn_metadata_on_initial_and_incremental_c
     let second = connection.get(1).expect("missing request").body_json();
 
     assert_eq!(first["type"].as_str(), Some("response.create"));
+    assert_eq!(first["store"], false);
     assert_eq!(second["type"].as_str(), Some("response.create"));
+    assert_eq!(second["store"], false);
     assert_eq!(second["previous_response_id"].as_str(), Some("resp-1"));
     let first_metadata: serde_json::Value = serde_json::from_str(
         first["client_metadata"]["x-codex-turn-metadata"]
@@ -2223,7 +2228,9 @@ async fn responses_websocket_v2_creates_with_previous_response_id_on_prefix() {
     let second = connection.get(1).expect("missing request").body_json();
 
     assert_eq!(first["type"].as_str(), Some("response.create"));
+    assert_eq!(first["store"], false);
     assert_eq!(second["type"].as_str(), Some("response.create"));
+    assert_eq!(second["store"], false);
     assert_eq!(second["previous_response_id"].as_str(), Some("resp-1"));
     assert_eq!(
         second["input"],
@@ -2271,7 +2278,7 @@ async fn responses_websocket_v2_creates_without_previous_response_id_when_non_in
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_websocket_v2_after_error_reuses_last_confirmed_response() {
+async fn responses_websocket_v2_after_error_rebuilds_history_on_replacement_connection() {
     skip_if_no_network!();
 
     let server = start_websocket_server(vec![
@@ -2350,13 +2357,16 @@ async fn responses_websocket_v2_after_error_reuses_last_confirmed_response() {
         .body_json();
 
     assert_eq!(first["type"].as_str(), Some("response.create"));
+    assert_eq!(first["store"], false);
     assert_eq!(second["type"].as_str(), Some("response.create"));
+    assert_eq!(second["store"], false);
     assert_eq!(second["previous_response_id"].as_str(), Some("resp-1"));
     assert_eq!(third["type"].as_str(), Some("response.create"));
-    assert_eq!(third["previous_response_id"].as_str(), Some("resp-1"));
+    assert_eq!(third["store"], false);
+    assert!(third.get("previous_response_id").is_none());
     assert_eq!(
         third["input"],
-        serde_json::to_value(&prompt_three.input[1..]).unwrap()
+        serde_json::to_value(&prompt_three.input).unwrap()
     );
 
     server.shutdown().await;

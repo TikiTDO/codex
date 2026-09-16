@@ -112,7 +112,7 @@ fn websocket_circuit_recovers_and_backs_off_until_success() {
 }
 
 #[test]
-fn websocket_connection_reset_preserves_response_lineage_for_http_fallback() {
+fn websocket_connection_reset_clears_connection_local_response_lineage() {
     let client = test_model_client(SessionSource::Cli);
     let metadata = test_responses_metadata_for_client(
         &client,
@@ -140,7 +140,7 @@ fn websocket_connection_reset_preserves_response_lineage_for_http_fallback() {
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     };
-    let mut first_request = client
+    let first_request = client
         .build_responses_request(
             &Prompt {
                 input: vec![first_input.clone()],
@@ -153,8 +153,6 @@ fn websocket_connection_reset_preserves_response_lineage_for_http_fallback() {
             &metadata,
         )
         .expect("build first request");
-    first_request.store = true;
-
     let mut session = client.new_session();
     let (sender, receiver) = tokio::sync::oneshot::channel();
     session.websocket_session.lineage.record_pending(
@@ -170,10 +168,10 @@ fn websocket_connection_reset_preserves_response_lineage_for_http_fallback() {
         .expect("record completed response");
 
     session.reset_websocket_session();
-    let mut second_request = client
+    let second_request = client
         .build_responses_request(
             &Prompt {
-                input: vec![first_input, first_output, second_input.clone()],
+                input: vec![first_input, first_output, second_input],
                 ..Default::default()
             },
             &test_model_info(),
@@ -183,15 +181,12 @@ fn websocket_connection_reset_preserves_response_lineage_for_http_fallback() {
             &metadata,
         )
         .expect("build second request");
-    second_request.store = true;
     let incremental = session
         .websocket_session
         .lineage
-        .prepare_incremental_request(&second_request, /*allow_empty_delta*/ false)
-        .expect("connection reset should preserve server response lineage");
+        .prepare_incremental_request(&second_request, /*allow_empty_delta*/ false);
 
-    assert_eq!(incremental.previous_response_id, "resp-first");
-    assert_eq!(incremental.input, vec![second_input]);
+    assert!(incremental.is_none());
 }
 use tempfile::TempDir;
 use tokio::sync::Notify;

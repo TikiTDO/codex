@@ -252,7 +252,14 @@ async fn websocket_fallback_holds_http_during_cooldown() -> Result<()> {
     // adds no websocket attempts. A later turn may retry WebSocket after the cooldown expires.
     assert_eq!(websocket_attempts, 4);
     assert_eq!(http_attempts, 2);
-    assert_eq!(response_mock.requests().len(), 2);
+    let responses = response_mock.requests();
+    assert_eq!(responses.len(), 2);
+    let second = responses[1].body_json();
+    assert_eq!(second["store"], false);
+    assert!(second.get("previous_response_id").is_none());
+    let second_user_texts = responses[1].message_input_texts("user");
+    assert!(second_user_texts.iter().any(|text| text == "first"));
+    assert!(second_user_texts.iter().any(|text| text == "second"));
 
     Ok(())
 }

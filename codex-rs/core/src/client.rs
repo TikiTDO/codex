@@ -289,8 +289,8 @@ impl RequestRouteTelemetry {
 /// (auth, provider selection, thread id, and transport fallback state).
 ///
 /// WebSocket fallback is session-scoped and recoverable: repeated failures temporarily open a
-/// circuit, while HTTP continues against the same durable Responses lineage. After a cooldown, a
-/// later turn can try WebSocket again without replaying the complete local history.
+/// circuit while HTTP continues with complete local history. After a cooldown, a later turn can
+/// try WebSocket again and establish fresh connection-local response lineage.
 ///
 /// Turn-scoped settings (model selection, reasoning controls, telemetry context, and turn
 /// metadata) are passed explicitly to the relevant methods to keep turn lifetime visible at the
@@ -390,6 +390,10 @@ impl WebsocketSession {
     fn reset_connection(&mut self) {
         self.connection = None;
         self.endpoint = None;
+        // ChatGPT's Codex endpoint requires `store: false`; response lineage is therefore
+        // connection-local. A replacement connection or HTTP fallback must rebuild from the
+        // logical local history rather than referencing state owned by the closed socket.
+        self.lineage.clear();
         self.set_connection_reused(/*connection_reused*/ false);
     }
 
@@ -1036,10 +1040,6 @@ impl ModelClient {
         Ok(request)
     }
 
-    fn responses_server_storage_enabled(&self, auth: Option<&CodexAuth>) -> bool {
-        self.state.provider.info().is_openai() && auth.is_some_and(CodexAuth::is_chatgpt_auth)
-    }
-
     fn prepare_response_items_for_request(&self, input: &mut [ResponseItem]) {
         for item in input {
             if item.id().is_some_and(|id| !id.is_prefixed()) {
@@ -1569,7 +1569,6 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut provider_auth_recovery_attempted = false;
         let mut pending_retry = PendingUnauthorizedRetry::default();
-        let mut lineage_recovery_attempted = false;
         loop {
             let client_setup = self.client.current_client_setup().await?;
             self.reconcile_auth_owner(client_setup.auth_owner_generation);
@@ -1609,9 +1608,6 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
             )?;
-            request.store = self
-                .client
-                .responses_server_storage_enabled(client_setup.auth.as_ref());
             self.client.set_guardian_ticket_request(
                 &mut request.client_metadata,
                 client_setup.auth.as_ref(),
@@ -1635,18 +1631,6 @@ impl ModelClientSession {
                 client_setup.auth.as_ref(),
                 prompt.cyber_access_program,
             );
-            let lineage_request = request.clone();
-            let mut used_incremental_lineage = false;
-            if request.store
-                && let Some(incremental) = self
-                    .websocket_session
-                    .lineage
-                    .prepare_incremental_request(&lineage_request, /*allow_empty_delta*/ false)
-            {
-                used_incremental_lineage = true;
-                request.previous_response_id = Some(incremental.previous_response_id);
-                request.input = incremental.input;
-            }
             self.client
                 .prepare_response_items_for_request(&mut request.input);
             let request_session_telemetry =
@@ -1676,7 +1660,7 @@ impl ModelClientSession {
                         .state
                         .responses_transport_state
                         .stream_started(ResponsesTransport::Http);
-                    let (stream, response_rx) = map_response_stream(
+                    let (stream, _) = map_response_stream(
                         stream,
                         request_session_telemetry,
                         inference_trace_attempt,
@@ -1684,11 +1668,6 @@ impl ModelClientSession {
                         /*websocket_circuit*/ None,
                         self.client.state.responses_transport_state.clone(),
                         ResponsesTransport::Http,
-                    );
-                    self.websocket_session.lineage.record_pending(
-                        lineage_request,
-                        response_rx,
-                        /*from_untraced_warmup*/ false,
                     );
                     return Ok(stream);
                 }
@@ -1721,22 +1700,6 @@ impl ModelClientSession {
                             responses_metadata.turn_id.as_deref(),
                         )
                         .await?,
-                    );
-                    continue;
-                }
-                Err(ApiError::PreviousResponseNotFound)
-                    if used_incremental_lineage && !lineage_recovery_attempted =>
-                {
-                    self.client.state.responses_transport_state.failed(
-                        ResponsesTransport::Http,
-                        ResponsesFailureReason::PreviousResponseNotFound,
-                    );
-                    lineage_recovery_attempted = true;
-                    self.websocket_session.lineage.clear();
-                    inference_trace_attempt.record_failed(
-                        "previous response was not found; retrying full request",
-                        /*upstream_request_id*/ None,
-                        /*output_items*/ &[],
                     );
                     continue;
                 }
@@ -1815,9 +1778,6 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
             )?;
-            request.store = self
-                .client
-                .responses_server_storage_enabled(client_setup.auth.as_ref());
             if endpoint == ResponsesEndpoint::Guardian {
                 request.service_tier = None;
             }
