@@ -2,6 +2,7 @@ use super::AuthRequestTelemetryContext;
 use super::ModelClient;
 use super::PendingUnauthorizedRetry;
 use super::Prompt;
+use super::ResponseStreamTransport;
 use super::UnauthorizedRecoveryExecution;
 use super::X_CODEX_INSTALLATION_ID_HEADER;
 use super::X_CODEX_PARENT_THREAD_ID_HEADER;
@@ -14,6 +15,9 @@ use crate::GenerateAttestationFuture;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::test_support::TestCodexResponsesRequestKind;
 use crate::test_support::responses_metadata as test_responses_metadata;
+use crate::websocket_circuit::BASE_COOLDOWN;
+use crate::websocket_circuit::CircuitOpenResult;
+use crate::websocket_circuit::WebsocketCircuitBreaker;
 use base64::Engine;
 use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
@@ -81,6 +85,7 @@ use std::task::Poll;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::Notify;
+use tokio::time::Instant;
 use tracing::Event;
 use tracing::Subscriber;
 use tracing::field::Visit;
@@ -1096,6 +1101,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        ResponseStreamTransport::Http,
     );
 
     let observed = stream
@@ -1147,6 +1153,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        ResponseStreamTransport::Http,
     );
 
     while stream.next().await.is_some() {}
@@ -1159,6 +1166,53 @@ async fn response_stream_records_last_model_feedback_ids() {
     assert_eq!(
         tags.get("last_model_response_id").map(String::as_str),
         Some("\"resp-123\"")
+    );
+}
+
+#[tokio::test]
+async fn completed_websocket_response_resets_transport_circuit() {
+    let now = Instant::now();
+    let circuit = Arc::new(Mutex::new(WebsocketCircuitBreaker::default()));
+    {
+        let mut circuit = circuit.lock().unwrap();
+        assert_eq!(
+            circuit.open(now),
+            CircuitOpenResult {
+                newly_opened: true,
+                cooldown: BASE_COOLDOWN,
+            }
+        );
+        assert_eq!(
+            circuit.open(now + BASE_COOLDOWN),
+            CircuitOpenResult {
+                newly_opened: true,
+                cooldown: BASE_COOLDOWN * 2,
+            }
+        );
+    }
+
+    let api_stream = futures::stream::iter([Ok(ResponseEvent::Completed {
+        response_id: "resp-123".to_string(),
+        token_usage: None,
+        usage_metadata: None,
+        end_turn: Some(true),
+    })]);
+    let (mut stream, _) = super::map_response_events(
+        /*upstream_request_id*/ None,
+        api_stream,
+        test_session_telemetry(),
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+        ResponseStreamTransport::Websocket(Arc::clone(&circuit)),
+    );
+    while stream.next().await.is_some() {}
+
+    assert_eq!(
+        circuit.lock().unwrap().open(now + BASE_COOLDOWN),
+        CircuitOpenResult {
+            newly_opened: true,
+            cooldown: BASE_COOLDOWN,
+        }
     );
 }
 
@@ -1368,6 +1422,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        ResponseStreamTransport::Http,
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output

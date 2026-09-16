@@ -29,8 +29,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 
 use crate::CodexResponsesHeaders;
 use async_channel::Sender;
@@ -128,6 +126,8 @@ use crate::feedback_tags;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
 use crate::util::emit_feedback_auth_recovery_tags;
+use crate::websocket_circuit::CircuitOpenResult;
+use crate::websocket_circuit::WebsocketCircuitBreaker;
 use codex_feedback::FeedbackRequestTags;
 use codex_feedback::emit_feedback_request_tags_with_auth_env;
 use codex_login::auth::AgentIdentityAuthPolicy;
@@ -208,7 +208,7 @@ struct ModelClientState {
     concurrent_reasoning_summaries_enabled: bool,
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
-    disable_websockets: AtomicBool,
+    websocket_circuit: Arc<StdMutex<WebsocketCircuitBreaker>>,
     agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
 }
@@ -248,8 +248,8 @@ impl RequestRouteTelemetry {
 /// This holds configuration and state that should be shared across turns within a Codex session
 /// (auth, provider selection, thread id, and transport fallback state).
 ///
-/// WebSocket fallback is session-scoped: once a turn activates the HTTP fallback, subsequent turns
-/// will also use HTTP for the remainder of the session.
+/// WebSocket fallback is session-scoped and recoverable: repeated failures temporarily route
+/// requests over HTTP, and a later turn may retry WebSocket after the cooldown expires.
 ///
 /// Turn-scoped settings (model selection, reasoning controls, telemetry context, and turn
 /// metadata) are passed explicitly to the relevant methods to keep turn lifetime visible at the
@@ -481,7 +481,7 @@ impl ModelClient {
                 concurrent_reasoning_summaries_enabled,
                 include_attestation,
                 attestation_provider,
-                disable_websockets: AtomicBool::new(false),
+                websocket_circuit: Arc::new(StdMutex::new(WebsocketCircuitBreaker::default())),
                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
             }),
@@ -585,20 +585,30 @@ impl ModelClient {
         session_telemetry: &SessionTelemetry,
         _model_info: &ModelInfo,
     ) -> bool {
-        let websocket_enabled = self.responses_websocket_enabled();
-        let activated =
-            websocket_enabled && !self.state.disable_websockets.swap(true, Ordering::Relaxed);
-        if activated {
-            warn!("falling back to HTTP");
+        let open_result = self.state.provider.info().supports_websockets.then(|| {
+            self.state
+                .websocket_circuit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .open(tokio::time::Instant::now())
+        });
+        if let Some(CircuitOpenResult {
+            newly_opened: true,
+            cooldown,
+        }) = open_result
+        {
+            warn!(?cooldown, "temporarily falling back to HTTP");
             session_telemetry.counter(
                 "codex.transport.fallback_to_http",
                 /*inc*/ 1,
                 &[("from_wire_api", "responses_websocket")],
             );
+            self.store_cached_websocket_session(WebsocketSession::default());
+            return true;
         }
 
         self.store_cached_websocket_session(WebsocketSession::default());
-        activated
+        false
     }
 
     pub(crate) async fn create_realtime_call_with_headers(
@@ -956,15 +966,16 @@ impl ModelClient {
 
     /// Returns whether the Responses-over-WebSocket transport is active for this session.
     ///
-    /// WebSocket use is controlled by provider capability and session-scoped fallback state.
+    /// WebSocket use is controlled by provider capability and a recoverable session circuit.
     pub fn responses_websocket_enabled(&self) -> bool {
-        if !self.state.provider.info().supports_websockets
-            || self.state.disable_websockets.load(Ordering::Relaxed)
-        {
+        if !self.state.provider.info().supports_websockets {
             return false;
         }
-
-        true
+        self.state
+            .websocket_circuit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .allows_attempt(tokio::time::Instant::now())
     }
 
     /// Returns auth + provider configuration resolved from the current session auth state.
@@ -1690,6 +1701,7 @@ impl ModelClientSession {
                         request_session_telemetry,
                         inference_trace_attempt,
                         Arc::clone(&self.client.state.provider),
+                        ResponseStreamTransport::Http,
                     );
                     return Ok(stream);
                 }
@@ -1968,6 +1980,9 @@ impl ModelClientSession {
                 request_session_telemetry,
                 inference_trace_attempt,
                 Arc::clone(&self.client.state.provider),
+                ResponseStreamTransport::Websocket(Arc::clone(
+                    &self.client.state.websocket_circuit,
+                )),
             );
             self.websocket_session.last_response_rx = Some(last_request_rx);
             return Ok(WebsocketStreamOutcome::Stream(stream));
@@ -2124,10 +2139,10 @@ impl ModelClientSession {
         }
     }
 
-    /// Permanently disables WebSockets for this Codex session and resets WebSocket state.
+    /// Opens the recoverable WebSocket circuit and resets socket-local state.
     ///
-    /// This is used after exhausting the provider retry budget, to force subsequent requests onto
-    /// the HTTP transport.
+    /// This is used after exhausting the provider retry budget, routing requests over HTTP until
+    /// the circuit cooldown expires.
     ///
     /// Returns `true` if this call activated fallback, or `false` if fallback was already active.
     pub(crate) fn try_switch_fallback_transport(
@@ -2196,11 +2211,17 @@ fn add_responses_lite_header(headers: &mut ApiHeaderMap, use_responses_lite: boo
 const RESPONSE_STREAM_CHANNEL_CAPACITY: usize = 1600;
 const STREAM_DROPPED_REASON: &str = "response stream dropped before provider terminal event";
 
+enum ResponseStreamTransport {
+    Http,
+    Websocket(Arc<StdMutex<WebsocketCircuitBreaker>>),
+}
+
 fn map_response_stream(
     api_stream: codex_api::ResponseStream,
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
+    transport: ResponseStreamTransport,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>) {
     let codex_api::ResponseStream {
         rx_event,
@@ -2216,6 +2237,7 @@ fn map_response_stream(
         session_telemetry,
         inference_trace_attempt,
         provider,
+        transport,
     )
 }
 
@@ -2225,6 +2247,7 @@ fn map_response_events<S>(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
+    transport: ResponseStreamTransport,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>)
 where
     S: futures::Stream<Item = std::result::Result<ResponseEvent, ApiError>>
@@ -2285,6 +2308,12 @@ where
                     usage_metadata,
                     end_turn,
                 }) => {
+                    if let ResponseStreamTransport::Websocket(circuit) = &transport {
+                        circuit
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .record_success();
+                    }
                     feedback_tags!(last_model_response_id = &response_id);
                     if let Some(usage) = &token_usage {
                         session_telemetry.sse_event_completed(usage, ttft_ms);

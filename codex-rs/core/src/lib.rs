@@ -18,6 +18,7 @@ pub use responses_headers::CodexResponsesHeaders;
 mod responses_metadata;
 mod responses_retry;
 pub(crate) mod session;
+mod websocket_circuit;
 pub use codex_protocol::turn_input::NotSubmittedReason;
 pub use codex_protocol::turn_input::RecoverTurnRequest;
 pub use codex_protocol::turn_input::StartIfIdleSubmission;
