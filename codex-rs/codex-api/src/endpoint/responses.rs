@@ -1,8 +1,10 @@
 use crate::auth::SharedAuthProvider;
 use crate::common::ResponseStream;
 use crate::common::ResponsesApiRequest;
+use crate::endpoint::log_responses_request;
 use crate::endpoint::session::EndpointSession;
 use crate::error::ApiError;
+use crate::error::PREVIOUS_RESPONSE_NOT_FOUND_CODE;
 use crate::provider::Provider;
 use crate::requests::Compression;
 use crate::requests::headers::build_session_headers;
@@ -14,6 +16,7 @@ use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
 use codex_client::RequestCompression;
 use codex_client::RequestTelemetry;
+use codex_client::TransportError;
 use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
 use http::HeaderValue;
@@ -98,7 +101,10 @@ impl<T: HttpTransport> ResponsesClient<T> {
         fields(
             transport = "responses_http",
             http.method = "POST",
-            api.path = self.endpoint.path()
+            api.path = self.endpoint.path(),
+            request.mode = tracing::field::Empty,
+            request.input_items = tracing::field::Empty,
+            request.body_bytes = tracing::field::Empty
         )
     )]
     pub async fn stream_request(
@@ -115,6 +121,12 @@ impl<T: HttpTransport> ResponsesClient<T> {
             turn_state,
             guardian_ticket,
         } = options;
+        let request_mode = if request.previous_response_id.is_some() {
+            "incremental"
+        } else {
+            "full"
+        };
+        let input_items = request.input.len() as u64;
         crate::guardian_ticket::attach(
             &mut request.client_metadata,
             guardian_ticket.as_ref(),
@@ -126,6 +138,17 @@ impl<T: HttpTransport> ResponsesClient<T> {
         if guardian_ticket.is_some() {
             body = body.without_body_logging();
         }
+        let span = tracing::Span::current();
+        span.record("request.mode", request_mode);
+        span.record("request.input_items", input_items);
+        span.record("request.body_bytes", body.as_bytes().len() as u64);
+        log_responses_request(
+            "responses_http",
+            request_mode,
+            input_items as usize,
+            body.as_bytes().len(),
+            None,
+        );
 
         let mut headers = extra_headers;
         if let Some(ref thread_id) = thread_id {
@@ -191,7 +214,8 @@ impl<T: HttpTransport> ResponsesClient<T> {
                     req.compression = request_compression;
                 },
             )
-            .await?;
+            .await
+            .map_err(classify_previous_response_not_found)?;
 
         Ok(spawn_response_stream(
             stream_response,
@@ -199,5 +223,51 @@ impl<T: HttpTransport> ResponsesClient<T> {
             self.sse_telemetry.clone(),
             turn_state,
         ))
+    }
+}
+
+fn classify_previous_response_not_found(error: ApiError) -> ApiError {
+    let ApiError::Transport(TransportError::Http {
+        body: Some(body), ..
+    }) = &error
+    else {
+        return error;
+    };
+    let is_missing = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| value.get("error")?.get("code")?.as_str().map(str::to_owned))
+        .is_some_and(|code| code == PREVIOUS_RESPONSE_NOT_FOUND_CODE);
+    if is_missing {
+        ApiError::PreviousResponseNotFound
+    } else {
+        error
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::StatusCode;
+
+    #[test]
+    fn classifies_missing_previous_response_http_error() {
+        let error = ApiError::Transport(TransportError::Http {
+            status: StatusCode::BAD_REQUEST,
+            url: None,
+            headers: None,
+            body: Some(
+                serde_json::json!({
+                    "error": {
+                        "code": "previous_response_not_found",
+                        "message": "The referenced response expired."
+                    }
+                })
+                .to_string(),
+            ),
+        });
+        assert!(matches!(
+            classify_previous_response_not_found(error),
+            ApiError::PreviousResponseNotFound
+        ));
     }
 }

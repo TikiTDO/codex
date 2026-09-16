@@ -207,7 +207,7 @@ async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn websocket_fallback_is_sticky_across_turns() -> Result<()> {
+async fn websocket_fallback_holds_http_during_cooldown() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -248,10 +248,18 @@ async fn websocket_fallback_is_sticky_across_turns() -> Result<()> {
     // WebSocket attempts all happen on the first turn:
     // 1 deferred request prewarm attempt (startup) + 3 stream attempts
     // (initial try + 2 retries) before fallback.
-    // Fallback is sticky, so the second turn stays on HTTP and adds no websocket attempts.
+    // The fallback circuit is still cooling down, so the immediate second turn stays on HTTP and
+    // adds no websocket attempts. A later turn may retry WebSocket after the cooldown expires.
     assert_eq!(websocket_attempts, 4);
     assert_eq!(http_attempts, 2);
-    assert_eq!(response_mock.requests().len(), 2);
+    let responses = response_mock.requests();
+    assert_eq!(responses.len(), 2);
+    let second = responses[1].body_json();
+    assert_eq!(second["store"], false);
+    assert!(second.get("previous_response_id").is_none());
+    let second_user_texts = responses[1].message_input_texts("user");
+    assert!(second_user_texts.iter().any(|text| text == "first"));
+    assert!(second_user_texts.iter().any(|text| text == "second"));
 
     Ok(())
 }

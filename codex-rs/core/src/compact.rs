@@ -437,6 +437,7 @@ pub(crate) struct CompactionAnalyticsAttempt {
 pub(crate) struct CompactionAnalyticsDetails {
     pub(crate) active_context_tokens_before: Option<i64>,
     pub(crate) retained_image_count: Option<usize>,
+    pub(crate) retained_inline_image_bytes: Option<usize>,
     pub(crate) compaction_summary_tokens: Option<i64>,
     pub(crate) cached_input_tokens: Option<i64>,
     pub(crate) cache_write_input_tokens: Option<i64>,
@@ -475,6 +476,7 @@ impl CompactionAnalyticsAttempt {
         let CompactionAnalyticsDetails {
             active_context_tokens_before,
             retained_image_count,
+            retained_inline_image_bytes,
             compaction_summary_tokens,
             cached_input_tokens,
             cache_write_input_tokens,
@@ -499,6 +501,7 @@ impl CompactionAnalyticsAttempt {
                 active_context_tokens_before,
                 active_context_tokens_after,
                 retained_image_count,
+                retained_inline_image_bytes,
                 compaction_summary_tokens,
                 cached_input_tokens,
                 cache_write_input_tokens,

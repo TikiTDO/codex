@@ -27,8 +27,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 
 use async_channel::Sender;
 use codex_api::AgentIdentityTelemetry;
@@ -106,12 +104,10 @@ use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::sync::oneshot::error::TryRecvError;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
-use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -125,8 +121,15 @@ use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
 use crate::cyber_access_program;
 use crate::feedback_tags;
+use crate::responses_lineage::LastResponse;
+use crate::responses_lineage::ResponsesLineage;
+use crate::responses_lineage::ResponsesLineageUpdate;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
+use crate::responses_transport_state::ResponsesFailureReason;
+use crate::responses_transport_state::ResponsesTransport;
+use crate::responses_transport_state::ResponsesTransportState;
+use crate::responses_transport_state::serialized_json_len;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_feedback::FeedbackRequestTags;
 use codex_feedback::emit_feedback_request_tags_with_auth_env;
@@ -251,7 +254,8 @@ struct ModelClientState {
     concurrent_reasoning_summaries_enabled: bool,
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
-    disable_websockets: AtomicBool,
+    websocket_circuit: Arc<StdMutex<WebsocketCircuitBreaker>>,
+    responses_transport_state: ResponsesTransportState,
     agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
 }
@@ -262,6 +266,7 @@ struct ModelClientState {
 /// share the same auth/provider setup flow.
 struct CurrentClientSetup {
     auth: Option<CodexAuth>,
+    auth_owner_generation: Option<u64>,
     api_provider: ApiProvider,
     api_auth: SharedAuthProvider,
     agent_identity_telemetry: Option<AgentIdentityTelemetry>,
@@ -283,8 +288,9 @@ impl RequestRouteTelemetry {
 /// This holds configuration and state that should be shared across turns within a Codex session
 /// (auth, provider selection, thread id, and transport fallback state).
 ///
-/// WebSocket fallback is session-scoped: once a turn activates the HTTP fallback, subsequent turns
-/// will also use HTTP for the remainder of the session.
+/// WebSocket fallback is session-scoped and recoverable: repeated failures temporarily open a
+/// circuit while HTTP continues with complete local history. After a cooldown, a later turn can
+/// try WebSocket again and establish fresh connection-local response lineage.
 ///
 /// Turn-scoped settings (model selection, reasoning controls, telemetry context, and turn
 /// metadata) are passed explicitly to the relevant methods to keep turn lifetime visible at the
@@ -297,6 +303,48 @@ pub struct ModelClient {
     free_guardian_enabled: bool,
     event_sender: Option<Sender<ProtocolEvent>>,
     http_client_factory: HttpClientFactory,
+}
+
+const WEBSOCKET_CIRCUIT_BASE_COOLDOWN: Duration = Duration::from_secs(30);
+const WEBSOCKET_CIRCUIT_MAX_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Debug, Default)]
+struct WebsocketCircuitBreaker {
+    consecutive_openings: u32,
+    open_until: Option<Instant>,
+}
+
+impl WebsocketCircuitBreaker {
+    fn allows_attempt(&mut self, now: Instant) -> bool {
+        match self.open_until {
+            Some(open_until) if now < open_until => false,
+            Some(_) => {
+                self.open_until = None;
+                true
+            }
+            None => true,
+        }
+    }
+
+    fn open(&mut self, now: Instant) -> (bool, Duration) {
+        if let Some(open_until) = self.open_until
+            && now < open_until
+        {
+            return (false, open_until.duration_since(now));
+        }
+        self.consecutive_openings = self.consecutive_openings.saturating_add(1);
+        let exponent = self.consecutive_openings.saturating_sub(1).min(4);
+        let cooldown = WEBSOCKET_CIRCUIT_BASE_COOLDOWN
+            .saturating_mul(1_u32 << exponent)
+            .min(WEBSOCKET_CIRCUIT_MAX_COOLDOWN);
+        self.open_until = Some(now + cooldown);
+        (true, cooldown)
+    }
+
+    fn record_success(&mut self) {
+        self.consecutive_openings = 0;
+        self.open_until = None;
+    }
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -328,99 +376,27 @@ pub struct ModelClientSession {
     turn_state: Arc<OnceLock<String>>,
 }
 
-#[derive(Debug, Clone)]
-struct LastResponse {
-    response_id: String,
-    items_added: Vec<ResponseItem>,
-}
-
 #[derive(Debug, Default)]
 struct WebsocketSession {
     connection: Option<ApiWebSocketConnection>,
     endpoint: Option<ResponsesEndpoint>,
-    last_request: Option<ResponsesApiRequest>,
-    last_response_rx: Option<oneshot::Receiver<LastResponse>>,
-    last_response_from_untraced_warmup: bool,
+    /// Owner of the cached state, including before a connection is opened.
+    auth_owner_generation: Option<u64>,
+    lineage: ResponsesLineage,
     connection_reused: StdMutex<bool>,
 }
 
-// This is intentionally not a `PartialEq` implementation: request equality includes `input` and
-// `client_metadata`, while websocket reuse compares the input separately and ignores metadata.
-// Access programs are authorized per response, including continuations, without replaying input.
-// Keep the destructuring exhaustive so new request fields require an explicit reuse decision.
-fn responses_request_properties_match(
-    previous: &ResponsesApiRequest,
-    current: &ResponsesApiRequest,
-) -> bool {
-    let ResponsesApiRequest {
-        model: previous_model,
-        instructions: previous_instructions,
-        input: _,
-        tools: previous_tools,
-        tool_choice: previous_tool_choice,
-        parallel_tool_calls: previous_parallel_tool_calls,
-        reasoning: previous_reasoning,
-        store: previous_store,
-        stream: previous_stream,
-        stream_options: _,
-        include: previous_include,
-        service_tier: previous_service_tier,
-        prompt_cache_key: previous_prompt_cache_key,
-        text: previous_text,
-        client_metadata: _,
-        access_programs: _,
-    } = previous;
-    let ResponsesApiRequest {
-        model: current_model,
-        instructions: current_instructions,
-        input: _,
-        tools: current_tools,
-        tool_choice: current_tool_choice,
-        parallel_tool_calls: current_parallel_tool_calls,
-        reasoning: current_reasoning,
-        store: current_store,
-        stream: current_stream,
-        stream_options: _,
-        include: current_include,
-        service_tier: current_service_tier,
-        prompt_cache_key: current_prompt_cache_key,
-        text: current_text,
-        client_metadata: _,
-        access_programs: _,
-    } = current;
-
-    previous_model == current_model
-        && previous_instructions == current_instructions
-        && previous_tools == current_tools
-        && previous_tool_choice == current_tool_choice
-        && previous_parallel_tool_calls == current_parallel_tool_calls
-        && previous_reasoning == current_reasoning
-        && previous_store == current_store
-        && previous_stream == current_stream
-        // Stream options control delivery for this response, not the context
-        // referenced by `previous_response_id`.
-        && previous_include == current_include
-        && previous_service_tier == current_service_tier
-        && previous_prompt_cache_key == current_prompt_cache_key
-        && previous_text == current_text
-}
-
-fn response_items_equal_ignoring_internal_metadata(
-    previous: &ResponseItem,
-    current: &ResponseItem,
-) -> bool {
-    if previous == current {
-        return true;
+impl WebsocketSession {
+    fn reset_connection(&mut self) {
+        self.connection = None;
+        self.endpoint = None;
+        // ChatGPT's Codex endpoint requires `store: false`; response lineage is therefore
+        // connection-local. A replacement connection or HTTP fallback must rebuild from the
+        // logical local history rather than referencing state owned by the closed socket.
+        self.lineage.clear();
+        self.set_connection_reused(/*connection_reused*/ false);
     }
 
-    let mut previous = previous.clone();
-    previous.clear_internal_chat_message_metadata_passthrough();
-    let mut current = current.clone();
-    current.clear_internal_chat_message_metadata_passthrough();
-    previous == current
-}
-
-impl WebsocketSession {
     fn set_connection_reused(&self, connection_reused: bool) {
         *self
             .connection_reused
@@ -495,6 +471,7 @@ impl ModelClient {
         let auth_env_telemetry =
             collect_auth_env_telemetry(model_provider.info(), codex_api_key_env_enabled);
         let include_attestation = model_provider.supports_attestation();
+        let responses_transport_state = ResponsesTransportState::new(thread_id);
         Self {
             state: Arc::new(ModelClientState {
                 thread_id,
@@ -510,7 +487,8 @@ impl ModelClient {
                 concurrent_reasoning_summaries_enabled,
                 include_attestation,
                 attestation_provider,
-                disable_websockets: AtomicBool::new(false),
+                websocket_circuit: Arc::new(StdMutex::new(WebsocketCircuitBreaker::default())),
+                responses_transport_state,
                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
             }),
@@ -556,15 +534,28 @@ impl ModelClient {
     /// This constructor does not perform network I/O itself; the session opens a websocket lazily
     /// when the first stream request is issued.
     pub fn new_session(&self) -> ModelClientSession {
+        let auth_owner_generation = self.auth_owner_generation();
+        let mut websocket_session = self.take_cached_websocket_session();
+        if websocket_session.auth_owner_generation != auth_owner_generation {
+            websocket_session = WebsocketSession {
+                auth_owner_generation,
+                ..Default::default()
+            };
+        }
         ModelClientSession {
             client: self.clone(),
-            websocket_session: self.take_cached_websocket_session(),
+            websocket_session,
             turn_state: Arc::new(OnceLock::new()),
         }
     }
 
     pub(crate) fn auth_manager(&self) -> Option<Arc<AuthManager>> {
         self.state.provider.auth_manager()
+    }
+
+    fn auth_owner_generation(&self) -> Option<u64> {
+        self.auth_manager()
+            .map(|manager| *manager.auth_change_receiver().borrow())
     }
 
     fn take_cached_websocket_session(&self) -> WebsocketSession {
@@ -589,11 +580,23 @@ impl ModelClient {
         session_telemetry: &SessionTelemetry,
         _model_info: &ModelInfo,
     ) -> bool {
-        let websocket_enabled = self.responses_websocket_enabled();
-        let activated =
-            websocket_enabled && !self.state.disable_websockets.swap(true, Ordering::Relaxed);
+        let (activated, cooldown, consecutive_openings) =
+            if self.state.provider.info().supports_websockets {
+                let mut circuit = self
+                    .state
+                    .websocket_circuit
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (activated, cooldown) = circuit.open(Instant::now());
+                (activated, cooldown, circuit.consecutive_openings)
+            } else {
+                (false, Duration::ZERO, 0)
+            };
         if activated {
-            warn!("falling back to HTTP");
+            self.state
+                .responses_transport_state
+                .fallback_opened(consecutive_openings, cooldown);
+            warn!(?cooldown, "temporarily falling back to HTTP");
             session_telemetry.counter(
                 "codex.transport.fallback_to_http",
                 /*inc*/ 1,
@@ -601,7 +604,9 @@ impl ModelClient {
             );
         }
 
-        self.store_cached_websocket_session(WebsocketSession::default());
+        let mut websocket_session = self.take_cached_websocket_session();
+        websocket_session.reset_connection();
+        self.store_cached_websocket_session(websocket_session);
         activated
     }
 
@@ -1014,11 +1019,14 @@ impl ModelClient {
         let request = ResponsesApiRequest {
             model: model_info.slug.clone(),
             instructions,
+            previous_response_id: None,
             input,
             tools,
             tool_choice: "auto".to_string(),
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
             reasoning: Some(reasoning),
+            // Every auth path keeps Responses non-stored. WebSocket continuation is
+            // connection-local and never changes that storage contract.
             store: false,
             stream: true,
             stream_options,
@@ -1045,15 +1053,27 @@ impl ModelClient {
 
     /// Returns whether the Responses-over-WebSocket transport is active for this session.
     ///
-    /// WebSocket use is controlled by provider capability and session-scoped fallback state.
+    /// WebSocket use is controlled by provider capability and a recoverable session circuit.
     pub fn responses_websocket_enabled(&self) -> bool {
-        if !self.state.provider.info().supports_websockets
-            || self.state.disable_websockets.load(Ordering::Relaxed)
-        {
+        if !self.state.provider.info().supports_websockets {
             return false;
         }
-
-        true
+        let (allowed, retry_ready, consecutive_openings) = {
+            let mut circuit = self
+                .state
+                .websocket_circuit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let was_open = circuit.open_until.is_some();
+            let allowed = circuit.allows_attempt(Instant::now());
+            (allowed, was_open && allowed, circuit.consecutive_openings)
+        };
+        if retry_ready {
+            self.state
+                .responses_transport_state
+                .websocket_retry_ready(consecutive_openings);
+        }
+        allowed
     }
 
     /// Returns auth + provider configuration resolved from the current session auth state.
@@ -1061,6 +1081,9 @@ impl ModelClient {
     /// This centralizes setup used by both prewarm and normal request paths so they stay in
     /// lockstep when auth/provider resolution changes.
     async fn current_client_setup(&self) -> Result<CurrentClientSetup> {
+        // Capture before resolving credentials so an account switch during setup cannot label
+        // an old connection with the new owner's revision.
+        let auth_owner_generation = self.auth_owner_generation();
         let auth = self.state.provider.auth().await;
         let api_provider = self.state.provider.api_provider().await?;
         let resolved_auth = self
@@ -1074,6 +1097,7 @@ impl ModelClient {
             .await?;
         Ok(CurrentClientSetup {
             auth,
+            auth_owner_generation,
             api_provider,
             api_auth: resolved_auth.auth,
             agent_identity_telemetry: resolved_auth.agent_identity_telemetry,
@@ -1309,13 +1333,21 @@ impl ModelClientSession {
     }
 
     fn reset_websocket_session(&mut self) {
-        self.websocket_session.connection = None;
-        self.websocket_session.endpoint = None;
-        self.websocket_session.last_request = None;
-        self.websocket_session.last_response_rx = None;
-        self.websocket_session.last_response_from_untraced_warmup = false;
-        self.websocket_session
-            .set_connection_reused(/*connection_reused*/ false);
+        self.websocket_session.reset_connection();
+    }
+
+    fn reconcile_auth_owner(&mut self, auth_owner_generation: Option<u64>) -> bool {
+        let owner_changed = self.websocket_session.auth_owner_generation != auth_owner_generation
+            || self.client.auth_owner_generation() != auth_owner_generation;
+        if owner_changed {
+            // A response ID and turn state belong to the account that created them. Keep token
+            // refreshes for the same owner reusable, but never carry either across an owner seam.
+            self.turn_state = Arc::new(OnceLock::new());
+            self.websocket_session.lineage.clear();
+            self.reset_websocket_session();
+            self.websocket_session.auth_owner_generation = auth_owner_generation;
+        }
+        owner_changed
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1355,85 +1387,20 @@ impl ModelClientSession {
         }
     }
 
-    /// Checks whether the current request is an incremental extension of the previous request.
-    /// We only reuse an incremental input delta when non-input request fields are unchanged and
-    /// `input` is a strict extension of the previous known input. Server-returned output items
-    /// are treated as part of the baseline so we do not resend them.
-    fn get_incremental_items(
-        &self,
-        request: &ResponsesApiRequest,
-        last_response: Option<&LastResponse>,
-        allow_empty_delta: bool,
-    ) -> Option<Vec<ResponseItem>> {
-        let previous_request = self.websocket_session.last_request.as_ref()?;
-        if !responses_request_properties_match(previous_request, request) {
-            trace!("incremental request failed, websocket reuse properties didn't match");
-            return None;
-        }
-
-        let response_items =
-            last_response.map_or(&[][..], |response| response.items_added.as_slice());
-        let previous_items_len = previous_request
-            .input
-            .len()
-            .checked_add(response_items.len())?;
-        let Some((request_items_to_compare, incremental_items)) =
-            request.input.split_at_checked(previous_items_len)
-        else {
-            trace!("incremental request failed, incompatible request length");
-            return None;
-        };
-        let previous_items = previous_request.input.iter().chain(response_items);
-        if !previous_items
-            .zip(request_items_to_compare)
-            .all(|(previous, current)| {
-                response_items_equal_ignoring_internal_metadata(previous, current)
-            })
-        {
-            trace!("incremental request failed, items didn't match");
-            return None;
-        }
-        if !allow_empty_delta && incremental_items.is_empty() {
-            return None;
-        }
-        Some(incremental_items.to_vec())
-    }
-
-    fn get_last_response(&mut self) -> Option<LastResponse> {
-        self.websocket_session
-            .last_response_rx
-            .take()
-            .and_then(|mut receiver| match receiver.try_recv() {
-                Ok(last_response) => Some(last_response),
-                Err(TryRecvError::Closed) | Err(TryRecvError::Empty) => None,
-            })
-    }
-
     fn prepare_websocket_request(
         &mut self,
         request: &ResponsesApiRequest,
     ) -> (Option<(String, Vec<ResponseItem>)>, bool) {
-        let Some(last_response) = self.get_last_response() else {
+        let Some(incremental) = self
+            .websocket_session
+            .lineage
+            .prepare_incremental_request(request, /*allow_empty_delta*/ true)
+        else {
             return (None, false);
         };
-        let previous_response_id_from_untraced_warmup =
-            self.websocket_session.last_response_from_untraced_warmup;
-        let Some(incremental_items) = self.get_incremental_items(
-            request,
-            Some(&last_response),
-            /*allow_empty_delta*/ true,
-        ) else {
-            return (None, false);
-        };
-
-        if last_response.response_id.is_empty() {
-            trace!("incremental request failed, no previous response id");
-            return (None, false);
-        }
-
         (
-            Some((last_response.response_id, incremental_items)),
-            previous_response_id_from_untraced_warmup,
+            Some((incremental.previous_response_id, incremental.input)),
+            incremental.previous_response_from_untraced_warmup,
         )
     }
 
@@ -1467,22 +1434,17 @@ impl ModelClientSession {
         let endpoint = self
             .client
             .responses_endpoint(client_setup.auth.as_ref(), &model_info.slug);
-        let connection = self
-            .client
-            .connect_websocket(
-                session_telemetry,
-                client_setup.api_provider,
-                client_setup.api_auth,
-                responses_metadata,
-                auth_context,
-                RequestRouteTelemetry::for_endpoint(endpoint.path()),
-                endpoint,
-            )
-            .await?;
-        self.websocket_session.connection = Some(connection);
-        self.websocket_session.endpoint = Some(endpoint);
-        self.websocket_session
-            .set_connection_reused(/*connection_reused*/ false);
+        self.websocket_connection(WebsocketConnectParams {
+            session_telemetry,
+            api_provider: client_setup.api_provider,
+            api_auth: client_setup.api_auth,
+            auth_owner_generation: client_setup.auth_owner_generation,
+            responses_metadata,
+            auth_context,
+            request_route_telemetry: RequestRouteTelemetry::for_endpoint(endpoint.path()),
+            endpoint,
+        })
+        .await?;
         Ok(())
     }
     /// Returns a websocket connection for this turn.
@@ -1506,6 +1468,7 @@ impl ModelClientSession {
             session_telemetry,
             api_provider,
             api_auth,
+            auth_owner_generation,
             responses_metadata,
             auth_context,
             request_route_telemetry,
@@ -1517,8 +1480,10 @@ impl ModelClientSession {
             }
             None => true,
         };
+        // Resolving an external auth provider can change ownership during client setup.
+        let owner_changed = self.reconcile_auth_owner(auth_owner_generation);
 
-        if needs_new {
+        if needs_new || owner_changed {
             self.reset_websocket_session();
             let new_conn = match self
                 .client
@@ -1543,6 +1508,7 @@ impl ModelClientSession {
             };
             self.websocket_session.connection = Some(new_conn);
             self.websocket_session.endpoint = Some(endpoint);
+            self.websocket_session.auth_owner_generation = auth_owner_generation;
             self.websocket_session
                 .set_connection_reused(/*connection_reused*/ false);
         } else {
@@ -1587,7 +1553,7 @@ impl ModelClientSession {
         )
     )]
     async fn stream_responses_api(
-        &self,
+        &mut self,
         prompt: &Prompt,
         model_info: &ModelInfo,
         session_telemetry: &SessionTelemetry,
@@ -1605,6 +1571,7 @@ impl ModelClientSession {
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
             let client_setup = self.client.current_client_setup().await?;
+            self.reconcile_auth_owner(client_setup.auth_owner_generation);
             let endpoint = self
                 .client
                 .responses_endpoint(client_setup.auth.as_ref(), &model_info.slug);
@@ -1671,6 +1638,13 @@ impl ModelClientSession {
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
             inference_trace_attempt.record_started(&request);
+            self.client.state.responses_transport_state.request_started(
+                ResponsesTransport::Http,
+                request.previous_response_id.is_some(),
+                request.input.len(),
+                serialized_json_len(&request),
+                None,
+            );
             let client = ApiResponsesClient::new(
                 transport,
                 client_setup.api_provider,
@@ -1682,11 +1656,18 @@ impl ModelClientSession {
 
             match stream_result {
                 Ok(stream) => {
+                    self.client
+                        .state
+                        .responses_transport_state
+                        .stream_started(ResponsesTransport::Http);
                     let (stream, _) = map_response_stream(
                         stream,
                         request_session_telemetry,
                         inference_trace_attempt,
                         Arc::clone(&self.client.state.provider),
+                        /*websocket_circuit*/ None,
+                        self.client.state.responses_transport_state.clone(),
+                        ResponsesTransport::Http,
                     );
                     return Ok(stream);
                 }
@@ -1697,6 +1678,10 @@ impl ModelClientSession {
                         .provider
                         .is_recoverable_auth_error(&unauthorized_transport) =>
                 {
+                    self.client.state.responses_transport_state.failed(
+                        ResponsesTransport::Http,
+                        ResponsesFailureReason::AuthRecovery,
+                    );
                     let response_debug_context =
                         extract_response_debug_context(&unauthorized_transport);
                     inference_trace_attempt.record_failed(
@@ -1719,6 +1704,10 @@ impl ModelClientSession {
                     continue;
                 }
                 Err(err) => {
+                    self.client.state.responses_transport_state.failed(
+                        ResponsesTransport::Http,
+                        ResponsesFailureReason::RequestError,
+                    );
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let err = self.client.state.provider.map_api_error(err);
@@ -1818,11 +1807,16 @@ impl ModelClientSession {
             if let Some(turn_state) = self.turn_state.get() {
                 client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
             }
+            self.client
+                .state
+                .responses_transport_state
+                .websocket_connecting();
             match self
                 .websocket_connection(WebsocketConnectParams {
                     session_telemetry,
                     api_provider: client_setup.api_provider,
                     api_auth: client_setup.api_auth,
+                    auth_owner_generation: client_setup.auth_owner_generation,
                     responses_metadata: &websocket_metadata,
                     auth_context: request_auth_context,
                     request_route_telemetry: RequestRouteTelemetry::for_endpoint(endpoint.path()),
@@ -1834,11 +1828,19 @@ impl ModelClientSession {
                 Err(ApiError::Transport(TransportError::Http { status, .. }))
                     if status == StatusCode::UPGRADE_REQUIRED =>
                 {
+                    self.client.state.responses_transport_state.failed(
+                        ResponsesTransport::Websocket,
+                        ResponsesFailureReason::UpgradeRequired,
+                    );
                     return Ok(WebsocketStreamOutcome::FallbackToHttp);
                 }
                 Err(ApiError::Transport(unauthorized_transport))
                     if provider.is_recoverable_auth_error(&unauthorized_transport) =>
                 {
+                    self.client.state.responses_transport_state.failed(
+                        ResponsesTransport::Websocket,
+                        ResponsesFailureReason::AuthRecovery,
+                    );
                     pending_retry = PendingUnauthorizedRetry::from_recovery(
                         handle_unauthorized(
                             unauthorized_transport,
@@ -1853,7 +1855,13 @@ impl ModelClientSession {
                     );
                     continue;
                 }
-                Err(err) => return Err(provider.map_api_error(err)),
+                Err(err) => {
+                    self.client.state.responses_transport_state.failed(
+                        ResponsesTransport::Websocket,
+                        ResponsesFailureReason::ConnectionError,
+                    );
+                    return Err(provider.map_api_error(err));
+                }
             }
 
             let (incremental_request, previous_response_id_from_untraced_warmup) =
@@ -1911,16 +1919,29 @@ impl ModelClientSession {
                 inference_trace_attempt.record_started(&ws_request);
             }
 
-            let websocket_connection =
-                self.websocket_session.connection.as_ref().ok_or_else(|| {
-                    self.client.state.provider.map_api_error(ApiError::Stream(
-                        "websocket connection is unavailable".to_string(),
-                    ))
-                })?;
+            let ResponsesWsRequest::ResponseCreate(ws_payload) = &ws_request;
+            let connection_reused = self.websocket_session.connection_reused();
+            self.client.state.responses_transport_state.request_started(
+                ResponsesTransport::Websocket,
+                ws_payload.previous_response_id.is_some(),
+                ws_payload.input.len(),
+                serialized_json_len(&ws_request),
+                Some(connection_reused),
+            );
+
+            let Some(websocket_connection) = self.websocket_session.connection.as_ref() else {
+                self.client.state.responses_transport_state.failed(
+                    ResponsesTransport::Websocket,
+                    ResponsesFailureReason::ConnectionError,
+                );
+                return Err(self.client.state.provider.map_api_error(ApiError::Stream(
+                    "websocket connection is unavailable".to_string(),
+                )));
+            };
             let stream_result = websocket_connection
                 .stream_request(
                     ws_request,
-                    self.websocket_session.connection_reused(),
+                    connection_reused,
                     Some(Arc::clone(&self.turn_state)),
                     responses_metadata.guardian_ticket.as_ref(),
                 )
@@ -1930,25 +1951,40 @@ impl ModelClientSession {
                     item.set_id(original_item_id);
                 }
             }
-            self.websocket_session.last_request = Some(request);
-            self.websocket_session.last_response_from_untraced_warmup = warmup;
-            let stream_result = stream_result.map_err(|err| {
-                let response_debug_context = extract_response_debug_context_from_api_error(&err);
-                let err = self.client.state.provider.map_api_error(err);
-                inference_trace_attempt.record_failed(
-                    &err,
-                    response_debug_context.request_id.as_deref(),
-                    /*output_items*/ &[],
-                );
-                err
-            })?;
-            let (stream, last_request_rx) = map_response_stream(
+            let stream_result = match stream_result {
+                Ok(stream) => stream,
+                Err(err) => {
+                    self.client.state.responses_transport_state.failed(
+                        ResponsesTransport::Websocket,
+                        ResponsesFailureReason::RequestError,
+                    );
+                    let response_debug_context =
+                        extract_response_debug_context_from_api_error(&err);
+                    let err = self.client.state.provider.map_api_error(err);
+                    inference_trace_attempt.record_failed(
+                        &err,
+                        response_debug_context.request_id.as_deref(),
+                        /*output_items*/ &[],
+                    );
+                    return Err(err);
+                }
+            };
+            self.client
+                .state
+                .responses_transport_state
+                .stream_started(ResponsesTransport::Websocket);
+            let (stream, response_rx) = map_response_stream(
                 stream_result,
                 request_session_telemetry,
                 inference_trace_attempt,
                 Arc::clone(&self.client.state.provider),
+                Some(Arc::clone(&self.client.state.websocket_circuit)),
+                self.client.state.responses_transport_state.clone(),
+                ResponsesTransport::Websocket,
             );
-            self.websocket_session.last_response_rx = Some(last_request_rx);
+            self.websocket_session
+                .lineage
+                .record_pending(request, response_rx, warmup);
             return Ok(WebsocketStreamOutcome::Stream(stream));
         }
     }
@@ -2002,7 +2038,7 @@ impl ModelClientSession {
         if !self.client.responses_websocket_enabled() {
             return Ok(());
         }
-        if self.websocket_session.last_request.is_some() {
+        if self.websocket_session.lineage.has_state() {
             return Ok(());
         }
 
@@ -2103,10 +2139,10 @@ impl ModelClientSession {
         }
     }
 
-    /// Permanently disables WebSockets for this Codex session and resets WebSocket state.
+    /// Opens the recoverable WebSocket circuit and resets socket-local state.
     ///
-    /// This is used after exhausting the provider retry budget, to force subsequent requests onto
-    /// the HTTP transport.
+    /// This is used after exhausting the provider retry budget, forcing requests onto HTTP until
+    /// the circuit cooldown expires.
     ///
     /// Returns `true` if this call activated fallback, or `false` if fallback was already active.
     pub(crate) fn try_switch_fallback_transport(
@@ -2117,7 +2153,7 @@ impl ModelClientSession {
         let activated = self
             .client
             .force_http_fallback(session_telemetry, model_info);
-        self.websocket_session = WebsocketSession::default();
+        self.reset_websocket_session();
         activated
     }
 }
@@ -2180,7 +2216,10 @@ fn map_response_stream(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
-) -> (ResponseStream, oneshot::Receiver<LastResponse>) {
+    websocket_circuit: Option<Arc<StdMutex<WebsocketCircuitBreaker>>>,
+    transport_state: ResponsesTransportState,
+    transport: ResponsesTransport,
+) -> (ResponseStream, oneshot::Receiver<ResponsesLineageUpdate>) {
     let codex_api::ResponseStream {
         rx_event,
         upstream_request_id,
@@ -2195,6 +2234,8 @@ fn map_response_stream(
         session_telemetry,
         inference_trace_attempt,
         provider,
+        websocket_circuit,
+        Some((transport_state, transport)),
     )
 }
 
@@ -2204,7 +2245,9 @@ fn map_response_events<S>(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
-) -> (ResponseStream, oneshot::Receiver<LastResponse>)
+    websocket_circuit: Option<Arc<StdMutex<WebsocketCircuitBreaker>>>,
+    transport_state: Option<(ResponsesTransportState, ResponsesTransport)>,
+) -> (ResponseStream, oneshot::Receiver<ResponsesLineageUpdate>)
 where
     S: futures::Stream<Item = std::result::Result<ResponseEvent, ApiError>>
         + Unpin
@@ -2213,12 +2256,13 @@ where
 {
     let (tx_event, rx_event) =
         mpsc::channel::<Result<ResponseEvent>>(RESPONSE_STREAM_CHANNEL_CAPACITY);
-    let (tx_last_response, rx_last_response) = oneshot::channel::<LastResponse>();
+    let (tx_last_response, rx_last_response) = oneshot::channel::<ResponsesLineageUpdate>();
     let consumer_dropped = CancellationToken::new();
     let consumer_dropped_for_stream = consumer_dropped.clone();
 
     tokio::spawn(async move {
         let mut logged_error = false;
+        let mut provider_terminal_event_seen = false;
         let mut tx_last_response = Some(tx_last_response);
         let mut items_added: Vec<ResponseItem> = Vec::new();
         let (request_start, mut ttft_ms) = (Instant::now(), None);
@@ -2230,6 +2274,10 @@ where
         loop {
             let event = tokio::select! {
                 _ = consumer_dropped.cancelled() => {
+                    if !provider_terminal_event_seen
+                        && let Some((state, transport)) = &transport_state {
+                            state.failed(*transport, ResponsesFailureReason::ConsumerDropped);
+                        }
                     inference_trace_attempt.record_cancelled(
                         STREAM_DROPPED_REASON,
                         upstream_request_id,
@@ -2250,6 +2298,11 @@ where
                         .await
                         .is_err()
                     {
+                        if !provider_terminal_event_seen
+                            && let Some((state, transport)) = &transport_state
+                        {
+                            state.failed(*transport, ResponsesFailureReason::ConsumerDropped);
+                        }
                         inference_trace_attempt.record_cancelled(
                             STREAM_DROPPED_REASON,
                             upstream_request_id,
@@ -2264,6 +2317,16 @@ where
                     usage_metadata,
                     end_turn,
                 }) => {
+                    provider_terminal_event_seen = true;
+                    if let Some((state, transport)) = &transport_state {
+                        state.completed(*transport);
+                    }
+                    if let Some(circuit) = &websocket_circuit {
+                        circuit
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .record_success();
+                    }
                     feedback_tags!(last_model_response_id = &response_id);
                     if let Some(usage) = &token_usage {
                         session_telemetry.sse_event_completed(usage, ttft_ms);
@@ -2275,10 +2338,10 @@ where
                         &items_added,
                     );
                     if let Some(sender) = tx_last_response.take() {
-                        let _ = sender.send(LastResponse {
+                        let _ = sender.send(ResponsesLineageUpdate::Completed(LastResponse {
                             response_id: response_id.clone(),
                             items_added: std::mem::take(&mut items_added),
-                        });
+                        }));
                     }
                     if tx_event
                         .send(Ok(ResponseEvent::Completed {
@@ -2300,6 +2363,11 @@ where
                         );
                     }
                     if tx_event.send(Ok(event)).await.is_err() {
+                        if !provider_terminal_event_seen
+                            && let Some((state, transport)) = &transport_state
+                        {
+                            state.failed(*transport, ResponsesFailureReason::ConsumerDropped);
+                        }
                         inference_trace_attempt.record_cancelled(
                             STREAM_DROPPED_REASON,
                             upstream_request_id,
@@ -2309,6 +2377,22 @@ where
                     }
                 }
                 Err(err) => {
+                    provider_terminal_event_seen = true;
+                    if let Some((state, transport)) = &transport_state {
+                        state.failed(
+                            *transport,
+                            if matches!(&err, ApiError::PreviousResponseNotFound) {
+                                ResponsesFailureReason::PreviousResponseNotFound
+                            } else {
+                                ResponsesFailureReason::StreamError
+                            },
+                        );
+                    }
+                    if matches!(&err, ApiError::PreviousResponseNotFound)
+                        && let Some(sender) = tx_last_response.take()
+                    {
+                        let _ = sender.send(ResponsesLineageUpdate::PreviousResponseNotFound);
+                    }
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let upstream_request_id =
@@ -2331,6 +2415,9 @@ where
                     }
                 }
             }
+        }
+        if !provider_terminal_event_seen && let Some((state, transport)) = &transport_state {
+            state.failed(*transport, ResponsesFailureReason::StreamClosed);
         }
         inference_trace_attempt.record_failed(
             "stream closed before response.completed",
@@ -2423,6 +2510,7 @@ struct WebsocketConnectParams<'a> {
     session_telemetry: &'a SessionTelemetry,
     api_provider: codex_api::Provider,
     api_auth: SharedAuthProvider,
+    auth_owner_generation: Option<u64>,
     responses_metadata: &'a CodexResponsesMetadata,
     auth_context: AuthRequestTelemetryContext,
     request_route_telemetry: RequestRouteTelemetry,

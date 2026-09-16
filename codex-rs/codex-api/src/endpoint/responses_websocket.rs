@@ -4,8 +4,10 @@ use crate::common::ResponseStream;
 use crate::common::ResponsesWsRequest;
 use crate::common::SafetyBufferingTreatment;
 use crate::common::WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY;
+use crate::endpoint::log_responses_request;
 use crate::endpoint::responses::ResponsesEndpoint;
 use crate::error::ApiError;
+use crate::error::PREVIOUS_RESPONSE_NOT_FOUND_CODE;
 use crate::provider::Provider;
 use crate::rate_limits::parse_rate_limit_event;
 use crate::safety_buffering::treatment_from_headers;
@@ -144,6 +146,10 @@ impl WsStream {
     async fn next(&mut self) -> Option<Result<Message, WsError>> {
         self.rx_message.recv().await
     }
+
+    fn is_closed(&self) -> bool {
+        self.pump_task.is_finished()
+    }
 }
 
 impl Drop for WsStream {
@@ -158,9 +164,6 @@ const X_REASONING_INCLUDED_HEADER: &str = "x-reasoning-included";
 const OPENAI_MODEL_HEADER: &str = "openai-model";
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str = "websocket_connection_limit_reached";
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE: &str = "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.";
-const PREVIOUS_RESPONSE_NOT_FOUND_CODE: &str = "previous_response_not_found";
-const PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE: &str =
-    "Previous response was not found. Retrying the full request.";
 const RESPONSES_WEBSOCKET_TIMING_KIND: &str = "responsesapi.websocket_timing";
 const RESPONSES_WEBSOCKET_TIMING_EVENT_TARGET: &str = "codex_api::responses_websocket_timing";
 const SESSION_ID_CLIENT_METADATA_KEY: &str = "session_id";
@@ -223,14 +226,25 @@ impl ResponsesWebsocketConnection {
     }
 
     pub async fn is_closed(&self) -> bool {
-        self.stream.lock().await.is_none()
+        self.stream
+            .lock()
+            .await
+            .as_ref()
+            .is_none_or(WsStream::is_closed)
     }
 
     #[instrument(
         name = "responses_websocket.stream_request",
         level = "info",
         skip_all,
-        fields(transport = "responses_websocket", api.path = self.endpoint.path())
+        fields(
+            transport = "responses_websocket",
+            api.path = self.endpoint.path(),
+            transport.connection_reused = connection_reused,
+            request.mode = tracing::field::Empty,
+            request.input_items = tracing::field::Empty,
+            request.body_bytes = tracing::field::Empty
+        )
     )]
     pub async fn stream_request(
         &self,
@@ -271,15 +285,36 @@ impl ResponsesWebsocketConnection {
             warmup: ws_request.generate == Some(false),
             connection_reused,
         };
-        let ResponsesWsRequest::ResponseCreate(ws_request) = &mut request;
-        crate::guardian_ticket::attach(
-            &mut ws_request.client_metadata,
-            guardian_ticket,
-            self.endpoint,
-        );
+        let (request_mode, input_items) = {
+            let ResponsesWsRequest::ResponseCreate(ws_request) = &mut request;
+            crate::guardian_ticket::attach(
+                &mut ws_request.client_metadata,
+                guardian_ticket,
+                self.endpoint,
+            );
+            (
+                if ws_request.previous_response_id.is_some() {
+                    "incremental"
+                } else {
+                    "full"
+                },
+                ws_request.input.len(),
+            )
+        };
         let request_text = serialize_websocket_request(&request)?;
+        let span = Span::current();
+        span.record("request.mode", request_mode);
+        span.record("request.input_items", input_items as u64);
+        span.record("request.body_bytes", request_text.len() as u64);
+        log_responses_request(
+            "responses_websocket",
+            request_mode,
+            input_items,
+            request_text.len(),
+            Some(connection_reused),
+        );
 
-        let current_span = Span::current();
+        let current_span = span;
         tokio::spawn(
             #[expect(
                 clippy::await_holding_invalid_type,
@@ -530,8 +565,8 @@ async fn connect_websocket(
     let (stream, response) = match response {
         Ok((stream, response)) => {
             info!(
-                "successfully connected to websocket: {url}, headers: {:?}",
-                response.headers()
+                status = %response.status(),
+                "successfully connected to websocket: {url}"
             );
             (stream, response)
         }
@@ -639,7 +674,7 @@ fn map_wrapped_websocket_error_event(
             WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE => {
                 Some(WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE)
             }
-            PREVIOUS_RESPONSE_NOT_FOUND_CODE => Some(PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE),
+            PREVIOUS_RESPONSE_NOT_FOUND_CODE => return Some(ApiError::PreviousResponseNotFound),
             _ => None,
         }
     {
@@ -838,17 +873,35 @@ async fn run_websocket_response_stream(
             Message::Binary(_) => {
                 return Err(ApiError::Stream("unexpected binary websocket event".into()));
             }
-            Message::Close(_) => {
-                return Err(ApiError::Stream(
-                    "websocket closed by server before response.completed".into(),
-                ));
-            }
+            Message::Close(frame) => return Err(websocket_close_error(frame)),
             Message::Frame(_) => {}
             Message::Ping(_) | Message::Pong(_) => {}
         }
     }
 
     Ok(())
+}
+
+fn websocket_close_error(frame: Option<CloseFrame>) -> ApiError {
+    let message = match frame {
+        Some(frame) => {
+            let reason = frame.reason.to_string();
+            let reason = reason.chars().take(256).collect::<String>();
+            if reason.is_empty() {
+                format!(
+                    "websocket closed by server before response.completed (code {})",
+                    frame.code
+                )
+            } else {
+                format!(
+                    "websocket closed by server before response.completed (code {}: {reason})",
+                    frame.code
+                )
+            }
+        }
+        None => "websocket closed by server before response.completed (no close frame)".to_string(),
+    };
+    ApiError::Stream(message)
 }
 
 fn emit_responses_websocket_timing_event(
@@ -943,12 +996,27 @@ mod tests {
     use serde_json::value::to_raw_value;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    #[test]
+    fn websocket_close_error_preserves_code_and_bounded_reason() {
+        let error = websocket_close_error(Some(CloseFrame {
+            code: CloseCode::Size,
+            reason: "payload too large".into(),
+        }));
+        let ApiError::Stream(message) = error else {
+            panic!("expected stream error");
+        };
+        assert!(message.contains("1009"));
+        assert!(message.contains("payload too large"));
+    }
 
     #[test]
     fn direct_serialization_preserves_websocket_request_payload() {
         let api_request = ResponsesApiRequest {
             model: "gpt-test".to_string(),
             instructions: "Use the available tools.".to_string(),
+            previous_response_id: None,
             input: vec![ResponseItem::Message {
                 id: Some(ResponseItemId::with_suffix("msg", "1")),
                 role: "user".to_string(),

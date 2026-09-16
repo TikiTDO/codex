@@ -1,9 +1,13 @@
 use super::AuthRequestTelemetryContext;
 use super::CompactConversationRequestSettings;
+use super::LastResponse;
 use super::ModelClient;
 use super::PendingUnauthorizedRetry;
 use super::Prompt;
+use super::ResponsesLineageUpdate;
 use super::UnauthorizedRecoveryExecution;
+use super::WEBSOCKET_CIRCUIT_BASE_COOLDOWN;
+use super::WebsocketCircuitBreaker;
 use super::X_CODEX_INSTALLATION_ID_HEADER;
 use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
@@ -13,6 +17,8 @@ use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
 use crate::responses_metadata::CodexResponsesMetadata;
+use crate::responses_transport_state::ResponsesTransport;
+use crate::responses_transport_state::ResponsesTransportState;
 use crate::test_support::TestCodexResponsesRequestKind;
 use crate::test_support::responses_metadata as test_responses_metadata;
 use codex_api::AgentIdentityTelemetry;
@@ -77,6 +83,111 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
+use std::time::Instant;
+
+#[test]
+fn websocket_circuit_recovers_and_backs_off_until_success() {
+    let now = Instant::now();
+    let mut circuit = WebsocketCircuitBreaker::default();
+    assert!(circuit.allows_attempt(now));
+
+    let (opened, first_cooldown) = circuit.open(now);
+    assert!(opened);
+    assert_eq!(first_cooldown, WEBSOCKET_CIRCUIT_BASE_COOLDOWN);
+    assert!(!circuit.allows_attempt(now + first_cooldown / 2));
+    assert!(circuit.allows_attempt(now + first_cooldown));
+
+    let second_attempt = now + first_cooldown;
+    let (opened, second_cooldown) = circuit.open(second_attempt);
+    assert!(opened);
+    assert_eq!(second_cooldown, first_cooldown * 2);
+    let (opened_again, remaining) = circuit.open(second_attempt);
+    assert!(!opened_again);
+    assert_eq!(remaining, second_cooldown);
+
+    circuit.record_success();
+    assert!(circuit.allows_attempt(second_attempt));
+    let (_, reset_cooldown) = circuit.open(second_attempt);
+    assert_eq!(reset_cooldown, WEBSOCKET_CIRCUIT_BASE_COOLDOWN);
+}
+
+#[test]
+fn websocket_connection_reset_clears_connection_local_response_lineage() {
+    let client = test_model_client(SessionSource::Cli);
+    let metadata = test_responses_metadata_for_client(
+        &client,
+        /*turn_id*/ None,
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let first_input = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "first".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let first_output = output_message("first", "answer");
+    let second_input = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "second".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let first_request = client
+        .build_responses_request(
+            &Prompt {
+                input: vec![first_input.clone()],
+                ..Default::default()
+            },
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            /*service_tier*/ None,
+            &metadata,
+        )
+        .expect("build first request");
+    let mut session = client.new_session();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    session.websocket_session.lineage.record_pending(
+        first_request,
+        receiver,
+        /*from_untraced_warmup*/ false,
+    );
+    sender
+        .send(ResponsesLineageUpdate::Completed(LastResponse {
+            response_id: "resp-first".to_string(),
+            items_added: vec![first_output.clone()],
+        }))
+        .expect("record completed response");
+
+    session.reset_websocket_session();
+    let second_request = client
+        .build_responses_request(
+            &Prompt {
+                input: vec![first_input, first_output, second_input],
+                ..Default::default()
+            },
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            /*service_tier*/ None,
+            &metadata,
+        )
+        .expect("build second request");
+    let incremental = session
+        .websocket_session
+        .lineage
+        .prepare_incremental_request(&second_request, /*allow_empty_delta*/ false);
+
+    assert!(incremental.is_none());
+}
 use tempfile::TempDir;
 use tokio::sync::Notify;
 use tracing::Event;
@@ -233,6 +344,18 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
     );
 
     Ok(())
+}
+
+#[test]
+fn response_state_is_reset_at_an_auth_owner_seam() {
+    let client = test_model_client(SessionSource::Cli);
+    let mut session = client.new_session();
+    session.turn_state.set("owner-a".to_string()).unwrap();
+    session.websocket_session.auth_owner_generation = Some(7);
+
+    assert!(session.reconcile_auth_owner(/*auth_owner_generation*/ None));
+    assert!(session.turn_state.get().is_none());
+    assert_eq!(session.websocket_session.auth_owner_generation, None);
 }
 
 fn test_model_provider() -> SharedModelProvider {
@@ -807,6 +930,8 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        /*websocket_circuit*/ None,
+        /*transport_state*/ None,
     );
 
     let observed = stream
@@ -860,6 +985,8 @@ async fn response_stream_records_last_model_feedback_ids() {
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        /*websocket_circuit*/ None,
+        /*transport_state*/ None,
     );
 
     while stream.next().await.is_some() {}
@@ -873,6 +1000,46 @@ async fn response_stream_records_last_model_feedback_ids() {
         tags.get("last_model_response_id").map(String::as_str),
         Some("\"resp-123\"")
     );
+}
+
+#[tokio::test]
+async fn response_stream_updates_live_transport_snapshot() {
+    let temp = TempDir::new().expect("temp dir");
+    let path = temp.path().join("responses-transport/thread.json");
+    let state =
+        ResponsesTransportState::new_with_path(ThreadId::new().to_string(), Some(path.clone()));
+    state.request_started(
+        ResponsesTransport::Websocket,
+        true,
+        3,
+        Some(1536),
+        Some(true),
+    );
+    state.stream_started(ResponsesTransport::Websocket);
+    let api_stream = futures::stream::iter([Ok(ResponseEvent::Completed {
+        response_id: "resp-transport-state".to_string(),
+        token_usage: None,
+        usage_metadata: None,
+        end_turn: Some(true),
+    })]);
+    let (mut stream, _) = super::map_response_events(
+        Some("req-transport-state".to_string()),
+        api_stream,
+        test_session_telemetry(),
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+        /*websocket_circuit*/ None,
+        Some((state, ResponsesTransport::Websocket)),
+    );
+
+    while stream.next().await.is_some() {}
+
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).expect("transport snapshot should exist"))
+            .expect("transport snapshot should be valid JSON");
+    assert_eq!(snapshot["transport"]["state"], "completed");
+    assert_eq!(snapshot["last_outcome"], "completed");
+    assert_eq!(snapshot["reason"], serde_json::Value::Null);
 }
 
 #[tokio::test]
@@ -1083,6 +1250,8 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        /*websocket_circuit*/ None,
+        /*transport_state*/ None,
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output

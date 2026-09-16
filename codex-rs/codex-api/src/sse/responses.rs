@@ -3,6 +3,7 @@ use crate::common::ResponseStream;
 use crate::common::SafetyBuffering;
 use crate::common::SafetyBufferingTreatment;
 use crate::error::ApiError;
+use crate::error::PREVIOUS_RESPONSE_NOT_FOUND_CODE;
 use crate::rate_limits::parse_all_rate_limits;
 use crate::safety_buffering::treatment_from_headers;
 use crate::telemetry::SseTelemetry;
@@ -428,7 +429,9 @@ pub fn process_responses_event(
                 if let Some(error) = resp_val.get("error")
                     && let Ok(error) = serde_json::from_value::<Error>(error.clone())
                 {
-                    if is_context_window_error(&error) {
+                    if error.code.as_deref() == Some(PREVIOUS_RESPONSE_NOT_FOUND_CODE) {
+                        response_error = ApiError::PreviousResponseNotFound;
+                    } else if is_context_window_error(&error) {
                         response_error = ApiError::ContextWindowExceeded;
                     } else if is_quota_exceeded_error(&error) {
                         response_error = ApiError::QuotaExceeded;
@@ -1157,6 +1160,22 @@ mod tests {
                 _ => panic!("unexpected events for {code}: {events:?}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn failed_response_classifies_missing_previous_response() {
+        let event = json!({
+            "type": "response.failed",
+            "response": {
+                "error": {
+                    "code": "previous_response_not_found",
+                    "message": "The referenced response expired."
+                }
+            },
+        });
+        let sse = format!("event: response.failed\ndata: {event}\n\n");
+        let events = collect_events(&[sse.as_bytes()]).await;
+        assert_matches!(events.as_slice(), [Err(ApiError::PreviousResponseNotFound)]);
     }
 
     #[tokio::test]

@@ -51,6 +51,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TruncationPolicy;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::protocol::WarningEvent;
 use codex_rollout_trace::CompactionCheckpointTracePayload;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_utils_output_truncation::approx_token_count;
@@ -75,6 +76,7 @@ enum RetainedImageBudget {
 // Mirror the current /responses/compact retained-message default while the
 // server-side path remains the reference implementation.
 pub(crate) const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
+const PREFERRED_RETAINED_INLINE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RETAINED_AGENT_MESSAGE_TOKENS: i64 = 10_000;
 // Compact attempts can run much longer than normal turns, so keep the per-transport
 // retry budget smaller than the general Responses stream retry budget.
@@ -322,7 +324,8 @@ async fn run_remote_compact_task_inner_impl(
             RetainedImageBudget::Disabled
         },
     );
-    analytics_details.retained_image_count = Some(retained_images);
+    analytics_details.retained_image_count = Some(retained_images.count);
+    analytics_details.retained_inline_image_bytes = Some(retained_images.inline_bytes);
     let (new_window_number, new_window_ids) = sess.advance_auto_compact_window().await;
     let (initial_context, world_state_baseline) =
         build_compaction_initial_context(sess.as_ref(), &initial_context_injection).await;
@@ -371,6 +374,13 @@ async fn run_remote_compact_task_inner_impl(
 
     sess.emit_turn_item_completed(compaction_turn_context, compaction_item)
         .await;
+    if let Some(message) = retained_inline_image_warning(retained_images.inline_bytes) {
+        sess.send_event(
+            compaction_turn_context,
+            EventMsg::Warning(WarningEvent { message }),
+        )
+        .await;
+    }
     Ok(())
 }
 
@@ -501,7 +511,7 @@ fn build_v2_compacted_history(
     compaction_output: ResponseItem,
     retain_client_developer_messages: bool,
     image_budget: RetainedImageBudget,
-) -> (Vec<ResponseItemEnvelope>, usize) {
+) -> (Vec<ResponseItemEnvelope>, RetainedImageMetrics) {
     debug_assert_eq!(prompt_input.len(), prompt_input_metadata.len());
     let prompt_input = prompt_input
         .into_iter()
@@ -519,12 +529,38 @@ fn build_v2_compacted_history(
         .collect::<Vec<_>>();
     let mut retained =
         truncate_retained_messages(retained, RETAINED_MESSAGE_TOKEN_BUDGET, image_budget);
-    let retained_image_count = retained
-        .iter()
-        .map(|envelope| retained_input_image_count(&envelope.item))
-        .sum::<usize>();
+    let retained_image_metrics =
+        retained
+            .iter()
+            .fold(RetainedImageMetrics::default(), |mut metrics, envelope| {
+                let item_metrics = retained_input_image_metrics(&envelope.item);
+                metrics.count = metrics.count.saturating_add(item_metrics.count);
+                metrics.inline_bytes = metrics
+                    .inline_bytes
+                    .saturating_add(item_metrics.inline_bytes);
+                metrics
+            });
     retained.push(ResponseItemEnvelope::new(compaction_output));
-    (retained, retained_image_count)
+    (retained, retained_image_metrics)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RetainedImageMetrics {
+    count: usize,
+    inline_bytes: usize,
+}
+
+fn retained_inline_image_warning(inline_bytes: usize) -> Option<String> {
+    let overage = inline_bytes.checked_sub(PREFERRED_RETAINED_INLINE_IMAGE_BYTES)?;
+    if overage == 0 {
+        return None;
+    }
+
+    Some(format!(
+        "Compacted context retains {:.1} MiB of inline images ({:.1} MiB over the preferred ceiling). No images were removed; a full request will resend them.",
+        inline_bytes as f64 / (1024 * 1024) as f64,
+        overage as f64 / (1024 * 1024) as f64,
+    ))
 }
 
 pub(crate) fn is_client_authored_developer_message(item: &ResponseItemEnvelope) -> bool {
@@ -583,14 +619,23 @@ fn is_retained_for_remote_compaction_v2(item: &ResponseItem) -> bool {
 }
 
 fn retained_input_image_count(item: &ResponseItem) -> usize {
+    retained_input_image_metrics(item).count
+}
+
+fn retained_input_image_metrics(item: &ResponseItem) -> RetainedImageMetrics {
     let ResponseItem::Message { content, .. } = item else {
-        return 0;
+        return RetainedImageMetrics::default();
     };
 
     content
         .iter()
-        .filter(|item| matches!(item, ContentItem::InputImage { .. }))
-        .count()
+        .fold(RetainedImageMetrics::default(), |mut metrics, item| {
+            if let ContentItem::InputImage { image_url, .. } = item {
+                metrics.count = metrics.count.saturating_add(1);
+                metrics.inline_bytes = metrics.inline_bytes.saturating_add(image_url.len());
+            }
+            metrics
+        })
 }
 
 pub(crate) fn truncate_retained_messages_for_remote_compaction(
@@ -786,7 +831,7 @@ mod tests {
     fn build_without_metadata(
         input: Vec<ResponseItem>,
         output: ResponseItem,
-    ) -> (Vec<ResponseItemEnvelope>, usize) {
+    ) -> (Vec<ResponseItemEnvelope>, RetainedImageMetrics) {
         let metadata = vec![None; input.len()];
         build_v2_compacted_history(
             input,
@@ -998,9 +1043,25 @@ mod tests {
             internal_chat_message_metadata_passthrough: None,
         };
 
-        let (_, retained_image_count) = build_without_metadata(input, output);
+        let (_, retained_images) = build_without_metadata(input, output);
 
-        assert_eq!(retained_image_count, 2);
+        assert_eq!(retained_images.count, 2);
+        assert_eq!(retained_images.inline_bytes, 50);
+    }
+
+    #[test]
+    fn retained_inline_image_warning_is_soft_and_reports_overage() {
+        assert_eq!(
+            retained_inline_image_warning(PREFERRED_RETAINED_INLINE_IMAGE_BYTES),
+            None,
+        );
+        assert_eq!(
+            retained_inline_image_warning(PREFERRED_RETAINED_INLINE_IMAGE_BYTES + 1024 * 1024),
+            Some(
+                "Compacted context retains 9.0 MiB of inline images (1.0 MiB over the preferred ceiling). No images were removed; a full request will resend them."
+                    .to_string(),
+            ),
+        );
     }
 
     #[test]

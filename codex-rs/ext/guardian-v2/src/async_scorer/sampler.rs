@@ -396,6 +396,7 @@ impl LunaSampler {
                 ApiError::Retryable { .. }
                 | ApiError::RateLimitExceeded { .. }
                 | ApiError::Stream(_)
+                | ApiError::PreviousResponseNotFound
                 | ApiError::ServerOverloaded,
             )
             | LunaSamplerError::Api(ApiError::Transport(
@@ -535,6 +536,7 @@ impl LunaSampler {
         let mut request = ResponsesApiRequest {
             model: MODEL.to_owned(),
             instructions: String::new(),
+            previous_response_id: None,
             input,
             tools: None,
             tool_choice: "none".to_owned(),

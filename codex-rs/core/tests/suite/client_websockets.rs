@@ -1073,10 +1073,10 @@ async fn responses_websocket_prewarm_includes_model_and_tier_routing_hint() {
 async fn responses_websocket_prewarm_uses_v2_when_provider_supports_websockets() {
     skip_if_no_network!();
 
-    let server = start_websocket_server(vec![vec![vec![
-        ev_response_created("resp-1"),
-        ev_completed("resp-1"),
-    ]]])
+    let server = start_websocket_server(vec![vec![
+        vec![ev_response_created("warm-1"), ev_completed("warm-1")],
+        vec![ev_response_created("resp-1"), ev_completed("resp-1")],
+    ]])
     .await;
 
     let harness = websocket_harness_with_options(&server, /*runtime_metrics_enabled*/ false).await;
@@ -1113,7 +1113,7 @@ async fn responses_websocket_prewarm_uses_v2_when_provider_supports_websockets()
     stream_until_complete(&mut client_session, &harness, &prompt).await;
     assert_eq!(server.handshakes().len(), 1);
     let connection = server.single_connection();
-    assert_eq!(connection.len(), 1);
+    assert_eq!(connection.len(), 2);
     let prewarm = connection
         .first()
         .expect("missing prewarm request")
@@ -1123,6 +1123,12 @@ async fn responses_websocket_prewarm_uses_v2_when_provider_supports_websockets()
         prewarm["input"],
         serde_json::to_value(&prompt.input).unwrap()
     );
+    let first_turn = connection
+        .get(1)
+        .expect("missing first turn request")
+        .body_json();
+    assert_eq!(first_turn["previous_response_id"].as_str(), Some("warm-1"));
+    assert_eq!(first_turn["input"], json!([]));
 
     server.shutdown().await;
 }
@@ -1209,8 +1215,11 @@ async fn responses_websocket_v2_requests_use_v2_when_provider_supports_websocket
 
     let connection = server.single_connection();
     assert_eq!(connection.len(), 2);
+    let first = connection.first().expect("missing request").body_json();
     let second = connection.get(1).expect("missing request").body_json();
+    assert_eq!(first["store"], false);
     assert_eq!(second["type"].as_str(), Some("response.create"));
+    assert_eq!(second["store"], false);
     assert_eq!(second["previous_response_id"].as_str(), Some("resp-1"));
     assert_eq!(
         second["input"],
@@ -1997,7 +2006,9 @@ async fn responses_websocket_forwards_turn_metadata_on_initial_and_incremental_c
     let second = connection.get(1).expect("missing request").body_json();
 
     assert_eq!(first["type"].as_str(), Some("response.create"));
+    assert_eq!(first["store"], false);
     assert_eq!(second["type"].as_str(), Some("response.create"));
+    assert_eq!(second["store"], false);
     assert_eq!(second["previous_response_id"].as_str(), Some("resp-1"));
     let first_metadata: serde_json::Value = serde_json::from_str(
         first["client_metadata"]["x-codex-turn-metadata"]
@@ -2217,7 +2228,9 @@ async fn responses_websocket_v2_creates_with_previous_response_id_on_prefix() {
     let second = connection.get(1).expect("missing request").body_json();
 
     assert_eq!(first["type"].as_str(), Some("response.create"));
+    assert_eq!(first["store"], false);
     assert_eq!(second["type"].as_str(), Some("response.create"));
+    assert_eq!(second["store"], false);
     assert_eq!(second["previous_response_id"].as_str(), Some("resp-1"));
     assert_eq!(
         second["input"],
@@ -2265,7 +2278,7 @@ async fn responses_websocket_v2_creates_without_previous_response_id_when_non_in
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_websocket_v2_after_error_uses_full_create_without_previous_response_id() {
+async fn responses_websocket_v2_after_error_rebuilds_history_on_replacement_connection() {
     skip_if_no_network!();
 
     let server = start_websocket_server(vec![
@@ -2344,13 +2357,81 @@ async fn responses_websocket_v2_after_error_uses_full_create_without_previous_re
         .body_json();
 
     assert_eq!(first["type"].as_str(), Some("response.create"));
+    assert_eq!(first["store"], false);
     assert_eq!(second["type"].as_str(), Some("response.create"));
+    assert_eq!(second["store"], false);
     assert_eq!(second["previous_response_id"].as_str(), Some("resp-1"));
     assert_eq!(third["type"].as_str(), Some("response.create"));
-    assert_eq!(third.get("previous_response_id"), None);
+    assert_eq!(third["store"], false);
+    assert!(third.get("previous_response_id").is_none());
     assert_eq!(
         third["input"],
         serde_json::to_value(&prompt_three.input).unwrap()
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_websocket_v2_missing_previous_response_retries_full_history() {
+    skip_if_no_network!();
+
+    let server = start_websocket_server(vec![
+        vec![
+            vec![ev_response_created("resp-1"), ev_completed("resp-1")],
+            vec![json!({
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "previous_response_not_found",
+                    "message": "The referenced response expired."
+                }
+            })],
+        ],
+        vec![vec![ev_response_created("resp-3"), ev_completed("resp-3")]],
+    ])
+    .await;
+
+    let harness = websocket_harness_with_v2(&server, /*runtime_metrics_enabled*/ true).await;
+    let mut session = harness.client.new_session();
+    let prompt_one = prompt_with_input(vec![message_item("hello")]);
+    let prompt_two = prompt_with_input(vec![message_item("hello"), message_item("second")]);
+
+    stream_until_complete(&mut session, &harness, &prompt_one).await;
+
+    let responses_metadata = turn_metadata(&harness, /*turn_id*/ None);
+    let mut missing_stream = session
+        .stream(
+            &prompt_two,
+            &harness.model_info,
+            &harness.session_telemetry,
+            harness.effort.clone(),
+            harness.summary,
+            /*service_tier*/ None,
+            &responses_metadata,
+            &codex_rollout_trace::InferenceTraceContext::disabled(),
+        )
+        .await
+        .expect("websocket stream failed");
+    assert!(
+        missing_stream
+            .next()
+            .await
+            .is_some_and(|event| event.is_err()),
+        "expected missing previous response error"
+    );
+
+    stream_until_complete(&mut session, &harness, &prompt_two).await;
+
+    let connections = server.connections();
+    let incremental = connections[0][1].body_json();
+    let recovered = connections[1][0].body_json();
+    assert_eq!(incremental["previous_response_id"].as_str(), Some("resp-1"));
+    assert!(recovered.get("previous_response_id").is_none());
+    assert_eq!(
+        recovered["input"],
+        serde_json::to_value(&prompt_two.input).unwrap()
     );
 
     server.shutdown().await;
