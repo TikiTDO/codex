@@ -27,6 +27,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use async_channel::Sender;
 use codex_api::AgentIdentityTelemetry;
@@ -254,7 +256,7 @@ struct ModelClientState {
     concurrent_reasoning_summaries_enabled: bool,
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
-    websocket_circuit: Arc<StdMutex<WebsocketCircuitBreaker>>,
+    disable_websockets: AtomicBool,
     responses_transport_state: ResponsesTransportState,
     agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
@@ -288,9 +290,8 @@ impl RequestRouteTelemetry {
 /// This holds configuration and state that should be shared across turns within a Codex session
 /// (auth, provider selection, thread id, and transport fallback state).
 ///
-/// WebSocket fallback is session-scoped and recoverable: repeated failures temporarily open a
-/// circuit while HTTP continues with complete local history. After a cooldown, a later turn can
-/// try WebSocket again and establish fresh connection-local response lineage.
+/// WebSocket fallback is session-scoped and sticky: after the provider retry budget is exhausted,
+/// the process uses HTTP for the rest of the session. A fresh process may try WebSocket again.
 ///
 /// Turn-scoped settings (model selection, reasoning controls, telemetry context, and turn
 /// metadata) are passed explicitly to the relevant methods to keep turn lifetime visible at the
@@ -303,48 +304,6 @@ pub struct ModelClient {
     free_guardian_enabled: bool,
     event_sender: Option<Sender<ProtocolEvent>>,
     http_client_factory: HttpClientFactory,
-}
-
-const WEBSOCKET_CIRCUIT_BASE_COOLDOWN: Duration = Duration::from_secs(30);
-const WEBSOCKET_CIRCUIT_MAX_COOLDOWN: Duration = Duration::from_secs(5 * 60);
-
-#[derive(Debug, Default)]
-struct WebsocketCircuitBreaker {
-    consecutive_openings: u32,
-    open_until: Option<Instant>,
-}
-
-impl WebsocketCircuitBreaker {
-    fn allows_attempt(&mut self, now: Instant) -> bool {
-        match self.open_until {
-            Some(open_until) if now < open_until => false,
-            Some(_) => {
-                self.open_until = None;
-                true
-            }
-            None => true,
-        }
-    }
-
-    fn open(&mut self, now: Instant) -> (bool, Duration) {
-        if let Some(open_until) = self.open_until
-            && now < open_until
-        {
-            return (false, open_until.duration_since(now));
-        }
-        self.consecutive_openings = self.consecutive_openings.saturating_add(1);
-        let exponent = self.consecutive_openings.saturating_sub(1).min(4);
-        let cooldown = WEBSOCKET_CIRCUIT_BASE_COOLDOWN
-            .saturating_mul(1_u32 << exponent)
-            .min(WEBSOCKET_CIRCUIT_MAX_COOLDOWN);
-        self.open_until = Some(now + cooldown);
-        (true, cooldown)
-    }
-
-    fn record_success(&mut self) {
-        self.consecutive_openings = 0;
-        self.open_until = None;
-    }
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -487,7 +446,7 @@ impl ModelClient {
                 concurrent_reasoning_summaries_enabled,
                 include_attestation,
                 attestation_provider,
-                websocket_circuit: Arc::new(StdMutex::new(WebsocketCircuitBreaker::default())),
+                disable_websockets: AtomicBool::new(false),
                 responses_transport_state,
                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
@@ -580,23 +539,11 @@ impl ModelClient {
         session_telemetry: &SessionTelemetry,
         _model_info: &ModelInfo,
     ) -> bool {
-        let (activated, cooldown, consecutive_openings) =
-            if self.state.provider.info().supports_websockets {
-                let mut circuit = self
-                    .state
-                    .websocket_circuit
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let (activated, cooldown) = circuit.open(Instant::now());
-                (activated, cooldown, circuit.consecutive_openings)
-            } else {
-                (false, Duration::ZERO, 0)
-            };
+        let activated = self.state.provider.info().supports_websockets
+            && !self.state.disable_websockets.swap(true, Ordering::Relaxed);
         if activated {
-            self.state
-                .responses_transport_state
-                .fallback_opened(consecutive_openings, cooldown);
-            warn!(?cooldown, "temporarily falling back to HTTP");
+            self.state.responses_transport_state.fallback_opened();
+            warn!("falling back to HTTP for the remainder of the process");
             session_telemetry.counter(
                 "codex.transport.fallback_to_http",
                 /*inc*/ 1,
@@ -1053,27 +1000,10 @@ impl ModelClient {
 
     /// Returns whether the Responses-over-WebSocket transport is active for this session.
     ///
-    /// WebSocket use is controlled by provider capability and a recoverable session circuit.
+    /// WebSocket use is controlled by provider capability and sticky session fallback.
     pub fn responses_websocket_enabled(&self) -> bool {
-        if !self.state.provider.info().supports_websockets {
-            return false;
-        }
-        let (allowed, retry_ready, consecutive_openings) = {
-            let mut circuit = self
-                .state
-                .websocket_circuit
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let was_open = circuit.open_until.is_some();
-            let allowed = circuit.allows_attempt(Instant::now());
-            (allowed, was_open && allowed, circuit.consecutive_openings)
-        };
-        if retry_ready {
-            self.state
-                .responses_transport_state
-                .websocket_retry_ready(consecutive_openings);
-        }
-        allowed
+        self.state.provider.info().supports_websockets
+            && !self.state.disable_websockets.load(Ordering::Relaxed)
     }
 
     /// Returns auth + provider configuration resolved from the current session auth state.
@@ -1665,7 +1595,6 @@ impl ModelClientSession {
                         request_session_telemetry,
                         inference_trace_attempt,
                         Arc::clone(&self.client.state.provider),
-                        /*websocket_circuit*/ None,
                         self.client.state.responses_transport_state.clone(),
                         ResponsesTransport::Http,
                     );
@@ -1978,7 +1907,6 @@ impl ModelClientSession {
                 request_session_telemetry,
                 inference_trace_attempt,
                 Arc::clone(&self.client.state.provider),
-                Some(Arc::clone(&self.client.state.websocket_circuit)),
                 self.client.state.responses_transport_state.clone(),
                 ResponsesTransport::Websocket,
             );
@@ -2139,10 +2067,10 @@ impl ModelClientSession {
         }
     }
 
-    /// Opens the recoverable WebSocket circuit and resets socket-local state.
+    /// Disables WebSocket for the remainder of the process and resets socket-local state.
     ///
-    /// This is used after exhausting the provider retry budget, forcing requests onto HTTP until
-    /// the circuit cooldown expires.
+    /// This is used after exhausting the provider retry budget, forcing later requests onto HTTP
+    /// without periodically repeating a failed WebSocket probe.
     ///
     /// Returns `true` if this call activated fallback, or `false` if fallback was already active.
     pub(crate) fn try_switch_fallback_transport(
@@ -2216,7 +2144,6 @@ fn map_response_stream(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
-    websocket_circuit: Option<Arc<StdMutex<WebsocketCircuitBreaker>>>,
     transport_state: ResponsesTransportState,
     transport: ResponsesTransport,
 ) -> (ResponseStream, oneshot::Receiver<ResponsesLineageUpdate>) {
@@ -2234,7 +2161,6 @@ fn map_response_stream(
         session_telemetry,
         inference_trace_attempt,
         provider,
-        websocket_circuit,
         Some((transport_state, transport)),
     )
 }
@@ -2245,7 +2171,6 @@ fn map_response_events<S>(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
-    websocket_circuit: Option<Arc<StdMutex<WebsocketCircuitBreaker>>>,
     transport_state: Option<(ResponsesTransportState, ResponsesTransport)>,
 ) -> (ResponseStream, oneshot::Receiver<ResponsesLineageUpdate>)
 where
@@ -2320,12 +2245,6 @@ where
                     provider_terminal_event_seen = true;
                     if let Some((state, transport)) = &transport_state {
                         state.completed(*transport);
-                    }
-                    if let Some(circuit) = &websocket_circuit {
-                        circuit
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .record_success();
                     }
                     feedback_tags!(last_model_response_id = &response_id);
                     if let Some(usage) = &token_usage {

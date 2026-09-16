@@ -6,8 +6,6 @@ use super::PendingUnauthorizedRetry;
 use super::Prompt;
 use super::ResponsesLineageUpdate;
 use super::UnauthorizedRecoveryExecution;
-use super::WEBSOCKET_CIRCUIT_BASE_COOLDOWN;
-use super::WebsocketCircuitBreaker;
 use super::X_CODEX_INSTALLATION_ID_HEADER;
 use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
@@ -83,32 +81,35 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
-use std::time::Instant;
 
-#[test]
-fn websocket_circuit_recovers_and_backs_off_until_success() {
-    let now = Instant::now();
-    let mut circuit = WebsocketCircuitBreaker::default();
-    assert!(circuit.allows_attempt(now));
+#[tokio::test]
+async fn websocket_fallback_stays_disabled_after_the_former_cooldown() {
+    let mut provider =
+        create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
+    provider.supports_websockets = true;
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        AgentIdentityAuthPolicy::JwtOnly,
+        ThreadId::new(),
+        provider,
+        SessionSource::Cli,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*content_item_kinds_enabled*/ true,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
 
-    let (opened, first_cooldown) = circuit.open(now);
-    assert!(opened);
-    assert_eq!(first_cooldown, WEBSOCKET_CIRCUIT_BASE_COOLDOWN);
-    assert!(!circuit.allows_attempt(now + first_cooldown / 2));
-    assert!(circuit.allows_attempt(now + first_cooldown));
-
-    let second_attempt = now + first_cooldown;
-    let (opened, second_cooldown) = circuit.open(second_attempt);
-    assert!(opened);
-    assert_eq!(second_cooldown, first_cooldown * 2);
-    let (opened_again, remaining) = circuit.open(second_attempt);
-    assert!(!opened_again);
-    assert_eq!(remaining, second_cooldown);
-
-    circuit.record_success();
-    assert!(circuit.allows_attempt(second_attempt));
-    let (_, reset_cooldown) = circuit.open(second_attempt);
-    assert_eq!(reset_cooldown, WEBSOCKET_CIRCUIT_BASE_COOLDOWN);
+    assert!(client.responses_websocket_enabled());
+    assert!(client.force_http_fallback(&test_session_telemetry(), &test_model_info()));
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(31)).await;
+    tokio::time::resume();
+    assert!(!client.responses_websocket_enabled());
 }
 
 #[test]
@@ -930,7 +931,6 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         test_session_telemetry(),
         attempt,
         test_model_provider(),
-        /*websocket_circuit*/ None,
         /*transport_state*/ None,
     );
 
@@ -985,7 +985,6 @@ async fn response_stream_records_last_model_feedback_ids() {
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
-        /*websocket_circuit*/ None,
         /*transport_state*/ None,
     );
 
@@ -1028,7 +1027,6 @@ async fn response_stream_updates_live_transport_snapshot() {
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
-        /*websocket_circuit*/ None,
         Some((state, ResponsesTransport::Websocket)),
     );
 
@@ -1250,7 +1248,6 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         test_session_telemetry(),
         attempt,
         test_model_provider(),
-        /*websocket_circuit*/ None,
         /*transport_state*/ None,
     );
 

@@ -207,7 +207,7 @@ async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn websocket_fallback_holds_http_during_cooldown() -> Result<()> {
+async fn websocket_fallback_stays_on_http_for_the_process() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -248,8 +248,8 @@ async fn websocket_fallback_holds_http_during_cooldown() -> Result<()> {
     // WebSocket attempts all happen on the first turn:
     // 1 deferred request prewarm attempt (startup) + 3 stream attempts
     // (initial try + 2 retries) before fallback.
-    // The fallback circuit is still cooling down, so the immediate second turn stays on HTTP and
-    // adds no websocket attempts. A later turn may retry WebSocket after the cooldown expires.
+    // Once the retry budget is exhausted, WebSocket stays disabled for this process, so later
+    // turns do not add another failed probe.
     assert_eq!(websocket_attempts, 4);
     assert_eq!(http_attempts, 2);
     let responses = response_mock.requests();
