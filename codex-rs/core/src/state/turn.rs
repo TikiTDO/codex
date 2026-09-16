@@ -25,6 +25,7 @@ use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::tasks::AnySessionTask;
 use codex_protocol::models::AdditionalPermissionProfile;
+use codex_protocol::protocol::CompactionInput;
 use codex_protocol::protocol::McpInvocation;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::TokenUsage;
@@ -98,7 +99,7 @@ pub(crate) struct TurnState {
     mailbox_delivery_phase: MailboxDeliveryPhase,
     granted_permissions_by_environment_id: HashMap<String, AdditionalPermissionProfile>,
     strict_auto_review_enabled: bool,
-    context_compaction_requested: bool,
+    context_compaction_request: Option<CompactionInput>,
     pub(crate) tool_calls: u64,
     pub(crate) has_memory_citation: bool,
     pub(crate) token_usage_at_turn_start: TokenUsage,
@@ -272,11 +273,14 @@ impl TurnState {
         self.strict_auto_review_enabled
     }
 
-    pub(crate) fn request_context_compaction(&mut self) {
-        self.context_compaction_requested = true;
+    pub(crate) fn request_context_compaction(&mut self, input: CompactionInput) {
+        match &mut self.context_compaction_request {
+            Some(current) => current.merge(input),
+            None => self.context_compaction_request = Some(input),
+        }
     }
 
-    pub(crate) fn take_context_compaction_request(&mut self) -> bool {
-        std::mem::take(&mut self.context_compaction_requested)
+    pub(crate) fn take_context_compaction_request(&mut self) -> Option<CompactionInput> {
+        self.context_compaction_request.take()
     }
 }

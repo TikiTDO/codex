@@ -8941,6 +8941,27 @@
         ],
         "type": "object"
       },
+      "CompactionInput": {
+        "description": "Optional, caller-authored guidance for one compaction.\n\nAn empty value preserves the ordinary compaction path. These controls affect only the working history supplied to the compactor; they do not rewrite the source transcript.",
+        "properties": {
+          "discardImages": {
+            "description": "Omit inline image bodies from the compactor input and installed compacted history. The original transcript remains unchanged.",
+            "type": "boolean"
+          },
+          "instructions": {
+            "description": "Additional instructions for what the compacted context should preserve, summarize, or otherwise emphasize.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retryWebsocket": {
+            "description": "After a successful compaction, allow the next model request to try the Responses WebSocket transport again. A failed attempt returns the session to sticky HTTP fallback; this does not enable automatic retries.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ComputerUseConfig": {
         "properties": {
           "default_app_access": {
@@ -20617,6 +20638,16 @@
       "ThreadCompactStartParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "input": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/CompactionInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "threadId": {
             "type": "string"
           }

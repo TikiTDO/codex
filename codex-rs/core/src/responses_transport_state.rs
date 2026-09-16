@@ -8,7 +8,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -229,30 +228,25 @@ impl ResponsesTransportState {
         });
     }
 
-    pub(crate) fn fallback_opened(&self, consecutive_openings: u32, cooldown: Duration) {
+    pub(crate) fn fallback_opened(&self) {
         self.update(|snapshot| {
             snapshot.transport.active = "http";
             snapshot.transport.state = "fallback";
             snapshot.circuit = CircuitSnapshot {
                 state: "open",
-                consecutive_openings,
-                retry_at_unix_ms: Some(
-                    unix_time_ms()
-                        .saturating_add(u64::try_from(cooldown.as_millis()).unwrap_or(u64::MAX)),
-                ),
+                consecutive_openings: 1,
+                retry_at_unix_ms: None,
             };
             snapshot.last_outcome = "fallback";
             snapshot.reason = Some("websocket_retry_exhausted");
         });
     }
 
-    pub(crate) fn websocket_retry_ready(&self, consecutive_openings: u32) {
+    pub(crate) fn websocket_retry_requested(&self) {
         self.update(|snapshot| {
-            snapshot.circuit = CircuitSnapshot {
-                state: "half_open",
-                consecutive_openings,
-                retry_at_unix_ms: None,
-            };
+            snapshot.circuit.state = "half_open";
+            snapshot.circuit.consecutive_openings = snapshot.circuit.consecutive_openings.max(1);
+            snapshot.circuit.retry_at_unix_ms = None;
             snapshot.last_outcome = "websocket_retry_ready";
             snapshot.reason = None;
         });
@@ -403,9 +397,9 @@ mod tests {
             Some(1536),
             Some(true),
         );
-        state.fallback_opened(2, Duration::from_secs(60));
+        state.fallback_opened();
 
-        let value: Value = serde_json::from_slice(&fs::read(path).expect("snapshot"))
+        let value: Value = serde_json::from_slice(&fs::read(&path).expect("snapshot"))
             .expect("valid snapshot json");
         assert_eq!(value["schema"], SNAPSHOT_SCHEMA);
         assert_eq!(value["thread_id"], "00000000-0000-4000-8000-000000000071");
@@ -414,9 +408,21 @@ mod tests {
         assert_eq!(value["transport"]["request_mode"], "incremental");
         assert_eq!(value["transport"]["body_bytes"], 1536);
         assert_eq!(value["circuit"]["state"], "open");
-        assert_eq!(value["circuit"]["consecutive_openings"], 2);
+        assert_eq!(value["circuit"]["consecutive_openings"], 1);
+        assert!(value["circuit"].get("retry_at_unix_ms").is_none());
         assert_eq!(value["last_outcome"], "fallback");
         assert_eq!(value["reason"], "websocket_retry_exhausted");
+
+        state.websocket_retry_requested();
+        let value: Value = serde_json::from_slice(&fs::read(&path).expect("retry snapshot"))
+            .expect("valid retry snapshot json");
+        assert_eq!(value["transport"]["active"], "http");
+        assert_eq!(value["transport"]["state"], "fallback");
+        assert_eq!(value["circuit"]["state"], "half_open");
+        assert_eq!(value["circuit"]["consecutive_openings"], 1);
+        assert!(value["circuit"].get("retry_at_unix_ms").is_none());
+        assert_eq!(value["last_outcome"], "websocket_retry_ready");
+        assert!(value.get("reason").is_none());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -437,27 +443,6 @@ mod tests {
                 0o600,
             );
         }
-    }
-
-    #[test]
-    fn retry_ready_is_half_open_until_websocket_completion() {
-        let temp = TempDir::new().expect("temp dir");
-        let path = temp.path().join("responses-transport/thread.json");
-        let state = ResponsesTransportState::new_with_path(
-            "00000000-0000-4000-8000-000000000072".to_string(),
-            Some(path.clone()),
-        );
-
-        state.fallback_opened(2, Duration::from_secs(60));
-        state.websocket_retry_ready(2);
-
-        let value: Value = serde_json::from_slice(&fs::read(path).expect("snapshot"))
-            .expect("valid snapshot json");
-        assert_eq!(value["circuit"]["state"], "half_open");
-        assert_eq!(value["circuit"]["consecutive_openings"], 2);
-        assert!(value["circuit"].get("retry_at_unix_ms").is_none());
-        assert_eq!(value["last_outcome"], "websocket_retry_ready");
-        assert!(value.get("reason").is_none());
     }
 
     #[test]

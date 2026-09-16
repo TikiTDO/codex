@@ -585,6 +585,51 @@ pub struct AdditionalContextEntry {
     pub kind: AdditionalContextKind,
 }
 
+/// Optional, caller-authored guidance for one compaction.
+///
+/// An empty value preserves the ordinary compaction path. These controls affect
+/// only the working history supplied to the compactor; they do not rewrite the
+/// source transcript.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct CompactionInput {
+    /// Additional instructions for what the compacted context should preserve,
+    /// summarize, or otherwise emphasize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub instructions: Option<String>,
+
+    /// Omit inline image bodies from the compactor input and installed compacted
+    /// history. The original transcript remains unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(alias = "discard_images")]
+    pub discard_images: bool,
+
+    /// After a successful compaction, allow the next model request to try the
+    /// Responses WebSocket transport again. A failed attempt returns the session
+    /// to sticky HTTP fallback; this does not enable automatic retries.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(alias = "retry_websocket")]
+    pub retry_websocket: bool,
+}
+
+impl CompactionInput {
+    pub fn merge(&mut self, newer: Self) {
+        if let Some(instructions) = newer.instructions.filter(|value| !value.trim().is_empty()) {
+            match &mut self.instructions {
+                Some(existing) if !existing.trim().is_empty() => {
+                    existing.push_str("\n\n");
+                    existing.push_str(&instructions);
+                }
+                slot => *slot = Some(instructions),
+            }
+        }
+        self.discard_images |= newer.discard_images;
+        self.retry_websocket |= newer.retry_websocket;
+    }
+}
+
 /// Submission operation
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -728,6 +773,9 @@ pub enum Op {
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
+
+    /// Request compaction with caller-authored, one-shot controls.
+    CompactWithInput { input: CompactionInput },
 
     /// Set whether the thread remains eligible for memory generation.
     ///
@@ -952,7 +1000,7 @@ impl Op {
             Self::DynamicToolResponse { .. } => "dynamic_tool_response",
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
-            Self::Compact => "compact",
+            Self::Compact | Self::CompactWithInput { .. } => "compact",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
             Self::ThreadRollback { .. } => "thread_rollback",
             Self::Review { .. } => "review",

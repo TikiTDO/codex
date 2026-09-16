@@ -32,6 +32,7 @@ pub use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 pub use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::CompactionInput;
 use codex_protocol::protocol::ThreadGoalStatus as CoreThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
 use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
@@ -1118,6 +1119,9 @@ pub struct ThreadUnarchiveResponse {
 #[ts(export_to = "v2/")]
 pub struct ThreadCompactStartParams {
     pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub input: Option<CompactionInput>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

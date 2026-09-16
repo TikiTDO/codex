@@ -38,6 +38,9 @@ use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::is_image_close_tag_text;
+use codex_protocol::models::is_image_open_tag_text;
+use codex_protocol::models::is_local_image_open_tag_text;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::TokenUsage;
@@ -457,6 +460,55 @@ impl ContextManager {
     /// Returns annotated history items and consumes the snapshot.
     pub(crate) fn into_annotated_items(self) -> Vec<ResponseItemEnvelope> {
         Arc::unwrap_or_clone(self.items)
+    }
+
+    /// Removes inline image bodies and their adjacent harness labels from this
+    /// working history snapshot. Callers use this on a clone prepared for one
+    /// compaction; the session's source transcript is not changed.
+    pub(crate) fn discard_inline_images(&mut self) -> (usize, usize) {
+        let mut removed_count = 0usize;
+        let mut removed_bytes = 0usize;
+        Arc::make_mut(&mut self.items).retain_mut(|envelope| {
+            let Some(content) = to_annotated_content(&mut envelope.item) else {
+                return true;
+            };
+            let mut discard = vec![false; content.len()];
+            for (index, item) in content.iter().enumerate() {
+                let ContentItem::InputImage { image_url, .. } = item.content() else {
+                    continue;
+                };
+                removed_count = removed_count.saturating_add(1);
+                removed_bytes = removed_bytes.saturating_add(image_url.len());
+                discard[index] = true;
+                if index > 0
+                    && matches!(
+                        content[index - 1].content(),
+                        ContentItem::InputText { text }
+                            if is_local_image_open_tag_text(text) || is_image_open_tag_text(text)
+                    )
+                {
+                    discard[index - 1] = true;
+                }
+                if index + 1 < content.len()
+                    && matches!(
+                        content[index + 1].content(),
+                        ContentItem::InputText { text } if is_image_close_tag_text(text)
+                    )
+                {
+                    discard[index + 1] = true;
+                }
+            }
+            if !discard.iter().any(|discard| *discard) {
+                return true;
+            }
+            let retained = content
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, item)| (!discard[index]).then_some(item))
+                .collect::<Vec<_>>();
+            !retained.is_empty() && set_annotated_content(&mut envelope.item, retained).is_some()
+        });
+        (removed_count, removed_bytes)
     }
 
     pub(crate) fn history_version(&self) -> u64 {

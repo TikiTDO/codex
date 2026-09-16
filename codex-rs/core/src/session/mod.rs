@@ -4204,7 +4204,11 @@ impl Session {
         state.take_new_context_window_request()
     }
 
-    pub(crate) async fn request_context_compaction(&self, sub_id: &str) -> bool {
+    pub(crate) async fn request_context_compaction(
+        &self,
+        sub_id: &str,
+        input: codex_protocol::protocol::CompactionInput,
+    ) -> bool {
         let turn_state = {
             let active = self.active_turn.lock().await;
             active
@@ -4220,11 +4224,14 @@ impl Session {
         let Some(turn_state) = turn_state else {
             return false;
         };
-        turn_state.lock().await.request_context_compaction();
+        turn_state.lock().await.request_context_compaction(input);
         true
     }
 
-    pub(crate) async fn take_context_compaction_request(&self, sub_id: &str) -> bool {
+    pub(crate) async fn take_context_compaction_request(
+        &self,
+        sub_id: &str,
+    ) -> Option<codex_protocol::protocol::CompactionInput> {
         let turn_state = {
             let active = self.active_turn.lock().await;
             active
@@ -4238,7 +4245,7 @@ impl Session {
                 .map(|active_turn| Arc::clone(&active_turn.turn_state))
         };
         let Some(turn_state) = turn_state else {
-            return false;
+            return None;
         };
         turn_state.lock().await.take_context_compaction_request()
     }

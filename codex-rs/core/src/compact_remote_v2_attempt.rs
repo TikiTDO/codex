@@ -5,6 +5,8 @@ use super::run_remote_compaction_request_v2;
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::compact::CompactionAnalyticsDetails;
+use crate::compact::apply_compaction_instructions;
+use crate::compact::prepare_compaction_history;
 use crate::compact_remote::trim_function_call_history_to_fit_context_window;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
@@ -13,6 +15,7 @@ use crate::session::step_context::StepContext;
 use codex_history::CodexHarnessMetadata;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CompactionInput;
 use codex_protocol::protocol::TokenUsage;
 use codex_rollout_trace::CompactionTraceContext;
 use tracing::info;
@@ -34,11 +37,14 @@ pub(super) async fn run_remote_compact_v2_attempt(
     client_session: Option<&mut ModelClientSession>,
     compaction_trace: &CompactionTraceContext,
     compaction_metadata: CompactionTurnMetadata,
+    compaction_input: Option<&CompactionInput>,
     analytics_details: &mut CompactionAnalyticsDetails,
 ) -> CodexResult<RemoteCompactV2Attempt> {
     let turn_context = &step_context.turn;
     let mut history = sess.clone_history().await;
-    let base_instructions = sess.get_prompt_base_instructions().await;
+    prepare_compaction_history(&mut history, compaction_input);
+    let base_instructions =
+        apply_compaction_instructions(sess.get_prompt_base_instructions().await, compaction_input);
     let (rewritten_outputs, estimated_deleted_tokens) =
         trim_function_call_history_to_fit_context_window(
             &mut history,
