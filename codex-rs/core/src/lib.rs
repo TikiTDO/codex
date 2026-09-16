@@ -16,6 +16,7 @@ mod realtime_prompt;
 mod responses_lineage;
 mod responses_metadata;
 mod responses_retry;
+mod responses_transport_state;
 pub(crate) mod session;
 pub use codex_protocol::turn_input::NotSubmittedReason;
 pub use codex_protocol::turn_input::RecoverTurnRequest;

@@ -17,6 +17,8 @@ use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
 use crate::responses_metadata::CodexResponsesMetadata;
+use crate::responses_transport_state::ResponsesTransport;
+use crate::responses_transport_state::ResponsesTransportState;
 use crate::test_support::TestCodexResponsesRequestKind;
 use crate::test_support::responses_metadata as test_responses_metadata;
 use codex_api::AgentIdentityTelemetry;
@@ -934,6 +936,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         attempt,
         test_model_provider(),
         /*websocket_circuit*/ None,
+        /*transport_state*/ None,
     );
 
     let observed = stream
@@ -988,6 +991,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
         /*websocket_circuit*/ None,
+        /*transport_state*/ None,
     );
 
     while stream.next().await.is_some() {}
@@ -1001,6 +1005,46 @@ async fn response_stream_records_last_model_feedback_ids() {
         tags.get("last_model_response_id").map(String::as_str),
         Some("\"resp-123\"")
     );
+}
+
+#[tokio::test]
+async fn response_stream_updates_live_transport_snapshot() {
+    let temp = TempDir::new().expect("temp dir");
+    let path = temp.path().join("responses-transport/thread.json");
+    let state =
+        ResponsesTransportState::new_with_path(ThreadId::new().to_string(), Some(path.clone()));
+    state.request_started(
+        ResponsesTransport::Websocket,
+        true,
+        3,
+        Some(1536),
+        Some(true),
+    );
+    state.stream_started(ResponsesTransport::Websocket);
+    let api_stream = futures::stream::iter([Ok(ResponseEvent::Completed {
+        response_id: "resp-transport-state".to_string(),
+        token_usage: None,
+        usage_metadata: None,
+        end_turn: Some(true),
+    })]);
+    let (mut stream, _) = super::map_response_events(
+        Some("req-transport-state".to_string()),
+        api_stream,
+        test_session_telemetry(),
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+        /*websocket_circuit*/ None,
+        Some((state, ResponsesTransport::Websocket)),
+    );
+
+    while stream.next().await.is_some() {}
+
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).expect("transport snapshot should exist"))
+            .expect("transport snapshot should be valid JSON");
+    assert_eq!(snapshot["transport"]["state"], "completed");
+    assert_eq!(snapshot["last_outcome"], "completed");
+    assert_eq!(snapshot["reason"], serde_json::Value::Null);
 }
 
 #[tokio::test]
@@ -1212,6 +1256,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         attempt,
         test_model_provider(),
         /*websocket_circuit*/ None,
+        /*transport_state*/ None,
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output
