@@ -1025,8 +1025,8 @@ impl ModelClient {
             tool_choice: "auto".to_string(),
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
             reasoning: Some(reasoning),
-            // The send path enables storage only after it has resolved ChatGPT-account auth.
-            // API-key and other providers retain the established no-storage posture.
+            // Every auth path keeps Responses non-stored. WebSocket continuation is
+            // connection-local and never changes that storage contract.
             store: false,
             stream: true,
             stream_options,
