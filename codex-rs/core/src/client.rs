@@ -568,6 +568,9 @@ impl ModelClient {
         let was_disabled = self.state.disable_websockets.swap(false, Ordering::Relaxed);
         self.store_cached_websocket_session(WebsocketSession::default());
         if was_disabled {
+            self.state
+                .responses_transport_state
+                .websocket_retry_requested();
             info!("retrying Responses WebSocket transport by explicit request");
         }
         was_disabled
