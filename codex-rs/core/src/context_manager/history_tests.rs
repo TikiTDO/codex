@@ -734,6 +734,57 @@ fn for_prompt_annotated_preserves_metadata_while_normalizing_item() {
 }
 
 #[test]
+fn discard_inline_images_removes_bodies_and_adjacent_labels_from_working_copy() {
+    let image_url = "data:image/png;base64,abc";
+    let original = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "before".to_string(),
+            },
+            ContentItem::InputText {
+                text: r#"<image name=[Image #1] path="/tmp/example.png">"#.to_string(),
+            },
+            ContentItem::InputImage {
+                image_url: image_url.to_string(),
+                detail: None,
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let source = create_history_with_items(vec![original.clone()]);
+    let mut working = source.clone();
+
+    let (count, bytes) = working.discard_inline_images();
+
+    assert_eq!((count, bytes), (1, image_url.len()));
+    assert_eq!(raw_items(&source), vec![original]);
+    let working_items = raw_items(&working);
+    let [ResponseItem::Message { content, .. }] = working_items.as_slice() else {
+        panic!("expected one retained user message");
+    };
+    assert_eq!(
+        content,
+        &[
+            ContentItem::InputText {
+                text: "before".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn drop_last_n_user_turns_treats_inter_agent_assistant_messages_as_instruction_turns() {
     let first_turn = user_input_text_msg("first");
     let first_reply = assistant_msg("done");

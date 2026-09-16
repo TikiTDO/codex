@@ -11315,6 +11315,7 @@ async fn legacy_compaction_retains_only_the_selected_step(first_attempt: FirstAt
         Some(Arc::clone(&fallback)),
         Arc::new(OnceLock::new()),
         InitialContextInjection::DoNotInject,
+        None,
         CompactionTrigger::Auto,
         CompactionReason::ModelDownshift,
         CompactionPhase::PreTurn,

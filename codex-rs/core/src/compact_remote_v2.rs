@@ -47,6 +47,7 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CompactionInput;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TruncationPolicy;
@@ -89,6 +90,7 @@ pub(crate) async fn run_inline_remote_compact_task(
     fallback_step_context: Option<Arc<StepContext>>,
     client_session: &mut ModelClientSession,
     initial_context_injection: InitialContextInjection,
+    compaction_input: Option<&CompactionInput>,
     trigger: CompactionTrigger,
     reason: CompactionReason,
     phase: CompactionPhase,
@@ -105,6 +107,7 @@ pub(crate) async fn run_inline_remote_compact_task(
         fallback_step_context.as_ref(),
         Some(client_session),
         initial_context_injection,
+        compaction_input,
         compaction_metadata,
     )
     .await
@@ -113,6 +116,7 @@ pub(crate) async fn run_inline_remote_compact_task(
 pub(crate) async fn run_remote_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
+    compaction_input: Option<&CompactionInput>,
 ) -> CodexResult<()> {
     // Standalone compaction is its own request boundary, so it captures a fresh step.
     let step_context = sess
@@ -139,6 +143,7 @@ pub(crate) async fn run_remote_compact_task(
         /*fallback_step_context*/ None,
         /*client_session*/ None,
         InitialContextInjection::DoNotInject,
+        compaction_input,
         compaction_metadata,
     )
     .await
@@ -150,6 +155,7 @@ async fn run_remote_compact_task_inner(
     fallback_step_context: Option<&Arc<StepContext>>,
     client_session: Option<&mut ModelClientSession>,
     initial_context_injection: InitialContextInjection,
+    compaction_input: Option<&CompactionInput>,
     compaction_metadata: CompactionTurnMetadata,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
@@ -192,6 +198,7 @@ async fn run_remote_compact_task_inner(
         fallback_step_context,
         client_session,
         initial_context_injection,
+        compaction_input,
         compaction_metadata,
         &mut analytics_details,
     )
@@ -230,6 +237,7 @@ async fn run_remote_compact_task_inner_impl(
     fallback_step_context: Option<&Arc<StepContext>>,
     mut client_session: Option<&mut ModelClientSession>,
     initial_context_injection: InitialContextInjection,
+    compaction_input: Option<&CompactionInput>,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
 ) -> CodexResult<()> {
@@ -252,6 +260,7 @@ async fn run_remote_compact_task_inner_impl(
         client_session.as_deref_mut(),
         &compaction_trace,
         compaction_metadata,
+        compaction_input,
         analytics_details,
     )
     .await;
@@ -280,6 +289,7 @@ async fn run_remote_compact_task_inner_impl(
                 client_session,
                 &fallback_compaction_trace,
                 compaction_metadata,
+                compaction_input,
                 analytics_details,
             )
             .await;

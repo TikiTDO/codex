@@ -8,6 +8,7 @@ use crate::context::CompactionSummary;
 use crate::context::ContextualUserFragment;
 use crate::context::PostCompactionContext;
 use crate::context::world_state::WorldState;
+use crate::context_manager::ContextManager;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
@@ -43,11 +44,13 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
+use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CompactionInput;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::WarningEvent;
@@ -63,6 +66,51 @@ pub use codex_prompts::POST_COMPACTION_MARKER;
 pub use codex_prompts::SUMMARIZATION_PROMPT;
 pub use codex_prompts::SUMMARY_PREFIX;
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+
+pub(crate) fn prepare_compaction_history(
+    history: &mut ContextManager,
+    input: Option<&CompactionInput>,
+) -> (usize, usize) {
+    if input.is_some_and(|input| input.discard_images) {
+        history.discard_inline_images()
+    } else {
+        (0, 0)
+    }
+}
+
+pub(crate) fn apply_compaction_instructions(
+    mut base_instructions: BaseInstructions,
+    input: Option<&CompactionInput>,
+) -> BaseInstructions {
+    let Some(instructions) = input
+        .and_then(|input| input.instructions.as_deref())
+        .map(str::trim)
+        .filter(|instructions| !instructions.is_empty())
+    else {
+        return base_instructions;
+    };
+    base_instructions
+        .text
+        .push_str("\n\nAdditional caller-authored guidance for this compaction only:\n");
+    base_instructions.text.push_str(instructions);
+    base_instructions
+}
+
+pub(crate) fn apply_compaction_prompt_instructions(
+    mut prompt: String,
+    input: Option<&CompactionInput>,
+) -> String {
+    let Some(instructions) = input
+        .and_then(|input| input.instructions.as_deref())
+        .map(str::trim)
+        .filter(|instructions| !instructions.is_empty())
+    else {
+        return prompt;
+    };
+    prompt.push_str("\n\nAdditional caller-authored guidance for this compaction only:\n");
+    prompt.push_str(instructions);
+    prompt
+}
 
 pub(crate) fn post_compaction_item(configured_prompt: Option<&str>) -> ResponseItem {
     ContextualUserFragment::into(PostCompactionContext::new(configured_prompt))
@@ -126,6 +174,7 @@ pub(crate) async fn run_inline_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     initial_context_injection: InitialContextInjection,
+    compaction_input: Option<&CompactionInput>,
     trigger: CompactionTrigger,
     reason: CompactionReason,
     phase: CompactionPhase,
@@ -136,6 +185,7 @@ pub(crate) async fn run_inline_compact_task(
         .as_deref()
         .unwrap_or(SUMMARIZATION_PROMPT)
         .to_string();
+    let prompt = apply_compaction_prompt_instructions(prompt, compaction_input);
     let input = vec![UserInput::Text {
         text: prompt,
         // Compaction prompt is synthesized; no UI element ranges to preserve.
@@ -146,6 +196,7 @@ pub(crate) async fn run_inline_compact_task(
         sess,
         turn_context,
         input,
+        compaction_input,
         initial_context_injection,
         trigger,
         reason,
@@ -159,6 +210,7 @@ pub(crate) async fn run_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
+    compaction_input: Option<&CompactionInput>,
 ) -> CodexResult<()> {
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_context.sub_id.clone(),
@@ -172,6 +224,7 @@ pub(crate) async fn run_compact_task(
         sess.clone(),
         turn_context,
         input,
+        compaction_input,
         InitialContextInjection::DoNotInject,
         CompactionTrigger::Manual,
         CompactionReason::UserRequested,
@@ -185,6 +238,7 @@ async fn run_compact_task_inner(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
+    compaction_input: Option<&CompactionInput>,
     initial_context_injection: InitialContextInjection,
     trigger: CompactionTrigger,
     reason: CompactionReason,
@@ -221,6 +275,7 @@ async fn run_compact_task_inner(
         Arc::clone(&sess),
         Arc::clone(&turn_context),
         input,
+        compaction_input,
         initial_context_injection,
         compaction_metadata,
     )
@@ -256,6 +311,7 @@ async fn run_compact_task_inner_impl(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
+    compaction_input: Option<&CompactionInput>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
 ) -> CodexResult<String> {
@@ -265,6 +321,8 @@ async fn run_compact_task_inner_impl(
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
 
     let mut history = sess.clone_history().await;
+    prepare_compaction_history(&mut history, compaction_input);
+    let retention_history = history.clone();
     history.record_items(
         &[initial_input_for_turn.into()],
         turn_context.model_info().truncation_policy.into(),
@@ -291,7 +349,10 @@ async fn run_compact_task_inner_impl(
         let turn_input_len = turn_input.len();
         let prompt = Prompt {
             input: turn_input,
-            base_instructions: sess.get_prompt_base_instructions().await,
+            base_instructions: apply_compaction_instructions(
+                sess.get_prompt_base_instructions().await,
+                compaction_input,
+            ),
             ..Default::default()
         };
         let attempt_result = drain_to_completed(
@@ -369,7 +430,11 @@ async fn run_compact_task_inner_impl(
     } else {
         CompactedMessageIdentity::Regenerate
     };
-    let user_messages = collect_annotated_user_messages(history_items, identity);
+    let user_messages = if compaction_input.is_some_and(|input| input.discard_images) {
+        collect_annotated_user_messages(retention_history.annotated_items(), identity)
+    } else {
+        collect_annotated_user_messages(history_items, identity)
+    };
 
     let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
     new_history = insert_initial_context_before_last_real_user_or_summary(

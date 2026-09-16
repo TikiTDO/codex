@@ -235,6 +235,45 @@ fn test_model_client_with_thread_id(
     )
 }
 
+#[test]
+fn explicit_websocket_retry_reopens_sticky_fallback_once() {
+    let mut provider =
+        create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
+    provider.supports_websockets = true;
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        AgentIdentityAuthPolicy::JwtOnly,
+        ThreadId::new(),
+        provider,
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*content_item_kinds_enabled*/ true,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+
+    client
+        .state
+        .disable_websockets
+        .store(true, Ordering::Relaxed);
+    assert!(!client.responses_websocket_enabled());
+    assert!(client.retry_websocket());
+    assert!(client.responses_websocket_enabled());
+    assert!(!client.retry_websocket(), "a second request is a no-op");
+
+    // A failed retried attempt can activate the ordinary sticky fallback again.
+    client
+        .state
+        .disable_websockets
+        .store(true, Ordering::Relaxed);
+    assert!(!client.responses_websocket_enabled());
+}
+
 #[tokio::test]
 async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::Result<()> {
     let server = MockServer::start().await;

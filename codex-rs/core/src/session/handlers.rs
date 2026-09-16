@@ -243,12 +243,17 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
     sess.reload_user_config_layer().await;
 }
 
-pub async fn compact(sess: &Arc<Session>, sub_id: String) {
+pub async fn compact(
+    sess: &Arc<Session>,
+    sub_id: String,
+    input: Option<codex_protocol::protocol::CompactionInput>,
+) {
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
 
-    sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
+    sess.spawn_task(turn_context, Vec::new(), CompactTask::new(input))
+        .await;
 }
 
 pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32) {
@@ -673,7 +678,11 @@ pub(super) async fn submission_loop(
                     false
                 }
                 Op::Compact => {
-                    compact(&sess, sub.id.clone()).await;
+                    compact(&sess, sub.id.clone(), None).await;
+                    false
+                }
+                Op::CompactWithInput { input } => {
+                    compact(&sess, sub.id.clone(), Some(input)).await;
                     false
                 }
                 Op::ThreadRollback { num_turns } => {
