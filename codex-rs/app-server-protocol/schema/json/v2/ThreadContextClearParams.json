@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Clear the thread's effective context back to fresh initial context. Accepted only while the thread is idle; the rollout keeps every earlier item. Success arrives as `thread/context/cleared`, refusal as an error notification with `contextClearFailed`.",
+  "properties": {
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId"
+  ],
+  "title": "ThreadContextClearParams",
+  "type": "object"
+}

@@ -4497,6 +4497,52 @@ impl Session {
         state.take_new_context_window_request()
     }
 
+    pub(crate) async fn request_context_compaction(
+        &self,
+        sub_id: &str,
+        input: codex_protocol::protocol::CompactionInput,
+    ) -> bool {
+        let turn_state = {
+            let active = self.active_turn.lock().await;
+            active
+                .as_ref()
+                .filter(|active_turn| {
+                    active_turn
+                        .task
+                        .as_ref()
+                        .is_some_and(|task| task.turn_context.sub_id == sub_id)
+                })
+                .map(|active_turn| Arc::clone(&active_turn.turn_state))
+        };
+        let Some(turn_state) = turn_state else {
+            return false;
+        };
+        turn_state.lock().await.request_context_compaction(input);
+        true
+    }
+
+    pub(crate) async fn take_context_compaction_request(
+        &self,
+        sub_id: &str,
+    ) -> Option<codex_protocol::protocol::CompactionInput> {
+        let turn_state = {
+            let active = self.active_turn.lock().await;
+            active
+                .as_ref()
+                .filter(|active_turn| {
+                    active_turn
+                        .task
+                        .as_ref()
+                        .is_some_and(|task| task.turn_context.sub_id == sub_id)
+                })
+                .map(|active_turn| Arc::clone(&active_turn.turn_state))
+        };
+        let Some(turn_state) = turn_state else {
+            return None;
+        };
+        turn_state.lock().await.take_context_compaction_request()
+    }
+
     pub(crate) async fn start_new_context_window(
         &self,
         step_context: &StepContext,

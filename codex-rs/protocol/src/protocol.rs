@@ -583,6 +583,51 @@ pub struct AdditionalContextEntry {
     pub kind: AdditionalContextKind,
 }
 
+/// Optional, caller-authored guidance for one compaction.
+///
+/// An empty value preserves the ordinary compaction path. These controls affect
+/// only the working history supplied to the compactor; they do not rewrite the
+/// source transcript.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct CompactionInput {
+    /// Additional instructions for what the compacted context should preserve,
+    /// summarize, or otherwise emphasize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub instructions: Option<String>,
+
+    /// Omit inline image bodies from the compactor input and installed compacted
+    /// history. The original transcript remains unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(alias = "discard_images")]
+    pub discard_images: bool,
+
+    /// After a successful compaction, allow the next model request to try the
+    /// Responses WebSocket transport again. A failed attempt returns the session
+    /// to sticky HTTP fallback; this does not enable automatic retries.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(alias = "retry_websocket")]
+    pub retry_websocket: bool,
+}
+
+impl CompactionInput {
+    pub fn merge(&mut self, newer: Self) {
+        if let Some(instructions) = newer.instructions.filter(|value| !value.trim().is_empty()) {
+            match &mut self.instructions {
+                Some(existing) if !existing.trim().is_empty() => {
+                    existing.push_str("\n\n");
+                    existing.push_str(&instructions);
+                }
+                slot => *slot = Some(instructions),
+            }
+        }
+        self.discard_images |= newer.discard_images;
+        self.retry_websocket |= newer.retry_websocket;
+    }
+}
+
 /// Submission operation
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -736,6 +781,16 @@ pub enum Op {
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
+
+    /// Request compaction with caller-authored, one-shot controls.
+    CompactWithInput { input: CompactionInput },
+
+    /// Clear the effective context back to fresh initial context, only while idle.
+    ///
+    /// Append-only: the rollout keeps every earlier item and records a checkpoint whose
+    /// replacement history is a single clear marker, so later prompts (and a resume) start from
+    /// the initial context. An active turn refuses the request rather than racing it.
+    ClearContext,
 
     /// Set whether the thread remains eligible for memory generation.
     ///
@@ -955,7 +1010,8 @@ impl Op {
             Self::DynamicToolResponse { .. } => "dynamic_tool_response",
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
-            Self::Compact => "compact",
+            Self::Compact | Self::CompactWithInput { .. } => "compact",
+            Self::ClearContext => "clear_context",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
             Self::Review { .. } => "review",
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",
@@ -1398,6 +1454,9 @@ pub enum EventMsg {
 
     /// Conversation history was compacted (either automatically or manually).
     ContextCompacted(ContextCompactedEvent),
+
+    /// The effective context was cleared back to the initial context by request.
+    ContextCleared(ContextClearedEvent),
 
     /// Legacy persisted marker for dropping the last N user turns.
     /// Retained for replay of existing rollouts; live rollback operations are unsupported.
@@ -1889,6 +1948,8 @@ pub enum CodexErrorInfo {
     },
     // Retained to deserialize errors recorded in legacy rollouts.
     ThreadRollbackFailed,
+    /// A context clear was refused, for example because a turn was running.
+    ContextClearFailed,
     Other,
 }
 
@@ -1896,7 +1957,9 @@ impl CodexErrorInfo {
     /// Whether this error should mark the current turn as failed when replaying history.
     pub fn affects_turn_status(&self) -> bool {
         match self {
-            Self::ThreadRollbackFailed | Self::ActiveTurnNotSteerable { .. } => false,
+            Self::ThreadRollbackFailed
+            | Self::ContextClearFailed
+            | Self::ActiveTurnNotSteerable { .. } => false,
             Self::ContextWindowExceeded
             | Self::SessionBudgetExceeded
             | Self::UsageLimitExceeded
@@ -2148,6 +2211,9 @@ pub struct SafetyBufferingEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ContextCompactedEvent;
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ContextClearedEvent;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TurnCompleteEvent {

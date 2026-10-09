@@ -242,14 +242,74 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
     Box::pin(sess.reload_user_config_layer()).await;
 }
 
-pub async fn compact(sess: &Arc<Session>, sub_id: String) {
+pub async fn compact(
+    sess: &Arc<Session>,
+    sub_id: String,
+    input: Option<codex_protocol::protocol::CompactionInput>,
+) {
     // Stop the old turn before the compact task picks up the next turn's environments.
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
 
-    sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
+    sess.spawn_task(turn_context, Vec::new(), CompactTask::new(input))
+        .await;
+}
+
+/// Text of the one item a cleared context keeps, so the model knows the history it no longer sees
+/// still exists.
+pub(crate) const CONTEXT_CLEARED_MARKER: &str = "Context was cleared by request. The earlier \
+    conversation remains in this session's record; it is no longer in context.";
+
+/// Clears the effective context while idle (custom layer, Mira mira/1947 "keep" #1).
+///
+/// Runs on the submission loop, which also starts turns, so the idle check cannot race a turn
+/// start. The clear installs a compaction checkpoint whose replacement history is one marker: the
+/// rollout keeps every earlier item, a resume rebuilds the cleared state, and the next turn
+/// reinjects full initial context because no reference context item is kept.
+pub async fn clear_context(sess: &Arc<Session>, sub_id: String) {
+    if sess.active_turn.lock().await.is_some() {
+        sess.send_event_raw(Event {
+            id: sub_id,
+            msg: EventMsg::Error(ErrorEvent {
+                misalignment: None,
+                message: "Cannot clear context while a turn is in progress.".to_string(),
+                codex_error_info: Some(CodexErrorInfo::ContextClearFailed),
+            }),
+        })
+        .await;
+        return;
+    }
+    let turn_context = sess
+        .new_turn_with_default_settings(sub_id.clone(), Default::default())
+        .await;
+    let marker =
+        codex_history::ResponseItemEnvelope::new(crate::context::ContextualUserFragment::into(
+            crate::context::CompactionSummary::new(CONTEXT_CLEARED_MARKER.to_string()),
+        ));
+    let (window_number, window_ids) = sess.advance_auto_compact_window().await;
+    sess.replace_compacted_history(
+        vec![marker],
+        /*reference_context_item*/ None,
+        /*world_state_baseline*/ None,
+        crate::compact::CompactedHistoryMetadata {
+            input_goal_ids: Default::default(),
+            message: "context cleared".to_string(),
+            window_number,
+            window_ids,
+            compaction_response_id: None,
+            compaction_model_hash: None,
+            reviewer_compaction_hash: None,
+        },
+    )
+    .await;
+    sess.recompute_token_usage(turn_context.as_ref()).await;
+    sess.send_event_raw(Event {
+        id: sub_id,
+        msg: EventMsg::ContextCleared(codex_protocol::protocol::ContextClearedEvent),
+    })
+    .await;
 }
 
 pub(super) async fn persist_thread_memory_mode_update(
@@ -626,7 +686,15 @@ pub(super) async fn submission_loop(
                     false
                 }
                 Op::Compact => {
-                    compact(&sess, sub.id.clone()).await;
+                    compact(&sess, sub.id.clone(), None).await;
+                    false
+                }
+                Op::CompactWithInput { input } => {
+                    compact(&sess, sub.id.clone(), Some(input)).await;
+                    false
+                }
+                Op::ClearContext => {
+                    clear_context(&sess, sub.id.clone()).await;
                     false
                 }
                 Op::SetThreadMemoryMode { mode } => {

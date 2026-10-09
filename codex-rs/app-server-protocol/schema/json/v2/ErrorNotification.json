@@ -18,6 +18,7 @@
             "unauthorized",
             "badRequest",
             "threadRollbackFailed",
+            "contextClearFailed",
             "sandboxError",
             "other"
           ],

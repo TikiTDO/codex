@@ -116,6 +116,7 @@ use tokio::sync::oneshot::error::TryRecvError;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
@@ -670,6 +671,21 @@ impl ModelClient {
 
         self.store_cached_websocket_session(WebsocketSession::default());
         activated
+    }
+
+    /// Re-enables a single caller-requested WebSocket attempt after sticky HTTP
+    /// fallback. A subsequent transport failure activates the ordinary sticky
+    /// fallback again; no timer or automatic retry is introduced here.
+    pub(crate) fn retry_websocket(&self) -> bool {
+        if !self.state.provider.info().supports_websockets {
+            return false;
+        }
+        let was_disabled = self.state.disable_websockets.swap(false, Ordering::Relaxed);
+        self.store_cached_websocket_session(WebsocketSession::default());
+        if was_disabled {
+            info!("retrying Responses WebSocket transport by explicit request");
+        }
+        was_disabled
     }
 
     pub(crate) async fn create_realtime_call_with_headers(

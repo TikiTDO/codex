@@ -128,6 +128,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::PatchApplyEnd(_)
         | EventMsg::ContextCompacted(_)
+        | EventMsg::ContextCleared(_)
         | EventMsg::McpToolCallEnd(_)
         | EventMsg::WebSearchEnd(_)
         | EventMsg::ImageGenerationEnd(_) => {

@@ -513,6 +513,27 @@
       ],
       "type": "object"
     },
+    "CompactionInput": {
+      "description": "Optional, caller-authored guidance for one compaction.\n\nAn empty value preserves the ordinary compaction path. These controls affect only the working history supplied to the compactor; they do not rewrite the source transcript.",
+      "properties": {
+        "discardImages": {
+          "description": "Omit inline image bodies from the compactor input and installed compacted history. The original transcript remains unchanged.",
+          "type": "boolean"
+        },
+        "instructions": {
+          "description": "Additional instructions for what the compacted context should preserve, summarize, or otherwise emphasize.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retryWebsocket": {
+          "description": "After a successful compaction, allow the next model request to try the Responses WebSocket transport again. A failed attempt returns the session to sticky HTTP fallback; this does not enable automatic retries.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "ConfigBatchWriteParams": {
       "properties": {
         "edits": {
@@ -4275,6 +4296,28 @@
     },
     "ThreadCompactStartParams": {
       "properties": {
+        "input": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CompactionInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadContextClearParams": {
+      "description": "Clear the thread's effective context back to fresh initial context. Accepted only while the thread is idle; the rollout keeps every earlier item. Success arrives as `thread/context/cleared`, refusal as an error notification with `contextClearFailed`.",
+      "properties": {
         "threadId": {
           "type": "string"
         }
@@ -6436,6 +6479,30 @@
         "params"
       ],
       "title": "Thread/compact/startRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/context/clear"
+          ],
+          "title": "Thread/context/clearRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadContextClearParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/context/clearRequest",
       "type": "object"
     },
     {

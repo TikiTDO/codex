@@ -670,6 +670,7 @@
             "unauthorized",
             "badRequest",
             "threadRollbackFailed",
+            "contextClearFailed",
             "sandboxError",
             "other"
           ],
@@ -1105,6 +1106,17 @@
       },
       "required": [
         "summary"
+      ],
+      "type": "object"
+    },
+    "ContextClearedNotification": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
       ],
       "type": "object"
     },
@@ -8144,6 +8156,26 @@
         "params"
       ],
       "title": "Thread/compactedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/context/cleared"
+          ],
+          "title": "Thread/context/clearedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ContextClearedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/context/clearedNotification",
       "type": "object"
     },
     {
