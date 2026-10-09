@@ -31,15 +31,21 @@ use crate::artifact::image_generation_output_hint;
 const RESULT: &str = "cG5n";
 
 #[test]
-fn artifact_path_sanitizes_session_and_call_ids() {
-    let save_root = AbsolutePathBuf::current_dir().expect("current directory should be absolute");
+fn artifact_path_uses_local_date_timestamp_title_and_call_id() {
+    let output_dir = AbsolutePathBuf::current_dir().expect("current directory should be absolute");
+    let created_at = chrono::DateTime::parse_from_rfc3339("2026-07-30T10:45:12.123-04:00")
+        .expect("valid timestamp");
 
     assert_eq!(
-        image_generation_artifact_path(&save_root, "../session", "../call"),
-        save_root
-            .join("generated_images")
-            .join("___session")
-            .join("___call.png")
+        image_generation_artifact_path(
+            &output_dir,
+            &created_at,
+            "The First Window!",
+            "call_1234567890-extra",
+        ),
+        output_dir
+            .join("2026-07-30")
+            .join("20260730-104512-123-the-first-window-call12345678.png")
     );
 }
 
@@ -62,6 +68,8 @@ async fn omitted_references_generate_with_fixed_defaults() {
             &ImagegenArgs {
                 prompt: "paint a moonlit lake".to_string(),
                 transparent_background: false,
+                title: None,
+                metadata: None,
                 referenced_image_paths: None,
                 num_last_images_to_include: None,
             },
@@ -152,6 +160,8 @@ async fn recent_image_fallback_selects_newest_images_in_chronological_order() {
             &ImagegenArgs {
                 prompt: "change the lighting".to_string(),
                 transparent_background: false,
+                title: None,
+                metadata: None,
                 referenced_image_paths: None,
                 num_last_images_to_include: Some(5),
             },
@@ -173,6 +183,8 @@ async fn recent_image_fallback_passes_file_backed_image_to_edit_request() {
         &ImagegenArgs {
             prompt: "change the lighting".to_string(),
             transparent_background: false,
+            title: None,
+            metadata: None,
             referenced_image_paths: None,
             num_last_images_to_include: Some(1),
         },
@@ -219,6 +231,8 @@ async fn recent_image_fallback_passes_file_backed_tool_output_to_edit_request() 
         &ImagegenArgs {
             prompt: "change the lighting".to_string(),
             transparent_background: false,
+            title: None,
+            metadata: None,
             referenced_image_paths: None,
             num_last_images_to_include: Some(1),
         },
@@ -273,6 +287,8 @@ async fn conflicting_image_selectors_return_tool_error() {
         &ImagegenArgs {
             prompt: "change the lighting".to_string(),
             transparent_background: false,
+            title: None,
+            metadata: None,
             referenced_image_paths: Some(vec![
                 "/tmp/image.png"
                     .try_into()
@@ -298,6 +314,8 @@ async fn too_many_referenced_image_paths_return_tool_error() {
         &ImagegenArgs {
             prompt: "change the lighting".to_string(),
             transparent_background: false,
+            title: None,
+            metadata: None,
             referenced_image_paths: Some(
                 (0..6)
                     .map(|index| {
@@ -327,6 +345,8 @@ async fn recent_image_fallback_requires_requested_count() {
         &ImagegenArgs {
             prompt: "change the lighting".to_string(),
             transparent_background: false,
+            title: None,
+            metadata: None,
             referenced_image_paths: None,
             num_last_images_to_include: Some(2),
         },
