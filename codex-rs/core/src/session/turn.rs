@@ -98,6 +98,7 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::AgentMessageContentDeltaEvent;
 use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
 use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::CompactionInput;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InternalSessionSource;
@@ -350,6 +351,7 @@ pub(crate) async fn run_turn(
             /*fallback_step_context*/ None,
             &mut client_session,
             InitialContextInjection::DoNotInject,
+            /*compaction_input*/ None,
             CompactionTrigger::Auto,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
@@ -602,12 +604,16 @@ pub(crate) async fn run_turn(
 
                 let requested_new_context =
                     needs_follow_up && sess.take_new_context_window_request().await;
-                let requested_compaction = needs_follow_up
-                    && sess
-                        .take_context_compaction_request(&turn_context.sub_id)
-                        .await;
+                let requested_compaction = if needs_follow_up {
+                    sess.take_context_compaction_request(&turn_context.sub_id)
+                        .await
+                } else {
+                    None
+                };
                 let should_roll_over = needs_follow_up
-                    && (requested_new_context || requested_compaction || token_limit_reached);
+                    && (requested_new_context
+                        || requested_compaction.is_some()
+                        || token_limit_reached);
                 let allow_auto_compact_fallback = !should_roll_over && !token_limit_reached;
                 super::token_budget::maybe_record(
                     sess.as_ref(),
@@ -628,12 +634,13 @@ pub(crate) async fn run_turn(
                             world_state: Arc::clone(&world_state),
                             step_context: Arc::clone(&step_context),
                         },
-                        if requested_compaction {
+                        requested_compaction.as_ref(),
+                        if requested_compaction.is_some() {
                             CompactionTrigger::Manual
                         } else {
                             CompactionTrigger::Auto
                         },
-                        if requested_compaction {
+                        if requested_compaction.is_some() {
                             CompactionReason::UserRequested
                         } else {
                             CompactionReason::ContextLimit
@@ -746,6 +753,7 @@ pub(crate) async fn run_turn(
                             /*fallback_step_context*/ None,
                             &mut client_session,
                             InitialContextInjection::DoNotInject,
+                            /*compaction_input*/ None,
                             CompactionTrigger::Auto,
                             CompactionReason::ContextLimit,
                             CompactionPhase::PostTurn,
@@ -801,6 +809,7 @@ pub(crate) async fn run_turn(
                         world_state: Arc::clone(&world_state),
                         step_context: Arc::clone(&step_context),
                     },
+                    /*compaction_input*/ None,
                     CompactionTrigger::Auto,
                     CompactionReason::ContextLimit,
                     CompactionPhase::MidTurn,
@@ -1337,6 +1346,7 @@ async fn run_pre_sampling_compact(
             /*fallback_step_context*/ None,
             client_session,
             InitialContextInjection::DoNotInject,
+            /*compaction_input*/ None,
             CompactionTrigger::Auto,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
@@ -1432,6 +1442,7 @@ async fn maybe_run_previous_model_inline_compact(
             fallback_step_context,
             client_session,
             InitialContextInjection::DoNotInject,
+            /*compaction_input*/ None,
             CompactionTrigger::Auto,
             CompactionReason::CompHashChanged,
             CompactionPhase::PreTurn,
@@ -1481,6 +1492,7 @@ async fn maybe_run_previous_model_inline_compact(
             fallback_step_context,
             client_session,
             InitialContextInjection::DoNotInject,
+            /*compaction_input*/ None,
             CompactionTrigger::Auto,
             CompactionReason::ModelDownshift,
             CompactionPhase::PreTurn,
@@ -1502,6 +1514,7 @@ async fn run_inline_compact(
     fallback_step_context: Option<Arc<StepContext>>,
     client_session: &mut ModelClientSession,
     initial_context_injection: InitialContextInjection,
+    compaction_input: Option<&CompactionInput>,
     trigger: CompactionTrigger,
     reason: CompactionReason,
     phase: CompactionPhase,
@@ -1537,6 +1550,7 @@ async fn run_inline_compact(
                 fallback_step_context,
                 client_session,
                 initial_context_injection,
+                compaction_input,
                 trigger,
                 reason,
                 phase,
@@ -1549,12 +1563,16 @@ async fn run_inline_compact(
                 Arc::clone(sess),
                 Arc::clone(turn_context),
                 initial_context_injection,
+                compaction_input,
                 trigger,
                 reason,
                 phase,
             )
             .await?;
         }
+    }
+    if compaction_input.is_some_and(|input| input.retry_websocket) {
+        sess.services.model_client.retry_websocket();
     }
     Ok(())
 }

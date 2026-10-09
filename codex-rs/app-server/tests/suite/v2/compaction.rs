@@ -30,6 +30,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_protocol::protocol::CompactionInput;
 use codex_utils_absolute_path::test_support::PathExt;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
@@ -114,6 +115,7 @@ async fn compaction_error_window_reaches_analytics(
     let compact_id = mcp
         .send_thread_compact_start_request(ThreadCompactStartParams {
             thread_id: thread_id.clone(),
+            input: None,
         })
         .await?;
     let _: ThreadCompactStartResponse =
@@ -272,7 +274,7 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
         responses::ev_assistant_message("followup", "FINAL_REPLY"),
         responses::ev_completed_with_tokens("followup", /*total_tokens*/ 120),
     ]);
-    let _responses = responses::mount_sse_sequence(&server, vec![seed, sse, followup]).await;
+    let responses_log = responses::mount_sse_sequence(&server, vec![seed, sse, followup]).await;
 
     let codex_home = TempDir::new()?;
     let initial_cwd = TempDir::new()?;
@@ -319,6 +321,10 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     let compact_id = mcp
         .send_thread_compact_start_request(ThreadCompactStartParams {
             thread_id: thread_id.clone(),
+            input: Some(CompactionInput {
+                instructions: Some("PRESERVE_APP_SERVER_GUIDANCE".to_string()),
+                ..Default::default()
+            }),
         })
         .await?;
     let _: ThreadCompactStartResponse =
@@ -343,6 +349,13 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     assert_eq!(started.thread_id, thread_id);
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(started_id, completed_id);
+    assert!(
+        responses_log.requests()[1]
+            .body_json()
+            .to_string()
+            .contains("PRESERVE_APP_SERVER_GUIDANCE"),
+        "thread/compact/start should forward authored compaction guidance"
+    );
     assert_eq!(
         raw_completed,
         RawResponseCompletedNotification {
@@ -411,6 +424,7 @@ async fn thread_compact_start_rejects_invalid_thread_id() -> Result<()> {
     let request_id = mcp
         .send_thread_compact_start_request(ThreadCompactStartParams {
             thread_id: "not-a-thread-id".to_string(),
+            input: None,
         })
         .await?;
     let error: JSONRPCError = timeout(
@@ -441,6 +455,7 @@ async fn thread_compact_start_rejects_unknown_thread_id() -> Result<()> {
     let request_id = mcp
         .send_thread_compact_start_request(ThreadCompactStartParams {
             thread_id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+            input: None,
         })
         .await?;
     let error: JSONRPCError = timeout(

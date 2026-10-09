@@ -11951,6 +11951,7 @@ async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: Firs
         Some(Arc::clone(&fallback)),
         &mut client_session,
         InitialContextInjection::DoNotInject,
+        None,
         CompactionTrigger::Auto,
         CompactionReason::ModelDownshift,
         CompactionPhase::PreTurn,

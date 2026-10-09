@@ -242,14 +242,19 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
     Box::pin(sess.reload_user_config_layer()).await;
 }
 
-pub async fn compact(sess: &Arc<Session>, sub_id: String) {
+pub async fn compact(
+    sess: &Arc<Session>,
+    sub_id: String,
+    input: Option<codex_protocol::protocol::CompactionInput>,
+) {
     // Stop the old turn before the compact task picks up the next turn's environments.
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
 
-    sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
+    sess.spawn_task(turn_context, Vec::new(), CompactTask::new(input))
+        .await;
 }
 
 pub(super) async fn persist_thread_memory_mode_update(
@@ -626,7 +631,11 @@ pub(super) async fn submission_loop(
                     false
                 }
                 Op::Compact => {
-                    compact(&sess, sub.id.clone()).await;
+                    compact(&sess, sub.id.clone(), None).await;
+                    false
+                }
+                Op::CompactWithInput { input } => {
+                    compact(&sess, sub.id.clone(), Some(input)).await;
                     false
                 }
                 Op::SetThreadMemoryMode { mode } => {

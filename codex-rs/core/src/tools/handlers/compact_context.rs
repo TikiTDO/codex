@@ -7,6 +7,7 @@ use crate::tools::handlers::compact_context_spec::COMPACT_CONTEXT_TOOL_NAME;
 use crate::tools::handlers::compact_context_spec::create_compact_context_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_protocol::protocol::CompactionInput;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde_json::json;
@@ -30,16 +31,21 @@ impl ToolExecutor<ToolInvocation> for CompactContextHandler {
         ToolInvocation: 'a,
     {
         Box::pin(async move {
-            if !matches!(invocation.payload, ToolPayload::Function { .. }) {
+            let ToolPayload::Function { arguments } = invocation.payload else {
                 return Err(FunctionCallError::RespondToModel(
                     "compact_context handler received unsupported payload".to_string(),
                 ));
-            }
+            };
+            let input: CompactionInput = serde_json::from_str(&arguments).map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "failed to parse compact_context arguments: {err}"
+                ))
+            })?;
 
             let turn_id = invocation.turn.sub_id.clone();
             if !invocation
                 .session
-                .request_context_compaction(&turn_id)
+                .request_context_compaction(&turn_id, input.clone())
                 .await
             {
                 return Err(FunctionCallError::RespondToModel(
@@ -51,6 +57,9 @@ impl ToolExecutor<ToolInvocation> for CompactContextHandler {
                 json!({
                     "scheduled": true,
                     "turn_id": turn_id,
+                    "has_instructions": input.instructions.is_some(),
+                    "discard_images": input.discard_images,
+                    "retry_websocket": input.retry_websocket,
                     "message": COMPACT_CONTEXT_SCHEDULED_MESSAGE,
                 })
                 .to_string(),

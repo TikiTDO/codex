@@ -1577,6 +1577,7 @@ impl AppServerSession {
                 request_id,
                 params: ThreadCompactStartParams {
                     thread_id: thread_id.to_string(),
+                    input: None,
                 },
             })
             .await
