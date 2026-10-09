@@ -395,6 +395,12 @@ impl ChatWidget {
             | ServerNotification::ProjectChanged(_)
             | ServerNotification::ThreadProjectUpdated(_) => {}
             ServerNotification::ContextCompacted(_) => {}
+            ServerNotification::ContextCleared(_) => self.add_info_message(
+                "Context cleared. Earlier conversation stays in the session record and above; \
+                 the model no longer sees it."
+                    .to_string(),
+                /*hint*/ None,
+            ),
         }
         // Tool and hook activity can recreate a hidden row with its default
         // heading. Restore the selected status before that row is rendered.

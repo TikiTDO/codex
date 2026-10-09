@@ -13427,3 +13427,71 @@ async fn rejected_mcp_refresh_then_corrected_user_config_blocks_ordinary_replace
         "rejection must not permit same-name ordinary-auth replacement in this session"
     );
 }
+
+// Custom layer (mira/1947 keep #1): a clear leaves one marker in effective history and refuses
+// while a turn runs.
+#[tokio::test]
+async fn clear_context_keeps_only_the_marker_in_effective_history() {
+    let (sess, _tc, rx) = make_session_and_context_with_rx().await;
+    sess.replace_history(
+        vec![user_message("before the clear")],
+        /*reference_context_item*/ None,
+    )
+    .await;
+
+    crate::session::handlers::clear_context(&sess, "sub-clear".to_string()).await;
+
+    let cleared = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("an event")
+            .expect("event channel open");
+        match event.msg {
+            EventMsg::ContextCleared(_) => break true,
+            EventMsg::Error(_) => break false,
+            _ => continue,
+        }
+    };
+    assert!(cleared, "clear should report success while idle");
+    let history = sess.clone_history().await;
+    let text = format!("{:?}", history.raw_items().collect::<Vec<_>>());
+    assert!(
+        !text.contains("before the clear"),
+        "pre-clear history must leave the prompt"
+    );
+    assert!(text.contains("Context was cleared by request"));
+}
+
+#[tokio::test]
+async fn clear_context_refuses_while_a_turn_runs() {
+    let (sess, _tc, rx) = make_session_and_context_with_rx().await;
+    sess.replace_history(
+        vec![user_message("kept")],
+        /*reference_context_item*/ None,
+    )
+    .await;
+    *sess.active_turn.lock().await = Some(ActiveTurn::default());
+
+    crate::session::handlers::clear_context(&sess, "sub-clear".to_string()).await;
+
+    let error = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("an event")
+            .expect("event channel open");
+        if let EventMsg::Error(error) = event.msg {
+            break error;
+        }
+    };
+    assert_eq!(
+        error.codex_error_info,
+        Some(CodexErrorInfo::ContextClearFailed)
+    );
+    assert!(
+        format!(
+            "{:?}",
+            sess.clone_history().await.raw_items().collect::<Vec<_>>()
+        )
+        .contains("kept")
+    );
+}

@@ -110,6 +110,7 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::ReasoningSummaryPartAdded(_)
         | ServerNotification::ReasoningTextDelta(_)
         | ServerNotification::ContextCompacted(_)
+        | ServerNotification::ContextCleared(_)
         | ServerNotification::ModelRerouted(_)
         | ServerNotification::ModelVerification(_)
         | ServerNotification::AuthRecoveryStarted(_)

@@ -117,6 +117,7 @@ export type { ConnectorMetadata } from "./ConnectorMetadata";
 export type { ConsumeAccountRateLimitResetCreditOutcome } from "./ConsumeAccountRateLimitResetCreditOutcome";
 export type { ConsumeAccountRateLimitResetCreditParams } from "./ConsumeAccountRateLimitResetCreditParams";
 export type { ConsumeAccountRateLimitResetCreditResponse } from "./ConsumeAccountRateLimitResetCreditResponse";
+export type { ContextClearedNotification } from "./ContextClearedNotification";
 export type { ContextCompactedNotification } from "./ContextCompactedNotification";
 export type { CreditsSnapshot } from "./CreditsSnapshot";
 export type { CyberAccessProgram } from "./CyberAccessProgram";
@@ -492,6 +493,8 @@ export type { ThreadAttachmentUpdatedNotification } from "./ThreadAttachmentUpda
 export type { ThreadClosedNotification } from "./ThreadClosedNotification";
 export type { ThreadCompactStartParams } from "./ThreadCompactStartParams";
 export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
+export type { ThreadContextClearParams } from "./ThreadContextClearParams";
+export type { ThreadContextClearResponse } from "./ThreadContextClearResponse";
 export type { ThreadDeleteParams } from "./ThreadDeleteParams";
 export type { ThreadDeleteResponse } from "./ThreadDeleteResponse";
 export type { ThreadDeletedNotification } from "./ThreadDeletedNotification";

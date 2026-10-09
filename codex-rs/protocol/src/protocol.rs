@@ -785,6 +785,13 @@ pub enum Op {
     /// Request compaction with caller-authored, one-shot controls.
     CompactWithInput { input: CompactionInput },
 
+    /// Clear the effective context back to fresh initial context, only while idle.
+    ///
+    /// Append-only: the rollout keeps every earlier item and records a checkpoint whose
+    /// replacement history is a single clear marker, so later prompts (and a resume) start from
+    /// the initial context. An active turn refuses the request rather than racing it.
+    ClearContext,
+
     /// Set whether the thread remains eligible for memory generation.
     ///
     /// This persists thread-level memory mode metadata without involving the
@@ -1004,6 +1011,7 @@ impl Op {
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
             Self::Compact | Self::CompactWithInput { .. } => "compact",
+            Self::ClearContext => "clear_context",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
             Self::Review { .. } => "review",
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",
@@ -1446,6 +1454,9 @@ pub enum EventMsg {
 
     /// Conversation history was compacted (either automatically or manually).
     ContextCompacted(ContextCompactedEvent),
+
+    /// The effective context was cleared back to the initial context by request.
+    ContextCleared(ContextClearedEvent),
 
     /// Legacy persisted marker for dropping the last N user turns.
     /// Retained for replay of existing rollouts; live rollback operations are unsupported.
@@ -1937,6 +1948,8 @@ pub enum CodexErrorInfo {
     },
     // Retained to deserialize errors recorded in legacy rollouts.
     ThreadRollbackFailed,
+    /// A context clear was refused, for example because a turn was running.
+    ContextClearFailed,
     Other,
 }
 
@@ -1944,7 +1957,9 @@ impl CodexErrorInfo {
     /// Whether this error should mark the current turn as failed when replaying history.
     pub fn affects_turn_status(&self) -> bool {
         match self {
-            Self::ThreadRollbackFailed | Self::ActiveTurnNotSteerable { .. } => false,
+            Self::ThreadRollbackFailed
+            | Self::ContextClearFailed
+            | Self::ActiveTurnNotSteerable { .. } => false,
             Self::ContextWindowExceeded
             | Self::SessionBudgetExceeded
             | Self::UsageLimitExceeded
@@ -2196,6 +2211,9 @@ pub struct SafetyBufferingEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ContextCompactedEvent;
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ContextClearedEvent;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TurnCompleteEvent {

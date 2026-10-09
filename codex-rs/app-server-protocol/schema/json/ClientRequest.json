@@ -4315,6 +4315,18 @@
       ],
       "type": "object"
     },
+    "ThreadContextClearParams": {
+      "description": "Clear the thread's effective context back to fresh initial context. Accepted only while the thread is idle; the rollout keeps every earlier item. Success arrives as `thread/context/cleared`, refusal as an error notification with `contextClearFailed`.",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadDeleteParams": {
       "properties": {
         "threadId": {
@@ -6467,6 +6479,30 @@
         "params"
       ],
       "title": "Thread/compact/startRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/context/clear"
+          ],
+          "title": "Thread/context/clearRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadContextClearParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/context/clearRequest",
       "type": "object"
     },
     {

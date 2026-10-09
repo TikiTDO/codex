@@ -2192,6 +2192,30 @@
             },
             "method": {
               "enum": [
+                "thread/context/clear"
+              ],
+              "title": "Thread/context/clearRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadContextClearParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/context/clearRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/shellCommand"
               ],
               "title": "Thread/shellCommandRequestMethod",
@@ -4277,6 +4301,7 @@
             "unauthorized",
             "badRequest",
             "threadRollbackFailed",
+            "contextClearFailed",
             "sandboxError",
             "other"
           ],
@@ -6546,6 +6571,19 @@
           "type": "object"
         }
       ]
+    },
+    "ContextClearedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ContextClearedNotification",
+      "type": "object"
     },
     "ContextCompactedNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -17238,6 +17276,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/context/cleared"
+              ],
+              "title": "Thread/context/clearedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ContextClearedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/context/clearedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "model/rerouted"
               ],
               "title": "Model/reroutedNotificationMethod",
@@ -19009,6 +19067,25 @@
     "ThreadCompactStartResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "ThreadCompactStartResponse",
+      "type": "object"
+    },
+    "ThreadContextClearParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Clear the thread's effective context back to fresh initial context. Accepted only while the thread is idle; the rollout keeps every earlier item. Success arrives as `thread/context/cleared`, refusal as an error notification with `contextClearFailed`.",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadContextClearParams",
+      "type": "object"
+    },
+    "ThreadContextClearResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadContextClearResponse",
       "type": "object"
     },
     "ThreadDeleteParams": {

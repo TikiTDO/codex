@@ -783,6 +783,19 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_context_clear(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadContextClearParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        ensure_direct_input_allowed(thread.as_ref()).await?;
+        self.submit_core_op(request_id, thread.as_ref(), Op::ClearContext)
+            .await
+            .map_err(|err| internal_error(format!("failed to clear context: {err}")))?;
+        Ok(Some(ThreadContextClearResponse {}.into()))
+    }
+
     pub(crate) async fn thread_background_terminals_clean(
         &self,
         request_id: &ConnectionRequestId,
