@@ -13,12 +13,22 @@ const MAX_ORIGINS: usize = 64;
 const MAX_REFERENCE_BYTES: usize = 128;
 const MAX_METADATA_BYTES: usize = 8_192;
 
+pub use codex_protocol::attention::AttentionTurnStartedNotification;
 pub use codex_protocol::attention::ThreadAttentionDelivery;
 pub use codex_protocol::attention::ThreadAttentionHeldReason;
 pub use codex_protocol::attention::ThreadAttentionNotification;
 pub use codex_protocol::attention::ThreadAttentionOrigin;
 pub use codex_protocol::attention::ThreadAttentionOriginKind;
 pub use codex_protocol::attention::ThreadAttentionResponse;
+
+/// Versioned native route. Absence in initialize means unsupported, never a
+/// license to substitute ordinary user input.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadAttentionCapabilities {
+    pub version: u32,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -90,6 +100,41 @@ pub struct ThreadAttentionListResponse {
 mod tests {
     use super::*;
 
+    #[test]
+    fn quiet_attention_routes_share_exact_thread_serialization() {
+        use crate::{ClientRequest, ClientRequestSerializationScope, RequestId};
+        let params = request();
+        let expected = Some(ClientRequestSerializationScope::Thread {
+            thread_id: params.thread_id.clone(),
+        });
+        let admission = ClientRequest::ThreadAttention {
+            request_id: RequestId::Integer(1),
+            params: params.clone(),
+        };
+        let snapshot = ClientRequest::ThreadAttentionList {
+            request_id: RequestId::Integer(2),
+            params: ThreadAttentionListParams {
+                thread_id: params.thread_id,
+            },
+        };
+        assert_eq!(admission.serialization_scope(), expected);
+        assert_eq!(snapshot.serialization_scope(), expected);
+    }
+
+    #[test]
+    fn quiet_attention_missing_initialize_capability_means_unsupported() {
+        let old = serde_json::json!({
+            "userAgent": "old-server", "codexHome": "/tmp/codex",
+            "platformFamily": "unix", "platformOs": "linux",
+        });
+        let mut response: crate::InitializeResponse = serde_json::from_value(old).unwrap();
+        assert_eq!(response.attention, None);
+        response.attention = Some(ThreadAttentionCapabilities { version: 1 });
+        let roundtrip: crate::InitializeResponse =
+            serde_json::from_value(serde_json::to_value(response.clone()).unwrap()).unwrap();
+        assert_eq!(roundtrip.attention, response.attention);
+    }
+
     fn request() -> ThreadAttentionParams {
         ThreadAttentionParams {
             thread_id: "01a0cedd-86e4-7590-b1a8-1b285d379620".to_string(),
@@ -103,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn source_coordinates_are_not_prose() {
+    fn quiet_attention_source_coordinates_are_not_prose() {
         assert!(request().validate_metadata().is_ok());
         for value in ["", "run this", "x\ny", "<instruction>", "a|b", "tiki\u{1b}"] {
             let mut params = request();
@@ -113,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_coordinates_cannot_change_sender() {
+    fn quiet_attention_duplicate_coordinates_cannot_change_sender() {
         let mut params = request();
         let mut duplicate = params.origins[0].clone();
         duplicate.sender = Some("sol-8ec73b557900".to_string());
@@ -122,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_oversized_batches_are_rejected() {
+    fn quiet_attention_empty_and_oversized_batches_are_rejected() {
         let mut params = request();
         params.origins.clear();
         assert!(params.validate_metadata().is_err());
@@ -140,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_text_payload_is_not_silently_ignored() {
+    fn quiet_attention_unknown_text_payload_is_not_silently_ignored() {
         let mut value = serde_json::to_value(request()).unwrap();
         value["instructions"] = serde_json::json!("run a task");
         assert!(serde_json::from_value::<ThreadAttentionParams>(value).is_err());

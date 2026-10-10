@@ -1949,6 +1949,7 @@ server_notification_definitions! {
     ThreadStarted => "thread/started" (v2::ThreadStartedNotification),
     ThreadStatusChanged => "thread/status/changed" (v2::ThreadStatusChangedNotification),
     ThreadAttention => "thread/attention" (v2::ThreadAttentionNotification),
+    AttentionTurnStarted => "attention/turn/started" (v2::AttentionTurnStartedNotification),
     ThreadArchived => "thread/archived" (v2::ThreadArchivedNotification),
     ThreadDeleted => "thread/deleted" (v2::ThreadDeletedNotification),
     ThreadUnarchived => "thread/unarchived" (v2::ThreadUnarchivedNotification),

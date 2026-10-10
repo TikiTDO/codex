@@ -44,6 +44,14 @@ impl ChatWidget {
             self.restore_retry_status_header_if_present();
         }
         match notification {
+            ServerNotification::AttentionTurnStarted(notification) => {
+                if self
+                    .thread_id()
+                    .is_some_and(|id| id.to_string() == notification.thread_id)
+                {
+                    self.background_attention_turns.insert(notification.turn_id);
+                }
+            }
             ServerNotification::ThreadAttention(notification) => {
                 if self
                     .thread_id()
@@ -62,10 +70,7 @@ impl ChatWidget {
                     let notice = Arc::new(std::sync::Mutex::new(notification));
                     self.attention_notices
                         .insert(batch_id.clone(), Arc::clone(&notice));
-                    self.add_to_history(history_cell::AttentionHistoryCell {
-                        notice,
-                        batch_id,
-                    });
+                    self.add_to_history(history_cell::AttentionHistoryCell { notice, batch_id });
                 }
                 self.request_redraw();
             }
@@ -247,6 +252,8 @@ impl ChatWidget {
                         self.handle_non_retry_error(
                             notification.error.message,
                             notification.error.codex_error_info,
+                            self.background_attention_turns
+                                .contains(&notification.turn_id),
                         );
                     }
                 }
@@ -453,6 +460,9 @@ impl ChatWidget {
         // this TUI already rendered locally. Once that turn ends, another
         // client can submit the same text and it still needs its own user cell.
         self.last_rendered_user_message_display = None;
+        let background_attention = self
+            .background_attention_turns
+            .contains(&notification.turn.id);
         let mut question_drafts = None;
         let was_replaying_turn_completion = self.thread_usage.replaying_turn_completion;
         self.thread_usage.replaying_turn_completion = replay_kind.is_some();
@@ -499,7 +509,7 @@ impl ChatWidget {
                 {
                     self.speak_completed_realtime_delegation(&notification.turn.id, item);
                 }
-                if replay_kind.is_none() {
+                if replay_kind.is_none() && !background_attention {
                     question_drafts = self.take_question_drafts();
                 }
                 self.last_non_retry_error = None;
@@ -511,7 +521,7 @@ impl ChatWidget {
                 );
             }
             TurnStatus::Interrupted => {
-                if replay_kind.is_none() {
+                if replay_kind.is_none() && !background_attention {
                     question_drafts = self.take_question_drafts();
                 }
                 self.last_non_retry_error = None;
@@ -526,7 +536,7 @@ impl ChatWidget {
                 self.on_interrupted_turn(reason);
             }
             TurnStatus::Failed => {
-                if replay_kind.is_none() {
+                if replay_kind.is_none() && !background_attention {
                     question_drafts = self.take_question_drafts();
                 }
                 if let Some(error) = notification.turn.error {
@@ -544,7 +554,11 @@ impl ChatWidget {
                     {
                         self.last_non_retry_error = None;
                     } else {
-                        self.handle_non_retry_error(error.message, error.codex_error_info);
+                        self.handle_non_retry_error(
+                            error.message,
+                            error.codex_error_info,
+                            background_attention,
+                        );
                     }
                 } else {
                     self.last_non_retry_error = None;
@@ -577,6 +591,8 @@ impl ChatWidget {
         self.restore_realtime_transcripts_before_turn(&notification.turn_id);
         match notification.item {
             ThreadItem::UserMessage { content, .. } if replay_kind.is_none() => {
+                self.background_attention_turns
+                    .remove(&notification.turn_id);
                 self.note_realtime_user_item_started(&notification.turn_id, &content);
             }
             ThreadItem::UserMessage { content, .. }

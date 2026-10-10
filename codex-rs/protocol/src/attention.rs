@@ -75,3 +75,13 @@ pub struct ThreadAttentionNotification {
     pub origins: Vec<ThreadAttentionOrigin>,
     pub admission: ThreadAttentionResponse,
 }
+
+/// Core emits this before spawning an idle attention task. It is provenance,
+/// not an admission receipt, and cannot be supplied through a turn-trigger label.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AttentionTurnStartedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+}

@@ -812,12 +812,31 @@ pub(super) async fn handle_pending_thread_resume_request(
     match conversation.load_history(false).await {
         Ok(history) => {
             let mut notices = HashMap::new();
+            let mut attention_turns = HashMap::new();
             for item in history.items {
-                if let RolloutItem::EventMsg(EventMsg::ThreadAttention(notice)) = item
-                    && notice.thread_id == conversation_id.to_string()
-                {
-                    notices.insert(notice.batch_id.clone(), notice);
+                match item {
+                    RolloutItem::EventMsg(EventMsg::ThreadAttention(notice))
+                        if notice.thread_id == conversation_id.to_string() =>
+                    {
+                        notices.insert(notice.batch_id.clone(), notice);
+                    }
+                    RolloutItem::EventMsg(EventMsg::AttentionTurnStarted(marker))
+                        if marker.thread_id == conversation_id.to_string() =>
+                    {
+                        attention_turns.insert(marker.turn_id.clone(), marker);
+                    }
+                    _ => {}
                 }
+            }
+            // Listener commands run before subsequent live Core events. Restore
+            // provenance before errors/completion can reach this connection.
+            for marker in attention_turns.into_values() {
+                outgoing
+                    .send_server_notification_to_connections(
+                        &[connection_id],
+                        ServerNotification::AttentionTurnStarted(marker),
+                    )
+                    .await;
             }
             let mut notices = notices.into_values().collect::<Vec<_>>();
             notices.sort_by(|left, right| left.batch_id.cmp(&right.batch_id));

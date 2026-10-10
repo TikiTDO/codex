@@ -588,6 +588,7 @@ pub(crate) struct ChatWidget {
         String,
         Arc<std::sync::Mutex<codex_app_server_protocol::ThreadAttentionNotification>>,
     >,
+    background_attention_turns: HashSet<String>,
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     add_credits_nudge_email_in_flight: Option<rate_limits::PendingCreditsNudge>,
     adaptive_chunking: AdaptiveChunkingPolicy,

@@ -20,6 +20,9 @@ impl Session {
         item: ResponseItem,
     ) -> Result<String, codex_protocol::attention::ThreadAttentionHeldReason> {
         use codex_protocol::attention::ThreadAttentionHeldReason;
+        let Some(_admission) = self.services.extensions.admit_turn_start() else {
+            return Err(ThreadAttentionHeldReason::ServerDraining);
+        };
         let mut active = self.active_turn.lock().await;
         let Some(active_task) = active.as_ref().and_then(|turn| turn.task.as_ref()) else {
             return Err(ThreadAttentionHeldReason::Busy);

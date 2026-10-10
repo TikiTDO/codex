@@ -58,6 +58,7 @@ use codex_protocol::turn_input::RecoverTurnRequest;
 use codex_protocol::turn_input::StartIfIdleSubmission;
 use codex_protocol::turn_input::SteerSubmission;
 use codex_protocol::turn_input::SuspendTurnOutcome;
+use codex_protocol::turn_input::TurnInput;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
@@ -426,6 +427,20 @@ impl CodexThread {
         }
     }
 
+    /// Starts quiet native attention when idle. The trusted classifier is separate
+    /// from client turn-trigger labels and never permits steering or operator input.
+    pub async fn start_attention_if_idle(
+        &self,
+        context: crate::context::InternalModelContextFragment,
+    ) -> CodexResult<StartIfIdleSubmission> {
+        let mut request = TurnInputRequest::new(TurnInput::ResponseItem(
+            ContextualUserFragment::into(context),
+        ));
+        request.background_attention = true;
+        request.start.turn_trigger = Some("attention".to_string());
+        self.start_turn_if_idle(request).await
+    }
+
     /// Starts a new internal continuation turn when idle, including in Plan mode.
     /// Rejects if a newer task has started, even if it has already finished.
     /// The input must be a response item; it is never treated as user authorization.
@@ -598,7 +613,7 @@ impl CodexThread {
         context: crate::context::InternalModelContextFragment,
     ) -> Result<String, codex_protocol::attention::ThreadAttentionHeldReason> {
         self.session
-            .inject_attention_if_running(context.into())
+            .inject_attention_if_running(ContextualUserFragment::into(context))
             .await
     }
 

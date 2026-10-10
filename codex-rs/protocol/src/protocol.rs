@@ -1513,6 +1513,9 @@ pub enum EventMsg {
     /// Persistent runtime notice, not a user message or a new task.
     ThreadAttention(crate::attention::ThreadAttentionNotification),
 
+    /// Trusted background-turn classification, emitted before its ordinary start.
+    AttentionTurnStarted(crate::attention::AttentionTurnStartedNotification),
+
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),
 

@@ -211,6 +211,7 @@ impl InitializeRequestProcessor {
 
         let user_agent = get_codex_user_agent();
         let response = InitializeResponse {
+            attention: Some(codex_app_server_protocol::ThreadAttentionCapabilities { version: 1 }),
             user_agent,
             codex_home,
             platform_family: std::env::consts::FAMILY.to_string(),

@@ -12,48 +12,126 @@ fn questions() -> Vec<AsyncUserInputQuestion> {
 }
 
 #[tokio::test]
-async fn quiet_attention_notice_keeps_question_identity_draft_and_answer_route() {
-    use codex_app_server_protocol::ThreadAttentionDelivery;
-    use codex_app_server_protocol::ThreadAttentionNotification;
-    use codex_app_server_protocol::ThreadAttentionOrigin;
-    use codex_app_server_protocol::ThreadAttentionOriginKind;
-    use codex_app_server_protocol::ThreadAttentionResponse;
+async fn quiet_attention_completion_and_error_keep_original_question_answerable_once() {
+    use codex_app_server_protocol::{
+        AttentionTurnStartedNotification, ErrorNotification, ThreadAttentionDelivery,
+        ThreadAttentionNotification, ThreadAttentionOrigin, ThreadAttentionOriginKind,
+        ThreadAttentionResponse, Turn, TurnCompletedNotification, TurnError, TurnItemsView,
+        TurnStartedNotification, TurnStatus,
+    };
+    use codex_context_fragments::{AnsweredQuestion, ContextualUserFragment};
 
-    let (mut chat, _rx, mut ops) = make_chatwidget_manual(None).await;
-    let thread_id = ThreadId::new();
-    chat.thread_id = Some(thread_id);
-    chat.bottom_pane.set_composer_text("main draft".into(), Vec::new(), Vec::new());
-    chat.add_async_questions("original-message", &questions());
-    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
-    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
-    chat.bottom_pane.handle_paste("retained answer".into());
-    let before = render_bottom_popup(&chat, 80);
-    let notice = ThreadAttentionNotification {
-        thread_id: thread_id.to_string(), batch_id: "cue:one".into(),
-        origins: vec![ThreadAttentionOrigin { kind: ThreadAttentionOriginKind::Peer,
-            source_ref: "cue:one".into(), sender: Some("sol-8ec73b557900".into()) }],
-        admission: ThreadAttentionResponse::Accepted { delivery: ThreadAttentionDelivery::Started,
-            turn_id: Some("background".into()) },
-    };
-    for _ in 0..2 {
-        chat.handle_server_notification(ServerNotification::ThreadAttention(notice.clone()), None);
+    for status in [
+        TurnStatus::Completed,
+        TurnStatus::Interrupted,
+        TurnStatus::Failed,
+    ] {
+        let (mut chat, _rx, mut ops) = make_chatwidget_manual(None).await;
+        let thread_id = ThreadId::new();
+        chat.thread_id = Some(thread_id);
+        chat.bottom_pane
+            .set_composer_text("main draft".into(), Vec::new(), Vec::new());
+        chat.add_async_questions("original-message", &questions());
+        chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+        chat.bottom_pane.handle_paste("retained answer".into());
+        let before = chat.bottom_pane.question_editor().capture();
+        let mut turn = Turn {
+            id: "background".into(),
+            items: Vec::new(),
+            items_view: TurnItemsView::Full,
+            status: TurnStatus::InProgress,
+            error: None,
+            started_at: Some(0),
+            completed_at: None,
+            duration_ms: None,
+        };
+        // The classification must precede lifecycle, but the final admission
+        // receipt deliberately arrives after a fast completion.
+        chat.handle_server_notification(
+            ServerNotification::AttentionTurnStarted(AttentionTurnStartedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: turn.id.clone(),
+            }),
+            None,
+        );
+        chat.handle_server_notification(
+            ServerNotification::TurnStarted(TurnStartedNotification {
+                thread_id: thread_id.to_string(),
+                turn: turn.clone(),
+            }),
+            None,
+        );
+        if status == TurnStatus::Failed {
+            turn.error = Some(TurnError {
+                message: "attention failed".into(),
+                codex_error_info: None,
+                additional_details: None,
+                misalignment: None,
+            });
+            chat.handle_server_notification(
+                ServerNotification::Error(ErrorNotification {
+                    thread_id: thread_id.to_string(),
+                    turn_id: turn.id.clone(),
+                    error: turn.error.clone().unwrap(),
+                    will_retry: false,
+                }),
+                None,
+            );
+            assert_eq!(question_count(&chat), 2);
+            assert_eq!(chat.bottom_pane.question_editor().capture(), before);
+        }
+        turn.status = status;
+        chat.handle_server_notification(
+            ServerNotification::TurnCompleted(TurnCompletedNotification {
+                thread_id: thread_id.to_string(),
+                turn,
+            }),
+            None,
+        );
+        let notice = ThreadAttentionNotification {
+            thread_id: thread_id.to_string(),
+            batch_id: "cue:one".into(),
+            origins: vec![ThreadAttentionOrigin {
+                kind: ThreadAttentionOriginKind::Peer,
+                source_ref: "cue:one".into(),
+                sender: Some("sol-8ec73b557900".into()),
+            }],
+            admission: ThreadAttentionResponse::Accepted {
+                delivery: ThreadAttentionDelivery::Started,
+                turn_id: Some("background".into()),
+            },
+        };
+        for _ in 0..2 {
+            chat.handle_server_notification(
+                ServerNotification::ThreadAttention(notice.clone()),
+                None,
+            );
+        }
+        assert_eq!(chat.attention_notices.len(), 1);
+        assert_eq!(question_count(&chat), 2);
+        assert_eq!(chat.bottom_pane.question_editor().capture(), before);
+        assert_eq!(chat.bottom_pane.composer_text(), "main draft");
+        assert!(!chat.bottom_pane.is_task_running());
+        chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(question_count(&chat), 1);
+        let Op::UserTurn { items, .. } = ops.try_recv().expect("answer to original question")
+        else {
+            panic!("question answer must retain its existing route");
+        };
+        let id = serde_json::json!(["request_user_input_async", "original-message", 0]).to_string();
+        assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: AnsweredQuestion::new(&id, "Which way?", "retained answer").render(),
+                text_elements: Vec::new(),
+            }]
+        );
+        assert!(
+            ops.try_recv().is_err(),
+            "one answer must produce exactly one input"
+        );
     }
-    assert_eq!(chat.attention_notices.len(), 1);
-    chat.on_task_started();
-    assert_eq!(question_count(&chat), 2);
-    assert_eq!(render_bottom_popup(&chat, 80), before);
-    assert_eq!(chat.bottom_pane.composer_text(), "main draft");
-    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
-    assert_eq!(question_count(&chat), 1);
-    let Op::UserTurn { items, .. } = ops.try_recv().expect("answer sent to original question") else {
-        panic!("question answer must use its existing route");
-    };
-    let id = serde_json::json!(["request_user_input_async", "original-message", 0]).to_string();
-    use codex_context_fragments::ContextualUserFragment;
-    assert_eq!(items, vec![UserInput::Text {
-        text: codex_context_fragments::AnsweredQuestion::new(&id, "Which way?", "retained answer").render(),
-        text_elements: Vec::new(),
-    }]);
 }
 
 #[tokio::test]
@@ -155,7 +233,7 @@ async fn async_question_answers_preserve_ambiguous_skill_selection_and_dismiss_r
 }
 
 #[tokio::test]
-async fn ordinary_follow_up_clears_unanswered_questions_after_accepted_input() {
+async fn quiet_attention_ordinary_follow_up_clears_unanswered_questions_after_accepted_input() {
     for queued in [false, true] {
         let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
         chat.thread_id = Some(ThreadId::new());

@@ -10,7 +10,6 @@ use codex_app_server_protocol::ThreadAttentionNotification;
 use codex_app_server_protocol::ThreadAttentionParams;
 use codex_app_server_protocol::ThreadAttentionResponse;
 use codex_core::context::InternalContextSource;
-use codex_core::context::ContextualUserFragment;
 use codex_core::context::InternalModelContextFragment;
 use codex_protocol::turn_input::StartIfIdleSubmission;
 
@@ -84,7 +83,7 @@ impl TurnRequestProcessor {
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
-            .map_err(config_load_error)?;
+            .map_err(|error| config_load_error(&error))?;
         let notices = self.attention_snapshot(thread_id, thread.as_ref()).await?;
         if let Some(previous) = notices.get(&params.batch_id) {
             if previous.origins != params.origins {
@@ -167,14 +166,7 @@ impl TurnRequestProcessor {
             Err(_) => {}
         }
         let result = thread
-            .start_turn_if_idle(
-                TurnInputRequest::new(TurnInput::ResponseItem(context.into())).on_start(
-                    TurnStartOptions {
-                        turn_trigger: Some("attention".to_string()),
-                        ..Default::default()
-                    },
-                ),
-            )
+            .start_attention_if_idle(context)
             .await
             .map_err(|err| internal_error(format!("attention admission uncertain: {err}")))?;
         Ok(match result {

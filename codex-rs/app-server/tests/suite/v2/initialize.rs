@@ -59,7 +59,9 @@ async fn initialize_uses_client_info_name_as_originator() -> Result<()> {
         codex_home: response_codex_home,
         platform_family,
         platform_os,
+        attention,
     } = to_response::<InitializeResponse>(response)?;
+    assert_eq!(attention.map(|capability| capability.version), Some(1));
 
     assert!(user_agent.starts_with("codex_vscode/"));
     assert_eq!(response_codex_home, expected_codex_home);
@@ -171,7 +173,9 @@ async fn initialize_respects_originator_override_env_var() -> Result<()> {
         codex_home: response_codex_home,
         platform_family,
         platform_os,
+        attention,
     } = to_response::<InitializeResponse>(response)?;
+    assert_eq!(attention.map(|capability| capability.version), Some(1));
 
     assert!(user_agent.starts_with("codex_originator_via_env_var/"));
     assert_eq!(response_codex_home, expected_codex_home);
