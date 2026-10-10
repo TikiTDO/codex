@@ -807,6 +807,41 @@ pub(super) async fn handle_pending_thread_resume_request(
     outgoing
         .replay_requests_to_connection_for_thread(connection_id, conversation_id)
         .await;
+    // Runtime notices are not UserMessages and therefore are absent from turn
+    // history replay. Restore their latest state after the resume subscription.
+    match conversation.load_history(false).await {
+        Ok(history) => {
+            let mut notices = HashMap::new();
+            for item in history.items {
+                if let RolloutItem::EventMsg(EventMsg::ThreadAttention(notice)) = item
+                    && notice.thread_id == conversation_id.to_string()
+                {
+                    notices.insert(notice.batch_id.clone(), notice);
+                }
+            }
+            let mut notices = notices.into_values().collect::<Vec<_>>();
+            notices.sort_by(|left, right| left.batch_id.cmp(&right.batch_id));
+            for notice in notices {
+                outgoing
+                    .send_server_notification_to_connections(
+                        &[connection_id],
+                        ServerNotification::ThreadAttention(notice),
+                    )
+                    .await;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "attention resume coverage unavailable");
+            send_thread_warning(
+                outgoing,
+                thread_state_manager,
+                conversation_id,
+                "Runtime attention notice history could not be restored; coverage is incomplete."
+                    .to_string(),
+            )
+            .await;
+        }
+    }
     // App-server owns resume response and snapshot ordering, so wait until
     // replay completes before letting extensions react to the idle thread.
     conversation

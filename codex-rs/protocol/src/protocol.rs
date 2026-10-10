@@ -1510,6 +1510,9 @@ pub enum EventMsg {
     /// A durable thread-scoped user-message queue changed.
     ThreadQueueChanged(ThreadQueueChangedEvent),
 
+    /// Persistent runtime notice, not a user message or a new task.
+    ThreadAttention(crate::attention::ThreadAttentionNotification),
+
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),
 

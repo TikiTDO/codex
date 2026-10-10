@@ -2530,6 +2530,18 @@ impl Session {
         self.deliver_event_raw(event).await;
     }
 
+    /// A notice already persisted by the thread host must not be appended twice.
+    pub(crate) async fn deliver_attention_notice(
+        &self,
+        notice: codex_protocol::attention::ThreadAttentionNotification,
+    ) {
+        self.deliver_event_raw(Event {
+            id: notice.batch_id.clone(),
+            msg: EventMsg::ThreadAttention(notice),
+        })
+        .await;
+    }
+
     async fn deliver_event_raw(&self, event: Event) {
         // Record the last known agent status.
         if let Some(status) = agent_status_from_event(&event.msg) {

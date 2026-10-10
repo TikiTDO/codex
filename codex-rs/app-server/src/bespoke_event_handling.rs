@@ -1239,6 +1239,11 @@ pub(crate) async fn apply_bespoke_event_handling(
                 ))
                 .await;
         }
+        EventMsg::ThreadAttention(notice) => {
+            outgoing
+                .send_server_notification(ServerNotification::ThreadAttention(notice))
+                .await;
+        }
         EventMsg::ThreadRolledBack(_) | EventMsg::ThreadQueueChanged(_) => {}
         EventMsg::ThreadSettingsApplied(_) => {
             let thread_settings =

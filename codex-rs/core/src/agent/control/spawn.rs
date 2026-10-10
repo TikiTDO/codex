@@ -1137,6 +1137,7 @@ impl LocalAgentControl {
                         RolloutItem::EventMsg(
                             EventMsg::ItemCompleted(_)
                                 | EventMsg::TokenCount(_)
+                                | EventMsg::ThreadAttention(_)
                                 | EventMsg::ThreadGoalUpdated(_)
                                 | EventMsg::ThreadSettingsApplied(_),
                         )

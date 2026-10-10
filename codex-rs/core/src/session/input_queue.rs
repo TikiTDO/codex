@@ -346,6 +346,25 @@ impl InputQueue {
         turn_state.lock().await.pending_input.items.extend(input);
     }
 
+    /// Quiet runtime input must not reopen a terminal turn or signal a steer.
+    /// The caller holds ActiveTurn, matching interactive waiter registration.
+    pub(crate) async fn extend_attention_input_for_turn_state(
+        &self,
+        turn_state: &Mutex<TurnState>,
+        input: Vec<TurnInput>,
+    ) -> Result<(), codex_protocol::attention::ThreadAttentionHeldReason> {
+        use codex_protocol::attention::ThreadAttentionHeldReason;
+        let mut turn_state = turn_state.lock().await;
+        if turn_state.has_pending_interactive_request() {
+            return Err(ThreadAttentionHeldReason::BlockingRequest);
+        }
+        if !turn_state.accepts_mailbox_delivery_for_current_turn() {
+            return Err(ThreadAttentionHeldReason::Busy);
+        }
+        turn_state.pending_input.items.extend(input);
+        Ok(())
+    }
+
     pub(crate) async fn take_pending_input_for_turn_state(
         &self,
         turn_state: &Mutex<TurnState>,

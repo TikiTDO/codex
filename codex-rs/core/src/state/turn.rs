@@ -119,6 +119,16 @@ pub(crate) struct PendingRequestPermissions {
 }
 
 impl TurnState {
+    /// Runtime attention yields to unanswered interactive requests. Read while
+    /// holding ActiveTurn, the same ordering used when registering these waiters.
+    pub(crate) fn has_pending_interactive_request(&self) -> bool {
+        !self.pending_approvals.is_empty()
+            || !self.pending_request_permissions.is_empty()
+            || !self.pending_user_input.is_empty()
+            || !self.pending_elicitations.is_empty()
+            || !self.pending_dynamic_tools.is_empty()
+    }
+
     pub(crate) fn insert_pending_approval(
         &mut self,
         key: String,

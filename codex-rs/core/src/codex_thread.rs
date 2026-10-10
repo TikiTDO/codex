@@ -591,6 +591,35 @@ impl CodexThread {
         self.session.inject_if_running(items).await
     }
 
+    /// Runtime context admission does not steer, interrupt, or authorize a task.
+    /// Unlike general injection, an idle-start reservation is not a running task.
+    pub async fn inject_attention_if_running(
+        &self,
+        context: crate::context::InternalModelContextFragment,
+    ) -> Result<String, codex_protocol::attention::ThreadAttentionHeldReason> {
+        self.session
+            .inject_attention_if_running(context.into())
+            .await
+    }
+
+    /// Persist the notice before delivery, independently of model input. A durable
+    /// intent without a final receipt is deliberately not safe to resubmit.
+    pub async fn record_attention_notice(
+        &self,
+        notice: codex_protocol::attention::ThreadAttentionNotification,
+        notify: bool,
+    ) -> anyhow::Result<()> {
+        self.append_rollout_items(&[RolloutItem::EventMsg(
+            codex_protocol::protocol::EventMsg::ThreadAttention(notice.clone()),
+        )])
+        .await?;
+        self.flush_rollout().await?;
+        if notify {
+            self.session.deliver_attention_notice(notice).await;
+        }
+        Ok(())
+    }
+
     /// Environment selections captured by the active turn, before later settings updates.
     /// Includes environments that are still starting or have failed. Hosts use this snapshot
     /// to authorize steering against every executor that the active turn selected.

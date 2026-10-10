@@ -12,6 +12,51 @@ fn questions() -> Vec<AsyncUserInputQuestion> {
 }
 
 #[tokio::test]
+async fn quiet_attention_notice_keeps_question_identity_draft_and_answer_route() {
+    use codex_app_server_protocol::ThreadAttentionDelivery;
+    use codex_app_server_protocol::ThreadAttentionNotification;
+    use codex_app_server_protocol::ThreadAttentionOrigin;
+    use codex_app_server_protocol::ThreadAttentionOriginKind;
+    use codex_app_server_protocol::ThreadAttentionResponse;
+
+    let (mut chat, _rx, mut ops) = make_chatwidget_manual(None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.bottom_pane.set_composer_text("main draft".into(), Vec::new(), Vec::new());
+    chat.add_async_questions("original-message", &questions());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    chat.bottom_pane.handle_paste("retained answer".into());
+    let before = render_bottom_popup(&chat, 80);
+    let notice = ThreadAttentionNotification {
+        thread_id: thread_id.to_string(), batch_id: "cue:one".into(),
+        origins: vec![ThreadAttentionOrigin { kind: ThreadAttentionOriginKind::Peer,
+            source_ref: "cue:one".into(), sender: Some("sol-8ec73b557900".into()) }],
+        admission: ThreadAttentionResponse::Accepted { delivery: ThreadAttentionDelivery::Started,
+            turn_id: Some("background".into()) },
+    };
+    for _ in 0..2 {
+        chat.handle_server_notification(ServerNotification::ThreadAttention(notice.clone()), None);
+    }
+    assert_eq!(chat.attention_notices.len(), 1);
+    chat.on_task_started();
+    assert_eq!(question_count(&chat), 2);
+    assert_eq!(render_bottom_popup(&chat, 80), before);
+    assert_eq!(chat.bottom_pane.composer_text(), "main draft");
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(question_count(&chat), 1);
+    let Op::UserTurn { items, .. } = ops.try_recv().expect("answer sent to original question") else {
+        panic!("question answer must use its existing route");
+    };
+    let id = serde_json::json!(["request_user_input_async", "original-message", 0]).to_string();
+    use codex_context_fragments::ContextualUserFragment;
+    assert_eq!(items, vec![UserInput::Text {
+        text: codex_context_fragments::AnsweredQuestion::new(&id, "Which way?", "retained answer").render(),
+        text_elements: Vec::new(),
+    }]);
+}
+
+#[tokio::test]
 async fn unavailable_send_keeps_answer_and_skip_remains_available() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.add_async_questions("message", &questions());

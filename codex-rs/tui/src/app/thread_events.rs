@@ -98,6 +98,7 @@ impl ThreadEventStore {
             ThreadBufferedEvent::Notification(notification) => matches!(
                 notification.as_ref(),
                 ServerNotification::HookStarted(_)
+                    | ServerNotification::ThreadAttention(_)
                     | ServerNotification::HookCompleted(_)
                     | ServerNotification::McpServerStatusUpdated(_)
                     | ServerNotification::McpServerOauthLoginCompleted(_)

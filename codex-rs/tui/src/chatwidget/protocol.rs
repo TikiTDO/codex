@@ -44,6 +44,31 @@ impl ChatWidget {
             self.restore_retry_status_header_if_present();
         }
         match notification {
+            ServerNotification::ThreadAttention(notification) => {
+                if self
+                    .thread_id()
+                    .is_none_or(|id| id.to_string() != notification.thread_id)
+                {
+                    return;
+                }
+                let batch_id = notification.batch_id.clone();
+                if let Some(current) = self.attention_notices.get(&batch_id) {
+                    let mut current = current.lock().expect("attention notice lock");
+                    if *current == notification {
+                        return;
+                    }
+                    *current = notification;
+                } else {
+                    let notice = Arc::new(std::sync::Mutex::new(notification));
+                    self.attention_notices
+                        .insert(batch_id.clone(), Arc::clone(&notice));
+                    self.add_to_history(history_cell::AttentionHistoryCell {
+                        notice,
+                        batch_id,
+                    });
+                }
+                self.request_redraw();
+            }
             ServerNotification::McpServerOauthLoginCompleted(notification) => {
                 if notification.success {
                     self.add_info_message(
