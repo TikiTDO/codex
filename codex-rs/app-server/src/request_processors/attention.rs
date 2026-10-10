@@ -101,18 +101,10 @@ impl TurnRequestProcessor {
                 return Ok(Some(previous.admission.clone().into()));
             }
         }
-        // A new batch cannot make an already accepted source into fresh input.
-        if notices.values().any(|previous| {
-            matches!(previous.admission, ThreadAttentionResponse::Accepted { .. })
-                && previous.origins.iter().any(|origin| {
-                    params
-                        .origins
-                        .iter()
-                        .any(|incoming| incoming.source_ref == origin.source_ref)
-                })
-        }) {
+        // A new key cannot turn an admitted or uncertain source into fresh input.
+        if has_quarantined_source_overlap(&notices, &params) {
             return Err(invalid_request(
-                "attention source already admitted; retry its original batchId",
+                "attention source already admitted or uncertain; retry its original batchId",
             ));
         }
         let mut notice = ThreadAttentionNotification {
@@ -200,10 +192,89 @@ impl TurnRequestProcessor {
     }
 }
 
+fn has_quarantined_source_overlap(
+    notices: &HashMap<String, ThreadAttentionNotification>,
+    params: &ThreadAttentionParams,
+) -> bool {
+    notices.values().any(|previous| {
+        matches!(
+            previous.admission,
+            ThreadAttentionResponse::Accepted { .. }
+                | ThreadAttentionResponse::Held {
+                    reason: ThreadAttentionHeldReason::AdmissionUncertain
+                }
+        ) && previous.origins.iter().any(|origin| {
+            params
+                .origins
+                .iter()
+                .any(|incoming| incoming.source_ref == origin.source_ref)
+        })
+    })
+}
+
 fn accepted(delivery: ThreadAttentionDelivery, turn_id: String) -> ThreadAttentionResponse {
     ThreadAttentionResponse::Accepted {
         delivery,
         turn_id: Some(turn_id),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_app_server_protocol::ThreadAttentionOrigin;
+    use codex_app_server_protocol::ThreadAttentionOriginKind;
+
+    #[test]
+    fn quiet_attention_quarantines_uncertain_sources_across_batch_ids() {
+        let origin = ThreadAttentionOrigin {
+            kind: ThreadAttentionOriginKind::Peer,
+            source_ref: "cue:one".into(),
+            sender: Some("peer".into()),
+        };
+        let mut params = ThreadAttentionParams {
+            thread_id: "thread".into(),
+            batch_id: "new-batch".into(),
+            origins: vec![origin.clone()],
+        };
+        for (admission, quarantined) in [
+            (
+                accepted(ThreadAttentionDelivery::Started, "turn".into()),
+                true,
+            ),
+            (
+                ThreadAttentionResponse::Held {
+                    reason: ThreadAttentionHeldReason::AdmissionUncertain,
+                },
+                true,
+            ),
+            (
+                ThreadAttentionResponse::Held {
+                    reason: ThreadAttentionHeldReason::BlockingRequest,
+                },
+                false,
+            ),
+        ] {
+            let notices = HashMap::from([(
+                "original-batch".into(),
+                ThreadAttentionNotification {
+                    thread_id: params.thread_id.clone(),
+                    batch_id: "original-batch".into(),
+                    origins: vec![origin.clone()],
+                    admission,
+                },
+            )]);
+            // Changing the key, label and kind does not change source identity.
+            params.origins[0].kind = ThreadAttentionOriginKind::Desk;
+            params.origins[0].sender = Some("another-label".into());
+            params.origins[0].source_ref = origin.source_ref.clone();
+            assert_eq!(
+                has_quarantined_source_overlap(&notices, &params),
+                quarantined
+            );
+            params.origins[0].source_ref = "cue:other".into();
+            assert!(!has_quarantined_source_overlap(&notices, &params));
+        }
     }
 }
 
