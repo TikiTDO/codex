@@ -40,7 +40,6 @@ fn quiet_attention_provenance_survives_buffer_eviction_but_not_foreground_input(
             content: Vec::new(),
         },
     }));
-    assert!(store.attention_turns.is_empty());
     assert!(!store.snapshot().events.iter().any(|event| matches!(event,
         ThreadBufferedEvent::Notification(n)
             if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(_)))));

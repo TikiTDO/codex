@@ -6,6 +6,7 @@ use codex_app_server_protocol::ThreadAttentionDelivery;
 use codex_app_server_protocol::ThreadAttentionHeldReason;
 use codex_app_server_protocol::ThreadAttentionNotification;
 use codex_app_server_protocol::ThreadAttentionResponse;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 #[derive(Debug)]
