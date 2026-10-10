@@ -38,6 +38,7 @@ fn quiet_attention_provenance_survives_buffer_eviction_but_not_foreground_input(
         item: ThreadItem::UserMessage {
             id: "operator".into(),
             content: Vec::new(),
+            client_id: None,
         },
     }));
     assert!(!store.snapshot().events.iter().any(|event| matches!(event,

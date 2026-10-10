@@ -111,7 +111,7 @@ async fn quiet_attention_native_marker_rejects_user_input_and_steering() {
             "invalid-user".into()
         )
         .await,
-        Err(CodexErr::InvalidRequest(_)),
+        Err(error) if matches!(error.details(), CodexErrorDetails::InvalidRequest(_)),
     ));
     let mut request =
         TurnInputRequest::new(SubmittedTurnInput::ResponseItem(user_message("context")));
@@ -124,7 +124,7 @@ async fn quiet_attention_native_marker_rejects_user_input_and_steering() {
             "invalid-steer".into()
         )
         .await,
-        Err(CodexErr::InvalidRequest(_)),
+        Err(error) if matches!(error.details(), CodexErrorDetails::InvalidRequest(_)),
     ));
     assert!(session.active_turn.lock().await.is_none());
 }
