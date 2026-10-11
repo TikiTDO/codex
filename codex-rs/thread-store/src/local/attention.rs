@@ -20,7 +20,7 @@ fn unavailable(detail: impl std::fmt::Display) -> ThreadStoreError {
     }
 }
 
-fn owners(thread_id: ThreadId, segments: &[RolloutLineageSegment]) -> Vec<ThreadId> {
+pub(super) fn owners(thread_id: ThreadId, segments: &[RolloutLineageSegment]) -> Vec<ThreadId> {
     let mut ids = vec![thread_id];
     ids.extend(segments.iter().map(|segment| segment.owner_thread_id));
     ids.sort_unstable_by_key(ToString::to_string);
@@ -72,33 +72,9 @@ pub(super) async fn load(
         if captured != verified {
             continue;
         }
-        let segments = captured.segments;
-        // Existing decoder-owned readers retain their open representation through
-        // compression/materialization. Freeze finite decoded lengths under writers.
-        let handles = tokio::task::spawn_blocking(move || {
-            segments
-                .into_iter()
-                .map(|segment| {
-                    let file = codex_rollout::open_rollout_seekable_prefix_reader(
-                        &segment.rollout_path,
-                        segment.end.map(|end| end.end_byte_offset),
-                    )?;
-                    let length = file.metadata()?.len();
-                    let frontier = segment.end.map_or(length, |end| end.end_byte_offset);
-                    if frontier > length {
-                        return Err(std::io::Error::other("incomplete canonical prefix"));
-                    }
-                    Ok((segment, file, frontier))
-                })
-                .collect::<std::io::Result<Vec<_>>>()
-        })
-        .await
-        .map_err(unavailable)?
-        .map_err(unavailable)?;
+        let handles = capture_handles(captured).await?;
         drop(writers);
-        let result = tokio::task::spawn_blocking(move || scan(thread_id, handles))
-            .await
-            .map_err(unavailable)?;
+        let result = scan_captured(thread_id, handles, false).await;
         // Keep lifecycle leases through the entire strict scan. Revert/archive/
         // delete cannot replace or truncate a selected prefix while it is read.
         drop(leases);
@@ -109,9 +85,141 @@ pub(super) async fn load(
     ))
 }
 
+/// Complete sorted protection for a closed replacement source.
+pub(super) struct ReplacementGuards {
+    _target: tokio::sync::OwnedRwLockWriteGuard<()>,
+    _ancestors: Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
+    _writers: Vec<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+pub(super) async fn lock_replacement(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    mut path: std::path::PathBuf,
+) -> ThreadStoreResult<(ReplacementGuards, super::rollout_lineage::RolloutLineage)> {
+    for _attempt in 0..2 {
+        if !tokio::fs::try_exists(&path).await.map_err(unavailable)?
+            && let Some(current) =
+                super::thread_rollout_resolver::resolve_current_including_archived(store, thread_id)
+                    .await?
+        {
+            path = current.path;
+        }
+
+        let proposed = store
+            .resolve_attention_lineage(thread_id, path.clone())
+            .await?;
+        let ids = owners(thread_id, proposed.segments());
+        let mut target = None;
+        let mut ancestors = Vec::new();
+        for id in &ids {
+            if *id == thread_id {
+                target = Some(store.live_writer_locks.lock_lifecycle(*id).await);
+            } else {
+                ancestors.push(store.live_writer_locks.reserve_lifecycle(*id).await);
+            }
+        }
+        let mut writers = Vec::new();
+        for id in &ids {
+            writers.push(store.live_writer_locks.lock(*id).await);
+        }
+        let verified = store
+            .resolve_attention_lineage(thread_id, path.clone())
+            .await?;
+        if verified != proposed {
+            continue;
+        }
+        return Ok((
+            ReplacementGuards {
+                _target: target.expect("target is always in the owner set"),
+                _ancestors: ancestors,
+                _writers: writers,
+            },
+            verified,
+        ));
+    }
+    Err(unavailable(
+        "closed lineage changed during both capture attempts",
+    ))
+}
+
+/// Strict proof carries the complete map, including retryable immutable bindings.
+pub(super) async fn preservation_under_guards(
+    thread_id: ThreadId,
+    lineage: super::rollout_lineage::RolloutLineage,
+    allow_append_only_legacy: bool,
+) -> ThreadStoreResult<Vec<codex_protocol::attention::ThreadAttentionNotification>> {
+    let snapshot = capture_under_guards(thread_id, lineage, allow_append_only_legacy).await?;
+    let reduced =
+        crate::reduce_attention_receipts(thread_id, snapshot.notices).map_err(unavailable)?;
+    Ok(crate::attention_receipts_for_preservation(reduced))
+}
+
+// The caller owns the complete lifecycle/writer set and has revalidated the
+// lineage. Closed replacement never requests live recorder parts or locks again.
+pub(super) async fn capture_under_guards(
+    thread_id: ThreadId,
+    lineage: super::rollout_lineage::RolloutLineage,
+    allow_append_only_legacy: bool,
+) -> ThreadStoreResult<CanonicalAttentionReceipts> {
+    let handles = capture_handles(lineage).await?;
+    scan_captured(thread_id, handles, allow_append_only_legacy).await
+}
+
+type CapturedReceipts = Vec<(RolloutLineageSegment, File, u64)>;
+
+async fn capture_handles(
+    lineage: super::rollout_lineage::RolloutLineage,
+) -> ThreadStoreResult<CapturedReceipts> {
+    // Existing decoder-owned readers retain their open representation through
+    // compression/materialization. Freeze finite decoded lengths under writers.
+    tokio::task::spawn_blocking(move || {
+        lineage
+            .segments
+            .into_iter()
+            .map(|segment| {
+                let file = codex_rollout::open_rollout_seekable_prefix_reader(
+                    &segment.rollout_path,
+                    segment.end.map(|end| end.end_byte_offset),
+                )?;
+                let length = file.metadata()?.len();
+                let frontier = segment.end.map_or(length, |end| end.end_byte_offset);
+                if frontier > length {
+                    return Err(std::io::Error::other("incomplete canonical prefix"));
+                }
+                Ok((segment, file, frontier))
+            })
+            .collect::<std::io::Result<Vec<_>>>()
+    })
+    .await
+    .map_err(unavailable)?
+    .map_err(unavailable)
+}
+
+async fn scan_captured(
+    thread_id: ThreadId,
+    handles: CapturedReceipts,
+    allow_append_only_legacy: bool,
+) -> ThreadStoreResult<CanonicalAttentionReceipts> {
+    tokio::task::spawn_blocking(move || {
+        scan_with_legacy(thread_id, handles, allow_append_only_legacy)
+    })
+    .await
+    .map_err(unavailable)?
+}
+
+#[cfg(test)]
 fn scan(
     thread_id: ThreadId,
     handles: Vec<(RolloutLineageSegment, File, u64)>,
+) -> ThreadStoreResult<CanonicalAttentionReceipts> {
+    scan_with_legacy(thread_id, handles, false)
+}
+
+fn scan_with_legacy(
+    thread_id: ThreadId,
+    handles: Vec<(RolloutLineageSegment, File, u64)>,
+    allow_append_only_legacy: bool,
 ) -> ThreadStoreResult<CanonicalAttentionReceipts> {
     let mut result = CanonicalAttentionReceipts {
         thread_id,
@@ -155,7 +263,12 @@ fn scan(
                 if let RolloutItem::SessionMeta(meta) = &line.item {
                     if index == target_segment
                         && (segment.owner_thread_id != thread_id
-                            || meta.meta.attention_receipt_lifetime_version != Some(1))
+                            || !(meta.meta.attention_receipt_lifetime_version == Some(1)
+                                || (allow_append_only_legacy
+                                    && meta.meta.attention_receipt_lifetime_version.is_none()
+                                    && meta.meta.history_mode
+                                        == codex_protocol::protocol::ThreadHistoryMode::Legacy
+                                    && meta.meta.history_base.is_none())))
                     {
                         return Err(unavailable("unknown or missing receipt lifetime version"));
                     }
