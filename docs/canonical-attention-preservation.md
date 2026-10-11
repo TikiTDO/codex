@@ -15,3 +15,24 @@ Historic recovery is a required, separately planned third slice. Parseable selec
 The associative-tree boundary separates model-prefix coverage from receipt-lifetime coverage. Logical identity, persisted lifetime proof, reduced state, physical coordinates and lifecycle protection compose strict capture → reduction → staged durable receipt publication → pointer cutover → cold recovery. The counterexample is an admitted source lost after a same-ID model rewrite; exact coverage and transition contracts determine legality.
 
 Acceptance covers accepted and uncertain batches across unloaded same-ID revert, same-key and cross-key cold retries, repeated revert, wholly inherited prefixes, ordinary rollback migration, bounded-subagent migration, lexical and insertion-order reversal of held/shared-source states, identical copies, contradictory quarantine, staged-write failure, pointer-CAS failure, unknown or damaged closure, concurrent representation changes and child isolation. Use model-context APIs for paginated foreground checks. Review the complete source and focused evidence before integration. No installation, production data migration, live-provider canary or activation is part of this change.
+
+## Historic recovery and refusal
+
+Historic attention recovery depends on lifetime closure, not the amount of readable model history.
+
+| Retained record | Recovery route |
+| --- | --- |
+| Current exact-target lifetime v1 and complete strict coverage | Recover the canonical reduced receipt state. |
+| Unmarked, intact append-only legacy target with no inherited history base | Existing migration captures its whole exact-thread receipt lifetime before model selection and writes proof-bearing preserved state. |
+| Unmarked paginated target, even with readable v1 ancestors | Refuse attention; selected model ancestry does not prove that all lifetime generations survived. |
+| Unknown version, damaged source or contradictory bindings | Refuse attention; ordinary foreground parsing remains tolerant. |
+
+The legacy migration is the bounded historic repair. It retains the existing maintenance fence, sorted lifecycle/writer capture and durable publication transaction. Its strict capture occurs before ordinary rollback or bounded-subagent model selection. A successful reduced-state copy permits v1; a parseable model context or a dry-run `Eligible` result does not. This does not add an automatic rewrite or a second recovery owner.
+
+`AlreadyPaginated` is a model-format migration status, not attention readiness or a historic repair result. An empty migration progress journal is a publication/projection marker, not a backup or receipt inventory. Model-history SQLite rows are likewise projections, not lifetime receipt truth.
+
+The current reference index discovers model ancestry and retained physical files, skipping unreadable metadata. Even a hypothetical error-free inventory cannot prove that an absent committed generation never existed. A later model replacement can reference an older ancestor directly, omitting an intervening generation that admitted attention. Reading all surviving same-ID files is therefore insufficient to promote an unmarked paginated target. No marker is copied from an ancestor, and no filename, timestamp or highest identifier supplies closure.
+
+The paired falsifiers retain a readable v1 ancestor with an excluded receipt, and a same-ID intervening generation omitted by the latest model base. The latter is checked with that generation present and absent. Empty journals and successful ordinary reference-index scans must not turn either target into an empty successful ledger. Foreground context remains readable. Matching proof-bearing replacements and complete legacy migrations remain the positive controls.
+
+Source review, focused checks and integration are separate from any installation, production data migration or activation.

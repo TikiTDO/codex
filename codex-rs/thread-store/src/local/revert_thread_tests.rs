@@ -897,3 +897,329 @@ async fn canonical_attention_closed_capture_blocks_archive_until_replacement_gua
         expected
     );
 }
+
+async fn historical_replacement_without_lifetime_proof(
+    store: &LocalThreadStore,
+    db: &codex_state::StateRuntime,
+    id: ThreadId,
+    before: &str,
+) -> std::path::PathBuf {
+    let source = db.get_thread(id).await.unwrap().unwrap().rollout_path;
+    let prepared = store
+        .prepare_fork(crate::PrepareForkParams {
+            thread_id: id,
+            boundary: crate::ForkBoundary::BeforeTurn(before.into()),
+        })
+        .await
+        .unwrap();
+    let base = prepared.history_base;
+    drop(prepared);
+    let meta = codex_rollout::read_session_meta_line(&source)
+        .await
+        .unwrap()
+        .meta;
+    let (_guards, _) = super::super::attention::lock_replacement(store, id, source.clone())
+        .await
+        .unwrap();
+    let fence = store.acquire_writer_lock(id).unwrap();
+    // Reproduce the old writer: valid model base, same logical ID, no receipt copy
+    // or lifetime promise. Use the real recorder and publication CAS.
+    let staged =
+        super::create_replacement_recorder(store, meta, ThreadId::new(), base, None, fence, false)
+            .await
+            .unwrap();
+    let replacement = staged.rollout_path().to_path_buf();
+    staged.persist().await.unwrap();
+    super::stage_replacement_receipts(&staged, None)
+        .await
+        .unwrap();
+    super::publish_replacement(db, id, &source, &replacement)
+        .await
+        .unwrap();
+    replacement
+}
+
+async fn resume_historic_fixture(store: &LocalThreadStore, id: ThreadId, path: std::path::PathBuf) {
+    store
+        .resume_thread(crate::ResumeThreadParams {
+            thread_id: id,
+            rollout_path: Some(path),
+            history: None,
+            history_revision: None,
+            include_archived: false,
+            metadata: ThreadPersistenceMetadata {
+                cwd: Some(std::env::current_dir().unwrap()),
+                model_provider: "test-provider".into(),
+                memory_mode: ThreadMemoryMode::Enabled,
+            },
+        })
+        .await
+        .unwrap();
+}
+
+async fn assert_historic_refusal(
+    config: super::super::LocalThreadStoreConfig,
+    db: std::sync::Arc<codex_state::StateRuntime>,
+    id: ThreadId,
+) {
+    let path = db.get_thread(id).await.unwrap().unwrap().rollout_path;
+    let cold = LocalThreadStore::new(config, Some(db));
+    resume_historic_fixture(&cold, id, path).await;
+    let error = cold
+        .load_canonical_attention_receipts(id)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("receipt lifetime version"));
+    let foreground = cold
+        .load_latest_model_context(crate::LoadThreadHistoryParams {
+            thread_id: id,
+            include_archived: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(foreground.thread_id, id);
+    assert_eq!(turn_ids(&cold, id).await, vec!["one"]);
+    assert!(!foreground.items.iter().any(|item| matches!(
+        item, RolloutItem::EventMsg(EventMsg::TurnStarted(turn))
+            if turn.turn_id == "two" || turn.turn_id == "middle"
+    )));
+    cold.shutdown_thread(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn canonical_attention_historic_v1_ancestor_and_empty_journal_do_not_prove_target() {
+    for uncertain in [false, true] {
+        let home = TempDir::new().unwrap();
+        let config = test_config(home.path());
+        let db = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .unwrap();
+        let store = LocalThreadStore::new(config.clone(), Some(db.clone()));
+        let id = ThreadId::new();
+        create_paginated_thread(&store, id).await;
+        let expected = preservation_notices(id, uncertain);
+        let mut items = vec![
+            turn_started("one"),
+            turn_completed("one"),
+            turn_started("two"),
+        ];
+        items.extend(
+            expected
+                .iter()
+                .cloned()
+                .map(|notice| RolloutItem::EventMsg(EventMsg::ThreadAttention(notice))),
+        );
+        items.push(turn_completed("two"));
+        store
+            .append_items(AppendThreadItemsParams {
+                thread_id: id,
+                items,
+            })
+            .await
+            .unwrap();
+        let source = store.live_rollout_path(id).await.unwrap();
+        assert_eq!(
+            crate::attention_receipts_for_preservation(
+                crate::reduce_attention_receipts(
+                    id,
+                    store
+                        .load_canonical_attention_receipts(id)
+                        .await
+                        .unwrap()
+                        .notices,
+                )
+                .unwrap()
+            ),
+            expected
+        );
+        store.shutdown_thread(id).await.unwrap();
+        codex_rollout::state_db::reconcile_rollout(
+            Some(db.as_ref()),
+            &source,
+            "test-provider",
+            None,
+            &[],
+            Some(false),
+            None,
+        )
+        .await;
+        let replacement =
+            historical_replacement_without_lifetime_proof(&store, db.as_ref(), id, "two").await;
+        let index = codex_rollout::RolloutReferenceIndex::scan(home.path())
+            .await
+            .unwrap();
+        assert_eq!(index.rollouts_for_thread(id).count(), 2);
+        let replacement_id = codex_rollout::rollout_id_from_path(&replacement).unwrap();
+        let source_id = codex_rollout::rollout_id_from_path(&source).unwrap();
+        assert_eq!(
+            index.history_base(replacement_id).unwrap().thread_id,
+            source_id
+        );
+        assert_eq!(
+            codex_rollout::read_session_meta_line(&source)
+                .await
+                .unwrap()
+                .meta
+                .attention_receipt_lifetime_version,
+            Some(1)
+        );
+        assert_eq!(
+            codex_rollout::read_session_meta_line(&replacement)
+                .await
+                .unwrap()
+                .meta
+                .attention_receipt_lifetime_version,
+            None
+        );
+        // Model-format classification cannot promote receipt readiness.
+        let report = store
+            .migrate_rollouts(crate::RolloutMigrationOptions {
+                thread_ids: vec![id],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.outcomes.len(), 2);
+        assert!(
+            report
+                .outcomes
+                .iter()
+                .all(|outcome| outcome.status == crate::RolloutMigrationStatus::AlreadyPaginated)
+        );
+        assert_historic_refusal(config.clone(), db.clone(), id).await;
+        let journal = home
+            .path()
+            .join("rollout-migrations")
+            .join(format!("{id}.pending"));
+        std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+        std::fs::write(&journal, b"").unwrap();
+        assert_eq!(std::fs::metadata(&journal).unwrap().len(), 0);
+        assert_historic_refusal(config, db, id).await;
+    }
+}
+
+#[tokio::test]
+async fn canonical_attention_historic_skipped_generation_refuses_with_or_without_retained_file() {
+    for uncertain in [false, true] {
+        for remove_middle in [false, true] {
+            let home = TempDir::new().unwrap();
+            let config = test_config(home.path());
+            let db = codex_state::StateRuntime::init(
+                config.sqlite.clone(),
+                config.default_model_provider_id.clone(),
+            )
+            .await
+            .unwrap();
+            let store = LocalThreadStore::new(config.clone(), Some(db.clone()));
+            let id = ThreadId::new();
+            create_paginated_thread(&store, id).await;
+            store
+                .append_items(AppendThreadItemsParams {
+                    thread_id: id,
+                    items: vec![
+                        turn_started("one"),
+                        turn_completed("one"),
+                        turn_started("two"),
+                        turn_completed("two"),
+                        turn_started("three"),
+                        turn_completed("three"),
+                    ],
+                })
+                .await
+                .unwrap();
+            let root = store.live_rollout_path(id).await.unwrap();
+            store.shutdown_thread(id).await.unwrap();
+            codex_rollout::state_db::reconcile_rollout(
+                Some(db.as_ref()),
+                &root,
+                "test-provider",
+                None,
+                &[],
+                Some(false),
+                None,
+            )
+            .await;
+            store
+                .revert_thread(RevertThreadParams {
+                    thread_id: id,
+                    before_turn_id: "three".into(),
+                    multi_agent_version: None,
+                })
+                .await
+                .unwrap();
+            let middle_path = db.get_thread(id).await.unwrap().unwrap().rollout_path;
+            let middle = LocalThreadStore::new(config.clone(), Some(db.clone()));
+            resume_historic_fixture(&middle, id, middle_path.clone()).await;
+            let expected = preservation_notices(id, uncertain);
+            let mut items = vec![turn_started("middle")];
+            items.extend(
+                expected
+                    .iter()
+                    .cloned()
+                    .map(|notice| RolloutItem::EventMsg(EventMsg::ThreadAttention(notice))),
+            );
+            items.push(turn_completed("middle"));
+            middle
+                .append_items(AppendThreadItemsParams {
+                    thread_id: id,
+                    items,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                crate::attention_receipts_for_preservation(
+                    crate::reduce_attention_receipts(
+                        id,
+                        middle
+                            .load_canonical_attention_receipts(id)
+                            .await
+                            .unwrap()
+                            .notices,
+                    )
+                    .unwrap()
+                ),
+                expected
+            );
+            middle.shutdown_thread(id).await.unwrap();
+            codex_rollout::state_db::reconcile_rollout(
+                Some(db.as_ref()),
+                &middle_path,
+                "test-provider",
+                None,
+                &[],
+                Some(false),
+                None,
+            )
+            .await;
+            let latest =
+                historical_replacement_without_lifetime_proof(&middle, db.as_ref(), id, "two")
+                    .await;
+            let meta = codex_rollout::read_session_meta_line(&latest)
+                .await
+                .unwrap()
+                .meta;
+            assert_eq!(
+                meta.history_base.unwrap().thread_id,
+                codex_rollout::rollout_id_from_path(&root).unwrap()
+            );
+            assert_ne!(
+                meta.history_base.unwrap().thread_id,
+                codex_rollout::rollout_id_from_path(&middle_path).unwrap()
+            );
+            if remove_middle {
+                std::fs::remove_file(&middle_path).unwrap();
+            }
+            let index = codex_rollout::RolloutReferenceIndex::scan(home.path())
+                .await
+                .unwrap();
+            assert_eq!(
+                index.rollouts_for_thread(id).count(),
+                if remove_middle { 2 } else { 3 }
+            );
+            assert_historic_refusal(config, db, id).await;
+        }
+    }
+}
