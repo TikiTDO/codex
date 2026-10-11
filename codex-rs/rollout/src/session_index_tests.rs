@@ -60,6 +60,7 @@ fn write_rollout_with_source_and_provider(
                 history_mode: Default::default(),
                 history_base: None,
                 subagent_history_start_ordinal: None,
+                attention_receipt_lifetime_version: None,
                 multi_agent_version: None,
                 context_window: None,
             },

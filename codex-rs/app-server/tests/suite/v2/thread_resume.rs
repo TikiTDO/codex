@@ -4460,6 +4460,7 @@ async fn thread_resume_prefers_persisted_git_metadata_for_local_threads() -> Res
         history_mode: Default::default(),
         history_base: None,
         subagent_history_start_ordinal: None,
+        attention_receipt_lifetime_version: None,
         multi_agent_version: None,
         context_window: None,
     };

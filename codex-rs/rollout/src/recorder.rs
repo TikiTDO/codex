@@ -118,6 +118,7 @@ pub enum RolloutRecorderParams {
         history_mode: ThreadHistoryMode,
         history_base: Option<HistoryPosition>,
         subagent_history_start_ordinal: Option<u64>,
+        attention_receipt_lifetime_version: Option<u32>,
         initial_window_id: Option<String>,
     },
     Resume {
@@ -224,6 +225,7 @@ impl RolloutRecorderParams {
             history_mode: Default::default(),
             history_base: None,
             subagent_history_start_ordinal: None,
+            attention_receipt_lifetime_version: None,
             initial_window_id: None,
         }
     }
@@ -347,6 +349,18 @@ impl RolloutRecorderParams {
         } = &mut self
         {
             *ordinal = subagent_history_start_ordinal;
+        }
+        self
+    }
+
+    /// Set only when the caller proves the exact logical receipt lifetime.
+    pub fn with_attention_receipt_lifetime_version(mut self, version: Option<u32>) -> Self {
+        if let Self::Create {
+            attention_receipt_lifetime_version,
+            ..
+        } = &mut self
+        {
+            *attention_receipt_lifetime_version = version;
         }
         self
     }
@@ -917,6 +931,7 @@ impl RolloutRecorder {
                 history_mode,
                 history_base,
                 subagent_history_start_ordinal,
+                attention_receipt_lifetime_version,
                 initial_window_id,
             } => {
                 let ordinal_state =
@@ -963,6 +978,7 @@ impl RolloutRecorder {
                     history_mode,
                     history_base,
                     subagent_history_start_ordinal,
+                    attention_receipt_lifetime_version,
                     multi_agent_version,
                     context_window: initial_window_id.map(SessionContextWindow::new),
                 };

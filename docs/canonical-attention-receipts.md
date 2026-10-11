@@ -71,3 +71,35 @@ Focused falsifiers must cover:
 - First idle admission without seeded user input and listing/retry after reconnect.
 
 These checks complement the whole plan's tool-adapter, pending-question, TUI, export, provider and disposable canary acceptance. Focused unit results do not substitute for API persistence, model ingestion or activation evidence. The strict representation-handle contract and transaction lifetime must be implemented explicitly; compiler feedback cannot weaken them.
+
+## Lifetime receipts and context replacement — reopened relation
+
+Current model-context lineage is not lifetime receipt coverage. An unloaded same-thread revert can exclude an admitted source while keeping the same logical ID; legacy rollback and bounded-subagent migration can also filter receipt events. Strictly parsing the resulting selected model prefix cannot establish an empty receipt ledger. This relation requires independent plan review before the affected implementation can be integrated.
+
+The selected correction keeps receipt state in canonical rollout events. Before a same-ID replacement selects a shorter model prefix, the existing strict capture and reducer obtain the full exact-thread state, including retryable Held bindings. The replacement writes one current notice per batch independently of its retained model prefix, flushes and closes that staged recorder, then performs the existing pointer CAS. A failed CAS leaves the original authoritative and removes only the unpublished replacement. Repeated revert carries the preserved state again, including revert wholly into parent context. A child with another logical ID remains isolated.
+
+The capture owner supplies a closed-writer, caller-held-guard path as well as its live-session path. Replacement resolves its logical-owner set first, acquires sorted lifecycle guards (exclusive target and shared ancestors), then sorted writers, and revalidates membership with at most one recapture. It cannot call a public method that reacquires its writer lock. The sole lineage walker, retained representation handles, strict decoder and finite frontiers remain the owners.
+
+Canonical migration preserves attention events independently of rollback instruction boundaries. Bounded-subagent migration also preserves the exact target's full receipt state alongside selected model context. Both validate the pinned source and preserved bindings before publishing the staged replacement. They reuse strict receipt capture; they do not add a receipt sidecar, a second lineage resolver or SQL admission truth.
+
+An older writer's replacement is not assumed complete. Existing rollout ownership/index and retained representations may permit bounded repair; their actual completeness must be proved. If that closure is unavailable, attention returns structured unavailable while ordinary foreground remains usable. A migration progress journal or valid current file is not evidence of retained lifetime receipt contents. This remains an owned repair-or-refuse requirement, not a deletion of legacy support.
+
+Additional falsifiers: Accepted and uncertain receipts followed by unload, revert before their turn, cold resume and same-/cross-key retry; repeated revert; revert into parent history; rollback then migration; bounded-subagent migration; staged write failure and failed CAS; older replacements with unprovable coverage refuse attention. No blanket revert prohibition or live activation follows from this correction.
+
+The selected historic discriminator is an internal receipt-lifetime contract version in canonical SessionMeta and recorder creation. New exact lifecycles carry version 1; same-ID replacement preserves it only after durable full receipt preservation, and migration sets it only after strict full-source capture. Unknown versions refuse. Unmarked paginated historical output cannot become Ready from a valid current file alone. The existing migration journal is an empty progress marker, and the ordinary index skips bad metadata; neither establishes historical completeness. Append-only legacy source may be read in full under its format contract before conversion. The version is storage evidence, not another admission owner or an authentication credential. This deterministic boundary remains part of the reopened plan review.
+
+
+### Reduced-state copy order
+
+A retryable Held batch A can retain its immutable binding while batch B subsequently quarantines the same source. The resulting latest-state map is valid, but arbitrary batch-ID/map replay can put B before A and fail chronological validation. A display-sorted snapshot is therefore not a preservation sequence.
+
+The selected preservation order writes nonquarantining retryable Held states first, then Accepted/AdmissionUncertain states, with batch ID only a deterministic tie-breaker within each group. The shared chronological reducer skips an exactly identical previously observed notice before cross-key quarantine checks. Immutable binding checks, Accepted outcome consistency and refusal of two quarantining keys on one source remain. Runtime validation prevents A from writing a changed Held after B quarantines their source, so a retained prefix containing B already includes the unchanged latest A; copying it again is an identical observation. A prefix containing neither exact-target notice restores Held before quarantine. This uses existing canonical events without a second owner or ordinal schema.
+
+Additional falsifiers cover lexical B-before-A, arbitrary map insertion, Accepted and uncertain B, retained prefixes with both or neither target notices, repeated replacement, and contradictory quarantine still refused. This ordering refinement is part of the pending lifetime design review; it has not been implemented or tested.
+
+
+## Reviewed first slice
+
+The first slice admits attention only when the newest exact-target SessionMeta carries receipt-lifetime contract version1. Genuine new logical lifecycles explicitly write it; a generic recorder constructor defaults to unproved. Unknown or missing versions report structured attention unavailable while foreground remains tolerant. Parent lifecycle versions do not become a new child's admission identity.
+
+Same-ID revert and legacy migration deliberately omit that marker in this slice. They keep ordinary foreground operations usable and prevent recovery from claiming empty receipt state after selecting a shorter model context. Full guarded preservation, historic repair and transition-safe reduced-copy ordering above remain the separately held next slice; the first slice does not satisfy those requirements. Source review and focused falsifiers remain required before integration or activation.

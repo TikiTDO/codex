@@ -6879,6 +6879,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     )
     .expect("initialize test hooks");
     let services = SessionServices {
+        attention_ledger: Arc::new(crate::attention::AttentionLedger::default()),
         mcp_runtime,
         mcp_handler_cache: Default::default(),
         unified_exec_manager: UnifiedExecProcessManager::new(
@@ -9145,6 +9146,7 @@ where
     )
     .expect("initialize test hooks");
     let services = SessionServices {
+        attention_ledger: Arc::new(crate::attention::AttentionLedger::default()),
         mcp_runtime,
         mcp_handler_cache: Default::default(),
         unified_exec_manager: UnifiedExecProcessManager::new(
@@ -13494,4 +13496,397 @@ async fn clear_context_refuses_while_a_turn_runs() {
         )
         .contains("kept")
     );
+}
+
+fn canonical_attention_request(
+    session: &Session,
+    batch: &str,
+    source: &str,
+) -> (
+    codex_protocol::attention::ThreadAttentionNotification,
+    codex_protocol::turn_input::TurnInputRequest,
+) {
+    use codex_protocol::attention::*;
+    let notice = ThreadAttentionNotification {
+        thread_id: session.thread_id.to_string(),
+        batch_id: batch.into(),
+        origins: vec![ThreadAttentionOrigin {
+            kind: ThreadAttentionOriginKind::Peer,
+            source_ref: source.into(),
+            sender: None,
+        }],
+        admission: ThreadAttentionResponse::Held {
+            reason: ThreadAttentionHeldReason::AdmissionUncertain,
+        },
+    };
+    let context = crate::context::InternalModelContextFragment::new(
+        crate::context::InternalContextSource::from_static("attention"),
+        "receipt fixture",
+    );
+    let mut request = codex_protocol::turn_input::TurnInputRequest::new(
+        codex_protocol::turn_input::TurnInput::ResponseItem(
+            crate::context::ContextualUserFragment::into(context),
+        ),
+    );
+    request.background_attention = true;
+    request.start.turn_trigger = Some("attention".into());
+    (notice, request)
+}
+
+#[tokio::test]
+async fn canonical_attention_first_idle_receipt_is_durable_and_deduplicated_without_user_input() {
+    use codex_protocol::attention::*;
+    let (mut session, _, events) = make_session_and_context_with_rx().await;
+    let path = open_thread_persistence(
+        Arc::get_mut(&mut session).expect("unique attention fixture session"),
+    )
+    .await;
+    assert!(!path.exists());
+
+    let (notice, request) = canonical_attention_request(&session, "first", "fixture:one");
+    let result = crate::attention::handle(
+        &session,
+        notice.clone(),
+        request.clone(),
+        false,
+        "attention-fixture".into(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        result,
+        ThreadAttentionResponse::Accepted {
+            delivery: ThreadAttentionDelivery::Started,
+            ..
+        }
+    ));
+    assert_eq!(
+        crate::attention::handle(&session, notice, request, false, "duplicate-fixture".into())
+            .await
+            .unwrap(),
+        result
+    );
+    let snapshot = session
+        .services
+        .attention_ledger
+        .snapshot(session.thread_id, session.live_thread())
+        .await
+        .unwrap();
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].admission, result);
+    let (items, _, errors) = RolloutRecorder::load_rollout_items(&path).await.unwrap();
+    assert_eq!(errors, 0);
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadAttention(_))))
+            .count(),
+        2
+    );
+    let (overlap, request) = canonical_attention_request(&session, "changed-key", "fixture:one");
+    assert!(matches!(
+        crate::attention::handle(&session, overlap, request, false, "overlap".into()).await,
+        Err(AttentionError::InvalidBinding(_))
+    ));
+    crate::session::handlers::shutdown_session_runtime(&session).await;
+    session.live_thread().unwrap().shutdown().await.unwrap();
+    drop(events);
+}
+
+#[tokio::test]
+async fn canonical_attention_retryable_hold_keeps_binding_and_context_clear_keeps_receipts() {
+    let (mut session, _, events) = make_session_and_context_with_rx().await;
+    open_thread_persistence(Arc::get_mut(&mut session).expect("unique attention fixture session"))
+        .await;
+
+    let (notice, request) = canonical_attention_request(&session, "blocked", "fixture:one");
+    let result = crate::attention::handle(
+        &session,
+        notice.clone(),
+        request.clone(),
+        true,
+        "blocked".into(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        result,
+        codex_protocol::attention::ThreadAttentionResponse::Held {
+            reason: codex_protocol::attention::ThreadAttentionHeldReason::BlockingRequest
+        }
+    ));
+    crate::session::handlers::clear_context(&session, "clear-fixture".into()).await;
+    let recovered = session
+        .services
+        .attention_ledger
+        .snapshot(session.thread_id, session.live_thread())
+        .await
+        .unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].origins, notice.origins);
+    crate::session::handlers::shutdown_session_runtime(&session).await;
+    session.live_thread().unwrap().shutdown().await.unwrap();
+    drop(events);
+}
+
+#[tokio::test]
+async fn canonical_attention_dispatch_settles_after_waiter_drop_and_stops_behind_shutdown() {
+    use codex_protocol::attention::{AttentionError, ThreadAttentionResponse};
+    for shutdown_first in [false, true] {
+        let (mut session, _, events) = make_session_and_context_with_rx().await;
+        let path = open_thread_persistence(
+            Arc::get_mut(&mut session).expect("unique attention fixture session"),
+        )
+        .await;
+        let config = session.get_config().await;
+
+        let (sender, receiver) = async_channel::bounded(8);
+        let (notice, request) = canonical_attention_request(&session, "queued", "fixture:one");
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        let submission = |id: &str, op| super::Submission {
+            id: id.into(),
+            op,
+            turn_extension_init: None,
+            trace: None,
+            parent_turn_id: None,
+            root_turn_id: None,
+            residency_guard: None,
+        };
+        if shutdown_first {
+            sender
+                .send(submission("shutdown", Op::Shutdown))
+                .await
+                .unwrap();
+        }
+        sender
+            .send(submission(
+                "queued-attention",
+                Op::Attention {
+                    notice,
+                    request: Box::new(request),
+                    blocking_request: false,
+                    reply,
+                },
+            ))
+            .await
+            .unwrap();
+        if !shutdown_first {
+            // Dropping observation cannot retract this queued durable transaction.
+            drop(reply_rx);
+            sender
+                .send(submission("shutdown", Op::Shutdown))
+                .await
+                .unwrap();
+            super::handlers::submission_loop(session.clone(), config, receiver).await;
+            let (items, _, _) = RolloutRecorder::load_rollout_items(&path).await.unwrap();
+            let notices = items
+                .iter()
+                .filter_map(|item| match item {
+                    RolloutItem::EventMsg(EventMsg::ThreadAttention(notice)) => Some(notice),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(notices.len(), 2);
+            assert!(matches!(
+                notices[1].admission,
+                ThreadAttentionResponse::Accepted { .. }
+            ));
+        } else {
+            super::handlers::submission_loop(session.clone(), config, receiver).await;
+            assert!(matches!(
+                reply_rx.await.unwrap(),
+                Err(AttentionError::Stopped)
+            ));
+            if path.exists() {
+                let (items, _, _) = RolloutRecorder::load_rollout_items(&path).await.unwrap();
+                assert!(!items.iter().any(|item| matches!(
+                    item,
+                    RolloutItem::EventMsg(EventMsg::ThreadAttention(_))
+                )));
+            }
+        }
+        assert!(matches!(
+            session
+                .services
+                .attention_ledger
+                .snapshot(session.thread_id, session.live_thread())
+                .await,
+            Err(AttentionError::Stopped)
+        ));
+        drop(events);
+    }
+}
+
+#[tokio::test]
+async fn canonical_attention_intent_write_failure_never_starts_a_turn_or_frees_sources() {
+    let (mut session, _, events) = make_session_and_context_with_rx().await;
+    open_thread_persistence(Arc::get_mut(&mut session).expect("unique attention fixture session"))
+        .await;
+    session
+        .services
+        .attention_ledger
+        .snapshot(session.thread_id, session.live_thread())
+        .await
+        .unwrap();
+    // Actual acquired store loses its writer before intent: every append must fail.
+    session.live_thread().unwrap().shutdown().await.unwrap();
+
+    let (notice, request) = canonical_attention_request(&session, "failed", "fixture:one");
+    assert!(
+        crate::attention::handle(&session, notice, request, false, "failed".into())
+            .await
+            .is_err()
+    );
+    assert!(session.active_turn.lock().await.is_none());
+    assert!(
+        session
+            .services
+            .attention_ledger
+            .snapshot(session.thread_id, session.live_thread())
+            .await
+            .is_err()
+    );
+    let (new_key, request) = canonical_attention_request(&session, "another", "fixture:one");
+    assert!(
+        crate::attention::handle(&session, new_key, request, false, "another".into())
+            .await
+            .is_err()
+    );
+    drop(events);
+}
+
+#[tokio::test]
+async fn canonical_attention_concurrent_duplicate_and_overlap_admit_once() {
+    use codex_protocol::attention::{AttentionError, ThreadAttentionResponse};
+    let (mut session, _, events) = make_session_and_context_with_rx().await;
+    let path = open_thread_persistence(
+        Arc::get_mut(&mut session).expect("unique attention fixture session"),
+    )
+    .await;
+
+    let (notice, request) = canonical_attention_request(&session, "same", "fixture:concurrent");
+    let (first, duplicate) = tokio::join!(
+        crate::attention::handle(
+            &session,
+            notice.clone(),
+            request.clone(),
+            false,
+            "first".into()
+        ),
+        crate::attention::handle(&session, notice, request, false, "duplicate".into()),
+    );
+    let first = first.unwrap();
+    assert!(matches!(first, ThreadAttentionResponse::Accepted { .. }));
+    assert_eq!(duplicate.unwrap(), first);
+    let (overlap, request) = canonical_attention_request(&session, "other", "fixture:concurrent");
+    assert!(matches!(
+        crate::attention::handle(&session, overlap, request, false, "other".into()).await,
+        Err(AttentionError::InvalidBinding(_))
+    ));
+    let (items, _, errors) = RolloutRecorder::load_rollout_items(&path).await.unwrap();
+    assert_eq!(errors, 0);
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadAttention(_))))
+            .count(),
+        2
+    );
+    // A new owner instance must recover the same result from actual canonical bytes.
+    let recovered = crate::attention::AttentionLedger::default()
+        .snapshot(session.thread_id, session.live_thread())
+        .await
+        .unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].admission, first);
+    super::handlers::shutdown_session_runtime(&session).await;
+    session.live_thread().unwrap().shutdown().await.unwrap();
+    drop(events);
+}
+
+#[tokio::test]
+async fn canonical_attention_channel_close_closes_ledger_and_settles_prior_request() {
+    use codex_protocol::attention::{AttentionError, ThreadAttentionResponse};
+    let (mut session, _, events) = make_session_and_context_with_rx().await;
+    let path = open_thread_persistence(
+        Arc::get_mut(&mut session).expect("unique attention fixture session"),
+    )
+    .await;
+    let config = session.get_config().await;
+
+    let (sender, receiver) = async_channel::bounded(1);
+    let (notice, request) = canonical_attention_request(&session, "closed", "fixture:channel");
+    let (reply, reply_rx) = tokio::sync::oneshot::channel();
+    sender
+        .send(super::Submission {
+            id: "closed".into(),
+            op: Op::Attention {
+                notice,
+                request: Box::new(request),
+                blocking_request: true,
+                reply,
+            },
+            turn_extension_init: None,
+            trace: None,
+            parent_turn_id: None,
+            root_turn_id: None,
+            residency_guard: None,
+        })
+        .await
+        .unwrap();
+    drop(sender);
+    super::handlers::submission_loop(session.clone(), config, receiver).await;
+    assert!(matches!(
+        reply_rx.await.unwrap().unwrap(),
+        ThreadAttentionResponse::Held { .. }
+    ));
+    assert!(matches!(
+        session
+            .services
+            .attention_ledger
+            .snapshot(session.thread_id, session.live_thread())
+            .await,
+        Err(AttentionError::Stopped)
+    ));
+    let (items, _, errors) = RolloutRecorder::load_rollout_items(&path).await.unwrap();
+    assert_eq!(errors, 0);
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadAttention(_))))
+            .count(),
+        2
+    );
+    drop(events);
+}
+
+#[tokio::test]
+async fn canonical_attention_nonactive_suspension_does_not_close_admission() {
+    let (mut session, _, events) = make_session_and_context_with_rx().await;
+    open_thread_persistence(Arc::get_mut(&mut session).expect("unique attention fixture session"))
+        .await;
+
+    assert!(matches!(
+        super::turn_suspension::suspend_turn_and_shutdown(&session, "inactive".into())
+            .await
+            .unwrap(),
+        codex_protocol::turn_input::SuspendTurnOutcome::NotActive
+    ));
+    let (notice, request) = canonical_attention_request(&session, "after", "fixture:suspension");
+    crate::attention::handle(&session, notice, request, true, "after".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .services
+            .attention_ledger
+            .snapshot(session.thread_id, session.live_thread())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    super::handlers::shutdown_session_runtime(&session).await;
+    session.live_thread().unwrap().shutdown().await.unwrap();
+    drop(events);
 }

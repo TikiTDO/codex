@@ -185,6 +185,9 @@ async fn create_replacement_recorder(
     .with_selected_capability_roots(source_meta.selected_capability_roots)
     .with_runtime_workspace_roots(source_meta.runtime_workspace_roots)
     .with_multi_agent_version(source_meta.multi_agent_version)
+    // Model-prefix replacement does not yet preserve the full receipt lifetime.
+    // Keep ordinary revert usable, but never stamp a fresh empty attention proof.
+    .with_attention_receipt_lifetime_version(None)
     .with_history_mode(ThreadHistoryMode::Paginated)
     .with_history_base(history_base)
     .with_forked_from_ordinal_exclusive(forked_from_ordinal_exclusive)
