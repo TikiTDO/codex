@@ -38,7 +38,9 @@ One Core ledger mutex serializes same-thread receipt transitions, overlap checks
 
 Keep the accepted origin-validation and source-overlap semantics. An unchanged batch returns an existing Accepted or uncertain outcome without scheduling again. Changed origins refuse. Accepted/uncertain sources remain quarantined across alternative keys. A retryable Held outcome can retry only its original immutable batch.
 
-Each submission is a Core-owned finite transaction. Canceling or disconnecting its RPC waiter cancels observation, not the transaction. Session teardown first closes admission, then waits for owned transactions to settle before releasing the writer. A process restart reconstructs durable intent. This lifetime management does not add a recurring worker or turn scheduler.
+The existing Core submission loop owns the complete finite transaction through a typed internal operation, alongside its existing turn-input and shutdown operations. After validation and durable intent, its handler invokes existing running admission or calls the existing idle turn-input handler directly. It never queues another operation on its own loop and waits for that reply: doing so while shutdown waits for settlement could deadlock.
+
+Canceling before enqueue owns no transaction and schedules nothing. After enqueue, canceling or disconnecting the RPC waiter cancels observation, not dispatch or settlement. A transaction processed before shutdown finishes settlement before the loop processes shutdown. Explicit shutdown, channel-close cleanup and successful root suspension close new admission and release persistence only after the current handler finishes. Requests left behind a terminal boundary that never reached intent are provably unadmitted; return stopped/draining rather than inventing an uncertain receipt. A failed suspension keeps the ledger usable. A process restart reconstructs durable intent. This uses the existing scheduler and loop, with no recurring worker.
 
 | Boundary | Required behavior |
 | --- | --- |
@@ -63,6 +65,7 @@ Focused falsifiers must cover:
 - Fork isolation and immutable ancestor cutoffs.
 - Concurrent same-key/overlapping-source requests admit at most once; ordinary foreground still uses its existing scheduler.
 - RPC cancellation before intent, after intent, after admission and before reply; session shutdown and process restart retain settlement or uncertainty.
+- Attention/shutdown ordering in both directions, successful suspension and channel closure: no self-wait, no writer use after release, and no uncertain receipt for a request that never reached intent.
 - Intent/final persistence failure, transaction panic and missed notifications do not permit re-admission.
 - Bounded membership recapture and lifecycle-before-writer ordering, including different logical/physical IDs and concurrent archive/revert/representation replacement.
 - First idle admission without seeded user input and listing/retry after reconnect.
