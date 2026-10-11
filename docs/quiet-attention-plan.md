@@ -156,6 +156,21 @@ owner build remains in the full acceptance scope; schema application/adoption is
 a separate effect gate. Preserve v1 grants and ordinary native approval behavior;
 new v2 writes are not automatically approved.
 
+Native attention batch/source quarantine and external tool operation ID/digest are
+separate idempotency domains. An Accepted native receipt does not prove Desk
+publication, cursor movement or question closure; a completed external operation
+does not settle native admission. References may relate the records, never replace
+either owner's settlement. Each capability has independent readiness: an
+unavailable attention ledger does not disable ordinary admitted MCP operations,
+and missing tools cannot route through internal UserInput or native questions.
+
+Core keeps lifecycle receipts; external semantic owners keep operation journals
+and cursor state. Neither is model context or proof of known-empty state for the
+other. Native owned transactions and external owner journals survive lost
+observers/timeouts independently; reconcile with the correct owner. Reused MCP
+transport/descriptors cannot transfer another invocation's workspace/term
+authority. Existing native scheduler approval/question blockers remain in force.
+
 ### 3. Complete source routing and operator controls
 
 The adapter's journal and native transport are independently reviewed helpers,

@@ -125,6 +125,43 @@ contract as part of the full scope; until then return unsupported with the missi
 owner, not read-only success or a legacy fallback. Database application and cursor
 adoption remain separate effect gates.
 
+The implementation owner for normalized progression is the existing `bin/cc`
+family and registry/database owner, not Core. Select an isolated
+`bin/_families/cc/progress_v2.py` semantic module reached by the fixed machine
+grammar `cc progress-v2 status|adopt|catchup --request-json JSON --json`. The
+projection builds JSON from the closed tool schema; it cannot accept caller argv.
+Existing read/query and registry authorization logic is reused, not reimplemented
+in the MCP server. The tool stream owns this finite source deliverable and its
+disposable validation; it is not deferred to the receipt stream.
+
+Add owner migrations for `observatory_next.cc_tool_checkpoints_v2`,
+`cc_tool_cursors_v2` and `cc_tool_operations_v2`. Checkpoints name immutable
+owner-admitted normalized source/epoch bindings. Cursor keys bind exact reader,
+channel/view digest and adoption epoch, with per-writer source positions/version.
+Operation keys bind exact reader and operation UUID to request digest and durable
+captured result/before-after positions. No table adopts or overwrites old cursor
+state. Adoption epoch is stable cursor identity, distinct from each read's changing
+result epoch/horizon. A changed view/source epoch needs explicit owner reconciliation,
+not an automatic reinterpretation of stored positions.
+
+Catchup is one database-owner transaction/function: authorize the reader/view,
+replay an existing identical operation or refuse a changed digest, lock the cursor,
+capture the admitted normalized source-prefix snapshot, select bounded oldest-first
+records, and atomically store result plus new captured positions. Concurrent calls
+serialize at that cursor; an operation-ID race replays the winning immutable result.
+Advance only certified complete captured source prefixes, leaving omitted writers
+and frontiers unchanged. Unsealed/mismatched coverage holds progression without
+disabling otherwise readable now/since. The result carries actual before/after
+positions and coverage, not a claim that current intake is absent. Status and
+replay inspect these owner records; a lost reply cannot advance a second time.
+
+Adopt consumes an already admitted checkpoint through that same owner's guarded
+transaction, initializes a new v2 cursor and records its operation result. It
+cannot create checkpoint approval from a model request. Unsupported checkpoint,
+identity, schema, epoch or complete-prefix capability refuses before changing a
+cursor. Implementing migrations/functions does not authorize applying them or
+admitting a production checkpoint; those remain explicit later gates.
+
 ## Request, result and settlement
 
 Write/cursor calls require a canonical UUID operation ID and immutable normalized
