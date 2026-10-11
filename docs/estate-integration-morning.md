@@ -64,7 +64,7 @@ The operator-facing matrix must cover these relations:
   their distinct effects. Disposable cursor tests use admitted isolated bindings,
   not production checkpoint adoption or migration application.
 - Operator-direct bypass, peer-direct timing, and ordinary batching preserve the
-  selected policy. Capture all three timing controls, their reload/refusal state,
+  selected policy. Capture frequency, batching, and listened rooms, their reload/refusal state,
   captured source membership, and observed timing rather than assuming settings.
 - An unchanged finished monitor or an idle no-task state does not generate an
   empty recurring wake. Suppressing the receiver, deleting watches, swallowing
@@ -75,6 +75,33 @@ receipt separate. Missing coverage means unobserved or held, not no activity.
 Timeout/uncertainty follows the relevant owner's safe status/reconciliation route.
 Any required fixture seam outside the acceptance stream's custody returns to its
 owner before editing; it does not license a parallel backend.
+
+### Staged receipt readiness
+
+When the reviewed candidate uses the marker/refusal slice, distinguish these
+operator outcomes rather than calling every resumable thread attention-ready:
+
+- A genuinely new exact lifecycle must persist its supported receipt-lifetime
+  version before first idle admission. A new fork has its own admission identity;
+  an ancestor's receipts do not authorize or quarantine that child.
+- Cold resume of a marked, unchanged lifecycle must recover its receipts through
+  the strict owner. Missing or unknown versions, damaged history, and incomplete
+  proof must yield structured attention unavailable, not an empty ready ledger.
+- In the refusal slice, same-ID revert and migration leave replacements unmarked.
+  Verify both attention unavailable and ordinary foreground usability, including
+  cold resume. Successful foreground use does not prove attention recovery.
+
+Full lifetime preservation across replacement remains required later work, with
+its complete falsifiers retained. A passing refusal row demonstrates a safe
+boundary, not completed preservation or full product acceptance. Do not create a
+new term, seed a user turn, or silently change identity to bypass an unavailable
+exact-session receiver. The morning handoff must state when the supported resume
+path cannot yet provide attention for an existing term.
+
+Similarly, inspect the actual selected tool catalog. A command available through
+the CLI is not necessarily exposed by its MCP profile. Mark an absent advancing
+CC operation unsupported; do not substitute a cursor-neutral read and call it
+catch-up. Approved future schemas are not installed capabilities.
 
 ## Context and runtime economy
 
