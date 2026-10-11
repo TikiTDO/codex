@@ -36,8 +36,8 @@ data resolved by existing owners, not caller-selected authority.
 
 Keep the existing 5,000-byte normalized-input-schema policy; do not raise it as
 an unmeasured precaution. Generate and measure every schema before admission.
-A design-only six-family specimen measures 147, 1,035, 3,518, 978, 860 and 941
-UTF-8 schema bytes, respectively (7,479 total; its MCP descriptors total 8,760).
+A design-only six-family specimen measures 147, 1,427, 4,743, 1,342, 1,187 and
+1,323 UTF-8 schema bytes, respectively (10,169 total; MCP descriptors 11,511).
 This specimen is not the final owner grammar, native descriptor or token count:
 owner string/link/source bounds and normalization still need closure. It shows
 that grouping alone does not require a 32-KB ceiling. Use concise descriptions,
@@ -55,6 +55,20 @@ The complete [design-only specimen](fixtures/estate-tool-schema-design.json) and
 its [byte receipt](fixtures/estate-tool-schema-size-measurement.json) are review
 artifacts, not a launcher-selectable manifest. Counts use compact UTF-8 JSON
 (`ensure_ascii=false`, separators `,` / `:`), not the pretty-printed file size.
+
+Size is not the only schema transformation. The current native
+`tools/src/json_schema/types.rs::JsonSchema` omits `minLength`, `pattern`, numeric
+limits and `maxItems` even below the compaction ceiling. Keep explicit bounds in
+the owner manifest/validator and in concise supported descriptions; retain their
+model-visible annotations in direct and code-mode descriptors. Refs may hide
+definition descriptions in code-mode type declarations, so UUID-format rules
+also appear in the tool description. Do not claim unsupported JSON keywords were
+preserved or that the provider enforces the grammar. Closed branches, required
+fields, discriminators, definitions and bound annotations are the admission
+comparison; the semantic owner independently validates every input before effects.
+This uses the existing native subset, not a global parser relaxation. A missing
+annotation or widened branch holds profile admission. The initial 3,518-byte
+specimen lacked those annotations; its smaller size is superseded, not savings.
 
 | tool | operations | class |
 | --- | --- | --- |

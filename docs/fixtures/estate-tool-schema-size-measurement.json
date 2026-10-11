@@ -8,33 +8,33 @@
     },
     {
       "tool": "desk_read_v2",
-      "input_schema_utf8_bytes": 1035,
-      "mcp_tool_descriptor_utf8_bytes": 1233
+      "input_schema_utf8_bytes": 1427,
+      "mcp_tool_descriptor_utf8_bytes": 1625
     },
     {
       "tool": "desk_act_v2",
-      "input_schema_utf8_bytes": 3518,
-      "mcp_tool_descriptor_utf8_bytes": 3796
+      "input_schema_utf8_bytes": 4743,
+      "mcp_tool_descriptor_utf8_bytes": 5082
     },
     {
       "tool": "cc_read_v2",
-      "input_schema_utf8_bytes": 978,
-      "mcp_tool_descriptor_utf8_bytes": 1175
+      "input_schema_utf8_bytes": 1342,
+      "mcp_tool_descriptor_utf8_bytes": 1539
     },
     {
       "tool": "cc_progress_v2",
-      "input_schema_utf8_bytes": 860,
-      "mcp_tool_descriptor_utf8_bytes": 1093
+      "input_schema_utf8_bytes": 1187,
+      "mcp_tool_descriptor_utf8_bytes": 1420
     },
     {
       "tool": "search_v2",
-      "input_schema_utf8_bytes": 941,
-      "mcp_tool_descriptor_utf8_bytes": 1146
+      "input_schema_utf8_bytes": 1323,
+      "mcp_tool_descriptor_utf8_bytes": 1528
     }
   ],
-  "total_input_schema_utf8_bytes": 7479,
-  "total_mcp_tool_descriptor_utf8_bytes": 8760,
-  "largest_input_schema_utf8_bytes": 3518,
+  "total_input_schema_utf8_bytes": 10169,
+  "total_mcp_tool_descriptor_utf8_bytes": 11511,
+  "largest_input_schema_utf8_bytes": 4743,
   "default_schema_policy_utf8_bytes": 5000,
-  "limits": "String/link/option/source-owner bounds and representation closure still require exact grammar and native descriptor capture. The generated strings use only observed nonempty owner constraints, not invented maxima."
+  "limits": "Native JsonSchema drops minLength/pattern/numeric limits/maxItems; bounds are repeated as preserved field descriptions and enforced by the semantic owner, not by provider registration. String/link/option/source-owner bounds and representation closure still require exact grammar and native descriptor capture. The generated strings use only observed nonempty owner constraints, not invented maxima."
 }

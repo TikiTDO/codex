@@ -42,11 +42,13 @@
               "count": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 500
+                "maximum": 500,
+                "description": "1..500; owner validates."
               },
               "room": {
                 "type": "string",
-                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+                "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                "description": "Room: 1..64 ASCII letters/digits/dot/underscore/hyphen; owner resolves."
               }
             },
             "required": [
@@ -68,11 +70,13 @@
                   {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 9223372036854775807
+                    "maximum": 9223372036854775807,
+                    "description": "Positive signed-bigint ID; owner validates."
                   },
                   {
                     "type": "string",
-                    "pattern": "^c[1-9][0-9]*$"
+                    "pattern": "^c[1-9][0-9]*$",
+                    "description": "Exact comment ID c followed by a positive integer; owner validates."
                   }
                 ]
               }
@@ -95,7 +99,8 @@
               "reference": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 9223372036854775807
+                "maximum": 9223372036854775807,
+                "description": "Positive signed-bigint ID; owner validates."
               }
             },
             "required": [
@@ -115,7 +120,8 @@
               },
               "target_operation_id": {
                 "type": "string",
-                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "description": "Canonical lowercase UUID; owner validates."
               }
             },
             "required": [
@@ -129,7 +135,7 @@
     },
     {
       "name": "desk_act_v2",
-      "description": "Use Desk conversation and cursor operations. operation_id binds an immutable request, not permission. Reconcile pending/uncertain effects by that ID; never blindly repost. Native execution/security approvals remain separate.",
+      "description": "Use Desk conversation and cursor operations. operation_id and target_operation_id are canonical lowercase UUIDs. An ID binds an immutable request, not permission. Reconcile pending/uncertain effects by that ID; never blindly repost. Native execution/security approvals remain separate.",
       "inputSchema": {
         "oneOf": [
           {
@@ -144,11 +150,13 @@
               "count": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 500
+                "maximum": 500,
+                "description": "1..500; owner validates."
               },
               "room": {
                 "type": "string",
-                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+                "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                "description": "Room: 1..64 ASCII letters/digits/dot/underscore/hyphen; owner resolves."
               },
               "operation_id": {
                 "$ref": "#/$defs/uuid"
@@ -172,11 +180,13 @@
               "count": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 500
+                "maximum": 500,
+                "description": "1..500; owner validates."
               },
               "room": {
                 "type": "string",
-                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+                "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                "description": "Room: 1..64 ASCII letters/digits/dot/underscore/hyphen; owner resolves."
               },
               "operation_id": {
                 "$ref": "#/$defs/uuid"
@@ -199,11 +209,13 @@
               },
               "text": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "room": {
                 "type": "string",
-                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+                "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                "description": "Room: 1..64 ASCII letters/digits/dot/underscore/hyphen; owner resolves."
               },
               "operation_id": {
                 "$ref": "#/$defs/uuid"
@@ -228,11 +240,13 @@
               "message_id": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 9223372036854775807
+                "maximum": 9223372036854775807,
+                "description": "Positive signed-bigint ID; owner validates."
               },
               "text": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "operation_id": {
                 "$ref": "#/$defs/uuid"
@@ -257,15 +271,18 @@
               },
               "asked_of": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "text": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "room": {
                 "type": "string",
-                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+                "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                "description": "Room: 1..64 ASCII letters/digits/dot/underscore/hyphen; owner resolves."
               },
               "request": {
                 "type": "string",
@@ -277,7 +294,8 @@
               },
               "link": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "options": {
                 "type": "array",
@@ -286,11 +304,13 @@
                   "properties": {
                     "key": {
                       "type": "string",
-                      "minLength": 1
+                      "minLength": 1,
+                      "description": "Nonempty; owner validates."
                     },
                     "label": {
                       "type": "string",
-                      "minLength": 1
+                      "minLength": 1,
+                      "description": "Nonempty; owner validates."
                     }
                   },
                   "required": [
@@ -300,7 +320,8 @@
                   "additionalProperties": false
                 },
                 "minItems": 2,
-                "maxItems": 6
+                "maxItems": 6,
+                "description": "2..6 stable key/label pairs; owner validates."
               },
               "operation_id": {
                 "$ref": "#/$defs/uuid"
@@ -326,11 +347,13 @@
               "message_id": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 9223372036854775807
+                "maximum": 9223372036854775807,
+                "description": "Positive signed-bigint ID; owner validates."
               },
               "choice_key": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "operation_id": {
                 "$ref": "#/$defs/uuid"
@@ -356,11 +379,13 @@
               "message_id": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 9223372036854775807
+                "maximum": 9223372036854775807,
+                "description": "Positive signed-bigint ID; owner validates."
               },
               "text": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "operation_id": {
                 "$ref": "#/$defs/uuid"
@@ -386,11 +411,13 @@
               "message_id": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 9223372036854775807
+                "maximum": 9223372036854775807,
+                "description": "Positive signed-bigint ID; owner validates."
               },
               "reason": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "operation_id": {
                 "$ref": "#/$defs/uuid"
@@ -453,7 +480,8 @@
         "$defs": {
           "uuid": {
             "type": "string",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "Canonical lowercase UUID; owner validates."
           }
         }
       }
@@ -474,17 +502,20 @@
               },
               "channel": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "limit": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 500
+                "maximum": 500,
+                "description": "1..500; owner validates."
               },
               "width": {
                 "type": "integer",
                 "minimum": 40,
-                "maximum": 50000
+                "maximum": 50000,
+                "description": "40..50000 characters; owner validates."
               }
             },
             "required": [
@@ -504,21 +535,25 @@
               },
               "channel": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "since": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "limit": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 500
+                "maximum": 500,
+                "description": "1..500; owner validates."
               },
               "width": {
                 "type": "integer",
                 "minimum": 40,
-                "maximum": 50000
+                "maximum": 50000,
+                "description": "40..50000 characters; owner validates."
               }
             },
             "required": [
@@ -554,7 +589,8 @@
               },
               "channel": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               }
             },
             "required": [
@@ -582,21 +618,25 @@
               },
               "channel": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "expected_epoch": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "limit": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 500
+                "maximum": 500,
+                "description": "1..500; owner validates."
               },
               "width": {
                 "type": "integer",
                 "minimum": 40,
-                "maximum": 50000
+                "maximum": 50000,
+                "description": "40..50000 characters; owner validates."
               },
               "operation_id": {
                 "$ref": "#/$defs/uuid"
@@ -621,11 +661,13 @@
               },
               "channel": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "admitted_checkpoint_id": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "operation_id": {
                 "$ref": "#/$defs/uuid"
@@ -643,7 +685,8 @@
         "$defs": {
           "uuid": {
             "type": "string",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "Canonical lowercase UUID; owner validates."
           }
         }
       }
@@ -666,7 +709,8 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "Nonempty; owner validates."
                 },
                 "minItems": 1
               },
@@ -679,12 +723,14 @@
               "limit": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 500
+                "maximum": 500,
+                "description": "1..500; owner validates."
               },
               "width": {
                 "type": "integer",
                 "minimum": 40,
-                "maximum": 50000
+                "maximum": 50000,
+                "description": "40..50000 characters; owner validates."
               }
             },
             "required": [
@@ -704,17 +750,20 @@
               },
               "question": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "limit": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 500
+                "maximum": 500,
+                "description": "1..500; owner validates."
               },
               "width": {
                 "type": "integer",
                 "minimum": 40,
-                "maximum": 50000
+                "maximum": 50000,
+                "description": "40..50000 characters; owner validates."
               }
             },
             "required": [
@@ -734,12 +783,14 @@
               },
               "source_slug": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
               },
               "window": {
                 "type": "integer",
                 "minimum": 0,
-                "maximum": 50
+                "maximum": 50,
+                "description": "0..50 neighboring messages; owner validates."
               }
             },
             "required": [
