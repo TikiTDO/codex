@@ -1,0 +1,40 @@
+{
+  "status": "design-only-generated-json-size-not-native-final-descriptor-or-tokens",
+  "rows": [
+    {
+      "tool": "estate_capabilities_v2",
+      "input_schema_utf8_bytes": 147,
+      "mcp_tool_descriptor_utf8_bytes": 317
+    },
+    {
+      "tool": "desk_read_v2",
+      "input_schema_utf8_bytes": 1035,
+      "mcp_tool_descriptor_utf8_bytes": 1233
+    },
+    {
+      "tool": "desk_act_v2",
+      "input_schema_utf8_bytes": 3518,
+      "mcp_tool_descriptor_utf8_bytes": 3796
+    },
+    {
+      "tool": "cc_read_v2",
+      "input_schema_utf8_bytes": 978,
+      "mcp_tool_descriptor_utf8_bytes": 1175
+    },
+    {
+      "tool": "cc_progress_v2",
+      "input_schema_utf8_bytes": 860,
+      "mcp_tool_descriptor_utf8_bytes": 1093
+    },
+    {
+      "tool": "search_v2",
+      "input_schema_utf8_bytes": 941,
+      "mcp_tool_descriptor_utf8_bytes": 1146
+    }
+  ],
+  "total_input_schema_utf8_bytes": 7479,
+  "total_mcp_tool_descriptor_utf8_bytes": 8760,
+  "largest_input_schema_utf8_bytes": 3518,
+  "default_schema_policy_utf8_bytes": 5000,
+  "limits": "String/link/option/source-owner bounds and representation closure still require exact grammar and native descriptor capture. The generated strings use only observed nonempty owner constraints, not invented maxima."
+}

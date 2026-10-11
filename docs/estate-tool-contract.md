@@ -34,17 +34,27 @@ every branch. There is no free-form argv, environment, endpoint, backend path,
 author, actor UUID or credential argument. Peer, channel and source selectors are
 data resolved by existing owners, not caller-selected authority.
 
-Select a finite profile ceiling of 32,768 normalized UTF-8 bytes per generated
-input schema. Generation must measure and refuse a larger schema, not truncate
-it. Set only the estate server's existing `tool_input_schema_max_bytes` to that
-ceiling in its explicitly selected launcher profile; leave other servers and
-global compaction behavior unchanged. The current default 5,000-byte MCP policy
-can remove definitions, nested object structure or composition, so a successful
-`tools/list` response alone cannot prove the closed model-visible contract.
+Keep the existing 5,000-byte normalized-input-schema policy; do not raise it as
+an unmeasured precaution. Generate and measure every schema before admission.
+A design-only six-family specimen measures 147, 1,035, 3,518, 978, 860 and 941
+UTF-8 schema bytes, respectively (7,479 total; its MCP descriptors total 8,760).
+This specimen is not the final owner grammar, native descriptor or token count:
+owner string/link/source bounds and normalization still need closure. It shows
+that grouping alone does not require a 32-KB ceiling. Use concise descriptions,
+closed branches and reachable shared definitions; measure the completed manifest
+again. If it cannot fit intact, first simplify or split the affected family. Only
+a separately reviewed measured need plus explicit margin may change this estate
+server's existing `tool_input_schema_max_bytes`; other servers remain unchanged.
+The default policy can remove definitions, nested structure or composition from
+an oversized schema, so `tools/list` alone cannot prove the model-visible contract.
 Capture both final direct and code-mode descriptors and compare operation
 discriminators, required fields and closed branches with the manifest. Any
-loss holds profile admission. This ceiling is a bounded initial choice, not a
-token-savings claim; descriptor/request measurements still decide the grouping.
+loss holds profile admission. Descriptor/request measurements decide grouping;
+neither a byte ceiling nor this design-only specimen establishes token savings.
+The complete [design-only specimen](fixtures/estate-tool-schema-design.json) and
+its [byte receipt](fixtures/estate-tool-schema-size-measurement.json) are review
+artifacts, not a launcher-selectable manifest. Counts use compact UTF-8 JSON
+(`ensure_ascii=false`, separators `,` / `:`), not the pretty-printed file size.
 
 | tool | operations | class |
 | --- | --- | --- |
@@ -146,15 +156,53 @@ Existing read/query and registry authorization logic is reused, not reimplemente
 in the MCP server. The tool stream owns this finite source deliverable and its
 disposable validation; it is not deferred to the receipt stream.
 
-Add owner migrations for `observatory_next.cc_tool_checkpoints_v2`,
-`cc_tool_cursors_v2` and `cc_tool_operations_v2`. Checkpoints name immutable
-owner-admitted normalized source/epoch bindings. Cursor keys bind exact reader,
-channel/view digest and adoption epoch, with per-writer source positions/version.
-Operation keys bind exact reader and operation UUID to request digest and durable
-captured result/before-after positions. No table adopts or overwrites old cursor
-state. Adoption epoch is stable cursor identity, distinct from each read's changing
-result epoch/horizon. A changed view/source epoch needs explicit owner reconciliation,
-not an automatic reinterpretation of stored positions.
+### Existing cursor leverage and migration
+
+Extend the existing `observatory_cc.cursors` owner rather than install a parallel
+three-table cursor system. Its present key is reader UUID / target UUID and its
+progress is one legacy bigint `last_record_id`. `_cc_registry.py::read_db_cursor`,
+`write_db_cursor` and `mark_db_read` share that owner. The normalized `bin/cc`
+route explicitly forces read-only operation; its JSON route refuses catchup.
+Existing progression is therefore leverage, not already-working normalized
+catchup. A normalized view may span writers and filtered source coordinates;
+one writer may occur in several views. Reinterpreting a legacy bigint or adding
+one normalized position column to the old two-UUID key cannot represent these
+independent boundaries.
+
+Selected migration: version the existing cursor relation in place. Preserve
+legacy rows and the unique reader/target constraint required by existing
+`ON CONFLICT (reader_session_id, target_session_id)` callers. Introduce a closed
+namespace (`legacy` or `normalized-v2`) and generated cursor key: target UUID
+for legacy, canonical view digest for normalized. The primary key becomes exact
+reader / namespace / cursor key. Normalized rows have a null legacy target and
+legacy record coordinate, an explicit stable adoption epoch, validated view/source
+binding and per-writer position map/version. Legacy rows cannot contain normalized
+state; normalized rows cannot pass through legacy advancement. The old callers
+continue selecting nonnull exact targets and retain their existing semantics.
+The existing owner migration and its complete caller/constraint closure must be
+reviewed before application; source implementation is not a production migration.
+
+One new operation journal under that same owner is justified by a different
+requirement: a cursor high-water cannot reconstruct the immutable page returned
+before a lost reply, or detect changed payload for a reused operation UUID.
+Its key is exact reader / operation UUID; it stores digest, operation kind,
+captured result and before/after positions. Commit the journal and extended cursor
+in the same database transaction. It is not another cursor or admission owner.
+Store immutable checkpoint-admission receipts as a distinct journal operation
+kind, not a third checkpoint table. An admitted checkpoint binds exact reader,
+view digest, source epochs and initial positions; an owner-issued ID selects that
+receipt. A changing normalized read-health receipt is not checkpoint admission.
+The model cannot create approval, choose initial positions or overwrite it.
+Disposable fixtures can provision admitted checkpoints through the owner; live
+provisioning requires an explicitly authorized owner path, otherwise adoption is
+unsupported. No production checkpoint is created by this implementation.
+
+Adoption epoch is stable cursor identity, distinct from each read's changing
+result epoch/horizon. A changed view/source epoch needs explicit owner
+reconciliation, not automatic reinterpretation of stored positions. No legacy
+row is silently adopted, overwritten or counted as normalized progress. There is
+one progress owner before and after migration; remove superseded draft
+`cc_tool_checkpoints_v2` / `cc_tool_cursors_v2` machinery rather than retain it.
 
 Catchup is one database-owner transaction/function: authorize the reader/view,
 replay an existing identical operation or refuse a changed digest, lock the cursor,
@@ -168,7 +216,8 @@ positions and coverage, not a claim that current intake is absent. Status and
 replay inspect these owner records; a lost reply cannot advance a second time.
 
 Adopt consumes an already admitted checkpoint through that same owner's guarded
-transaction, initializes a new v2 cursor and records its operation result. It
+transaction, initializes the normalized namespace in the extended cursor and
+records its operation result. It
 cannot create checkpoint approval from a model request. Unsupported checkpoint,
 identity, schema, epoch or complete-prefix capability refuses before changing a
 cursor. Implementing migrations/functions does not authorize applying them or
@@ -207,6 +256,13 @@ send time and voice state where applicable. `next` is a closed safe operation
 selector, not an executable string. `data` is the operation-specific owner schema
 generated from the same manifest, not an unconstrained success map. Capability
 inspection includes that schema version/digest and unsupported operation reasons.
+
+Serialize machine envelopes compactly. For a read-only operation, effect-only
+ID/digest/settlement fields are null; process may be null if no subprocess occurred.
+Coverage is compact but never null merely to save bytes when the read has an
+epoch, clipping or completeness boundary. Do not repeat full owner data in both
+human diagnostics and the structured result. Measure the native serialized result
+and subsequent request before claiming this avoids duplicate model context.
 
 The authenticated Desk owner binds publication/question/comment operation ID to
 the immutable request digest, storing its result together with message/question

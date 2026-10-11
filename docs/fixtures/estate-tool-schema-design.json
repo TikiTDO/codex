@@ -1,0 +1,755 @@
+{
+  "schema": "rook.estate-tool-schema-design/v1",
+  "status": "design-only-not-provider-descriptors",
+  "tools": [
+    {
+      "name": "estate_capabilities_v2",
+      "description": "Inspect enabled estate operations and their actual readiness. Read-only; listing is not effect admission.",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "inspect"
+                ]
+              }
+            },
+            "required": [
+              "operation"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "desk_read_v2",
+      "description": "Read Desk messages, questions or caller-owned effect status without moving cursors or flushing pending posts. Expand exact returned references.",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "recent"
+                ]
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500
+              },
+              "room": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "operation"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "show"
+                ]
+              },
+              "reference": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9223372036854775807
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^c[1-9][0-9]*$"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "operation",
+              "reference"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "question"
+                ]
+              },
+              "reference": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854775807
+              }
+            },
+            "required": [
+              "operation",
+              "reference"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "effect_status"
+                ]
+              },
+              "target_operation_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              }
+            },
+            "required": [
+              "operation",
+              "target_operation_id"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "desk_act_v2",
+      "description": "Use Desk conversation and cursor operations. operation_id binds an immutable request, not permission. Reconcile pending/uncertain effects by that ID; never blindly repost. Native execution/security approvals remain separate.",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "wake"
+                ]
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500
+              },
+              "room": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "catchup"
+                ]
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500
+              },
+              "room": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "publish"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "room": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "text",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "comment"
+                ]
+              },
+              "message_id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854775807
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "message_id",
+              "text",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "question"
+                ]
+              },
+              "asked_of": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "room": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              },
+              "request": {
+                "type": "string",
+                "enum": [
+                  "decision",
+                  "review",
+                  "validation"
+                ]
+              },
+              "link": {
+                "type": "string",
+                "minLength": 1
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 2,
+                "maxItems": 6
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "asked_of",
+              "text",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "answer"
+                ]
+              },
+              "message_id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854775807
+              },
+              "choice_key": {
+                "type": "string",
+                "minLength": 1
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "message_id",
+              "choice_key",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "answer"
+                ]
+              },
+              "message_id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854775807
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "message_id",
+              "text",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "close"
+                ]
+              },
+              "message_id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854775807
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "message_id",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "release"
+                ]
+              },
+              "target_operation_id": {
+                "$ref": "#/$defs/uuid"
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "target_operation_id",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "cancel"
+                ]
+              },
+              "target_operation_id": {
+                "$ref": "#/$defs/uuid"
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "target_operation_id",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "$defs": {
+          "uuid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        }
+      }
+    },
+    {
+      "name": "cc_read_v2",
+      "description": "Read current or since-window CC, readable channels or cursor status. Preserve exact source epoch, coverage and expansion IDs; no cursor changes.",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "now"
+                ]
+              },
+              "channel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 40,
+                "maximum": 50000
+              }
+            },
+            "required": [
+              "operation",
+              "channel"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "since"
+                ]
+              },
+              "channel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "since": {
+                "type": "string",
+                "minLength": 1
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 40,
+                "maximum": 50000
+              }
+            },
+            "required": [
+              "operation",
+              "channel",
+              "since"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "channels"
+                ]
+              }
+            },
+            "required": [
+              "operation"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "cursor_status"
+                ]
+              },
+              "channel": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "operation",
+              "channel"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "cc_progress_v2",
+      "description": "Advance normalized CC only through the existing progress owner and explicit admitted epoch/checkpoint. Replay the same operation_id after a lost reply; changed payload refuses.",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "catchup"
+                ]
+              },
+              "channel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expected_epoch": {
+                "type": "string",
+                "minLength": 1
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 40,
+                "maximum": 50000
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "channel",
+              "expected_epoch",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "adopt"
+                ]
+              },
+              "channel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "admitted_checkpoint_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "channel",
+              "admitted_checkpoint_id",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "$defs": {
+          "uuid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        }
+      }
+    },
+    {
+      "name": "search_v2",
+      "description": "Search literally (ALL terms by default), semantically (actual corpus horizon), or expand an exact returned source slug. No silent mode or stale fallback.",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "literal"
+                ]
+              },
+              "terms": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1
+              },
+              "any": {
+                "type": "boolean"
+              },
+              "oldest": {
+                "type": "boolean"
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 40,
+                "maximum": 50000
+              }
+            },
+            "required": [
+              "operation",
+              "terms"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "semantic"
+                ]
+              },
+              "question": {
+                "type": "string",
+                "minLength": 1
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 40,
+                "maximum": 50000
+              }
+            },
+            "required": [
+              "operation",
+              "question"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "show"
+                ]
+              },
+              "source_slug": {
+                "type": "string",
+                "minLength": 1
+              },
+              "window": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50
+              }
+            },
+            "required": [
+              "operation",
+              "source_slug"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  ]
+}

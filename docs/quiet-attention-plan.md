@@ -187,10 +187,49 @@ Bind every selected partition to its captured event coordinates and frontiers,
 publish stable intent before submission, and settle only exact accepted membership.
 New arrivals cannot change a retry's key or membership; omitted earlier sources
 limit frontier advancement. Unsupported, uncertain or incomplete state holds.
-Expose the three required timing controls and their live reload/refusal state.
+Expose the three originally required controls: **frequency, batching and listened
+rooms**, with live reload/refusal state. They are not three routing lanes renamed
+as controls. Reuse the owner-private poke policy for frequency/batching and Desk's
+existing room-wake owner for subscriptions; do not add a native room registry.
+
+- Frequency is the minimum interval between ordinary/peer background admissions
+  for this exact hand, initially 300 seconds under the recorded timing decision.
+  A held or uncertain admission does not consume a successful-admission interval
+  or release its stable membership. Verified operator-direct attention bypasses
+  this interval; it still obeys Core readiness and permission/question blockers.
+- Batching is the source collection window: initially 300 seconds for ordinary
+  traffic, 3 seconds for directly addressed peer traffic, immediate for verified
+  operator-direct traffic. These are fields of one batching control, not separate
+  permissions. Capture one immutable membership/frontier when a window closes;
+  later arrivals cannot alter retries. Frequency may postpone admission of the
+  captured batch; it cannot discard it. Counts and complete omitted frontiers
+  remain visible rather than claiming the whole source was read.
+- Listened rooms are the exact hand's current Desk wake subscriptions. Route
+  edits through `desk rooms join|leave`, retaining its identity/authorization and
+  mandatory operator-room behavior. A comment parent supplies membership only.
+  Changing this hand's rooms must not change another hand, rewrite settled
+  receipt membership, or discard an already captured pending batch.
+
+The present Go adapter caches its window at construction and does not supply
+these complete live controls. Add a Go policy reader/status to that existing
+adapter owner, validate both timing fields against the existing 1..86400-second
+policy bounds, and obtain the effective rooms from the existing room owner.
+No supplied policy selects a different workspace or caller. Preserve the current
+300-second window/3-second polling compatibility route; do not claim that its
+fixed poll interval is the frequency control. Invalid or inaccessible changed
+policy holds new non-operator admissions and reports the failed revision while
+retaining captured state; never silently replace malformed policy with defaults.
+Atomically apply a valid revision at the next selection boundary. An open window
+keeps its captured policy version/deadline; the new revision applies to the next
+window. Effective status names requested/applied revision, timings, room receipt
+and any reload refusal. These CLI/status extensions remain source deliverables,
+not instructions to mutate tonight's running receiver or subscriptions.
+
 Operator-direct bypass, peer-direct timing and ordinary batching remain separate
 from Core admission. Native question preservation must survive background turns
-without changing foreground input behavior.
+without changing foreground input behavior. Falsify each control independently,
+including edits during a pending batch, reload failure, another hand's unchanged
+policy, and unchanged mandatory operator-room and native approval behavior.
 
 ### 4. Measure context and runtime economy
 
