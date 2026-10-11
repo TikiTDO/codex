@@ -198,6 +198,19 @@ pub trait ThreadStore: Any + Send + Sync {
     /// already-durable thread data.
     fn discard_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
 
+    /// Strict, complete canonical receipts. Tolerant model history and SQL projections
+    /// do not satisfy this contract. Unsupported stores leave attention unavailable.
+    fn load_canonical_attention_receipts(
+        &self,
+        _thread_id: ThreadId,
+    ) -> ThreadStoreFuture<'_, crate::CanonicalAttentionReceipts> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "load_canonical_attention_receipts",
+            })
+        })
+    }
+
     /// Loads persisted history for resume, fork, and memory jobs.
     fn load_history(
         &self,

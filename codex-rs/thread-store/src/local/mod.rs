@@ -1,4 +1,5 @@
 mod archive_thread;
+mod attention;
 mod create_thread;
 mod delete_thread;
 mod helpers;
@@ -568,6 +569,13 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(async move { live_writer::discard_thread(self, thread_id).await })
     }
 
+    fn load_canonical_attention_receipts(
+        &self,
+        thread_id: ThreadId,
+    ) -> ThreadStoreFuture<'_, crate::CanonicalAttentionReceipts> {
+        Box::pin(attention::load(self, thread_id))
+    }
+
     fn load_history(
         &self,
         params: LoadThreadHistoryParams,
@@ -802,6 +810,8 @@ impl ThreadStore for LocalThreadStore {
 mod tests {
     #[path = "acquisition_tests.rs"]
     mod acquisition_tests;
+    #[path = "attention_tests.rs"]
+    mod attention_tests;
     use std::sync::Arc;
 
     use codex_protocol::ThreadId;

@@ -50,6 +50,7 @@ use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
 pub(crate) struct SessionServices {
+    pub(crate) attention_ledger: Arc<crate::attention::AttentionLedger>,
     /// The single owner of live MCP connections for this thread.
     pub(crate) mcp_runtime: Arc<McpRuntime>,
     /// Immutable MCP handlers scoped to this thread's current binding.

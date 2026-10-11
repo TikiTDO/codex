@@ -213,7 +213,7 @@ impl PreparedTurnInputSettings {
     skip_all,
     fields(conversation.id = %session.thread_id, turn.id)
 )]
-pub(super) async fn handle(
+pub(crate) async fn handle(
     session: &Arc<Session>,
     request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
     mode: TurnInputMode,

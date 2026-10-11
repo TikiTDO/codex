@@ -673,6 +673,19 @@ pub enum Op {
         reply: oneshot::Sender<CodexResult<TurnInputSubmission>>,
     },
 
+    /// Core owns intent, quiet admission and final settlement on this queue.
+    Attention {
+        notice: crate::attention::ThreadAttentionNotification,
+        request: Box<TurnInputRequest>,
+        blocking_request: bool,
+        reply: oneshot::Sender<
+            std::result::Result<
+                crate::attention::ThreadAttentionResponse,
+                crate::attention::AttentionError,
+            >,
+        >,
+    },
+
     /// Resume an interrupted regular turn.
     RecoverTurn {
         thread_settings: ThreadSettingsOverrides,
@@ -997,6 +1010,7 @@ impl Op {
             Self::RealtimeConversationClose => "realtime_conversation_close",
             Self::RealtimeConversationListVoices => "realtime_conversation_list_voices",
             Self::TurnInput { .. } => "turn_input",
+            Self::Attention { .. } => "attention",
             Self::RecoverTurn { .. } => "recover_turn",
             Self::SuspendTurnAndShutdown { .. } => "suspend_turn_and_shutdown",
             Self::ThreadSettings { .. } => "thread_settings",

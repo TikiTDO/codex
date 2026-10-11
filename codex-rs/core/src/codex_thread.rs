@@ -589,6 +589,54 @@ impl CodexThread {
         self.io.submit_turn_input(request, mode).await
     }
 
+    /// Canonical receipt projection from the exact Core persistence lifecycle.
+    pub async fn attention_snapshot(
+        &self,
+    ) -> Result<
+        Vec<codex_protocol::attention::ThreadAttentionNotification>,
+        codex_protocol::attention::AttentionError,
+    > {
+        self.session
+            .services
+            .attention_ledger
+            .snapshot(self.session.thread_id, self.session.live_thread())
+            .await
+    }
+
+    /// Once enqueued, dropping the caller cancels observation only. Core owns
+    /// the complete durable transaction independently of this waiter.
+    pub async fn submit_attention(
+        &self,
+        notice: codex_protocol::attention::ThreadAttentionNotification,
+        context: crate::context::InternalModelContextFragment,
+        blocking_request: bool,
+    ) -> Result<
+        codex_protocol::attention::ThreadAttentionResponse,
+        codex_protocol::attention::AttentionError,
+    > {
+        use codex_protocol::attention::AttentionError;
+        let mut request = TurnInputRequest::new(TurnInput::ResponseItem(
+            ContextualUserFragment::into(context),
+        ));
+        request.background_attention = true;
+        request.start.turn_trigger = Some("attention".to_string());
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        self.io
+            .submit(Op::Attention {
+                notice,
+                request: Box::new(request),
+                blocking_request,
+                reply,
+            })
+            .await
+            .map_err(|_| AttentionError::Stopped)?;
+        receiver.await.unwrap_or_else(|_| {
+            Err(AttentionError::Unavailable(
+                "Core dispatch exited before receipt settlement; strict recovery required".into(),
+            ))
+        })
+    }
+
     /// Persist whether this thread is eligible for future memory generation.
     pub async fn set_thread_memory_mode(&self, mode: ThreadMemoryMode) -> anyhow::Result<()> {
         self.session.set_thread_memory_mode(mode).await
@@ -615,24 +663,6 @@ impl CodexThread {
         self.session
             .inject_attention_if_running(ContextualUserFragment::into(context))
             .await
-    }
-
-    /// Persist the notice before delivery, independently of model input. A durable
-    /// intent without a final receipt is deliberately not safe to resubmit.
-    pub async fn record_attention_notice(
-        &self,
-        notice: codex_protocol::attention::ThreadAttentionNotification,
-        notify: bool,
-    ) -> anyhow::Result<()> {
-        self.append_rollout_items(&[RolloutItem::EventMsg(
-            codex_protocol::protocol::EventMsg::ThreadAttention(notice.clone()),
-        )])
-        .await?;
-        self.flush_rollout().await?;
-        if notify {
-            self.session.deliver_attention_notice(notice).await;
-        }
-        Ok(())
     }
 
     /// Environment selections captured by the active turn, before later settings updates.

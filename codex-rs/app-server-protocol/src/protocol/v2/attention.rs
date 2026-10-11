@@ -5,14 +5,6 @@
 
 use crate::JsonSchema;
 use crate::TS;
-use serde::Deserialize;
-use serde::Serialize;
-use std::collections::HashSet;
-
-const MAX_ORIGINS: usize = 64;
-const MAX_REFERENCE_BYTES: usize = 128;
-const MAX_METADATA_BYTES: usize = 8_192;
-
 pub use codex_protocol::attention::AttentionTurnStartedNotification;
 pub use codex_protocol::attention::ThreadAttentionDelivery;
 pub use codex_protocol::attention::ThreadAttentionHeldReason;
@@ -20,6 +12,8 @@ pub use codex_protocol::attention::ThreadAttentionNotification;
 pub use codex_protocol::attention::ThreadAttentionOrigin;
 pub use codex_protocol::attention::ThreadAttentionOriginKind;
 pub use codex_protocol::attention::ThreadAttentionResponse;
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Versioned native route. Absence in initialize means unsupported, never a
 /// license to substitute ordinary user input.
@@ -44,42 +38,8 @@ impl ThreadAttentionParams {
     /// Reject text payloads and ambiguous duplicate coordinates before admission.
     /// Thread identity and caller authorization are checked by the server.
     pub fn validate_metadata(&self) -> Result<(), &'static str> {
-        if !valid_reference(&self.batch_id) {
-            return Err("attention batchId must be a bounded source reference");
-        }
-        if self.origins.is_empty() || self.origins.len() > MAX_ORIGINS {
-            return Err("attention requires between 1 and 64 origins");
-        }
-        let mut seen = HashSet::new();
-        let mut bytes = self.batch_id.len();
-        for origin in &self.origins {
-            if !valid_reference(&origin.source_ref)
-                || origin
-                    .sender
-                    .as_deref()
-                    .is_some_and(|s| !valid_reference(s))
-            {
-                return Err("attention origins accept bounded references, not text payloads");
-            }
-            // One captured source must not acquire two senders or origin kinds.
-            if !seen.insert(origin.source_ref.as_str()) {
-                return Err("attention origin references must be unique");
-            }
-            bytes += origin.source_ref.len() + origin.sender.as_ref().map_or(0, String::len);
-        }
-        if bytes > MAX_METADATA_BYTES {
-            return Err("attention source metadata exceeds its byte bound");
-        }
-        Ok(())
+        codex_protocol::attention::validate_attention_metadata(&self.batch_id, &self.origins)
     }
-}
-
-fn valid_reference(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_REFERENCE_BYTES
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
-        })
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
