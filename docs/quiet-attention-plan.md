@@ -218,6 +218,13 @@ execution captures sources, persists intent, admits internally and settles exact
 receipts. Counterexamples and measured costs revise the plan; no online learning
 or third-party model runner is introduced.
 
+The complementary operator-side acceptance and morning-use stream is specified in
+[`estate-integration-morning.md`](estate-integration-morning.md), also required
+whole-plan reading. It binds one exact candidate to source/build, disposable owner
+effects, separately established provider ingestion, control/context measurements
+and an honest morning handoff. It adds no parallel receiver or implementation
+owner. Runtime implementation remains behind independent whole-plan review.
+
 Focused falsifiers must cover first idle admission without UserInput, cold resume
 and fork isolation, missing/corrupt history refusal, uncertain intent and lost
 responses, cross-key source retry, partial acknowledgements and omitted frontiers,
