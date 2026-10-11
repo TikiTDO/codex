@@ -41,8 +41,11 @@ model-visible tool-list check is separately required before claiming ingestion.
 
 The shared paragraph is now appended at both final consumers. Production library
 compilation and seventeen focused description/schema/mode/handler unit checks
-passed. Affected context snapshots and actual ingestion remain unfinished. This
-does not establish quiet-attention API acceptance.
+passed. After building the two required test helpers with verified pinned V8
+artifacts, all twenty-four selected request scenarios passed. An independent raw
+serialized mock-request check asserts the full paragraph in both descriptions;
+twenty-one regenerated snapshots were reviewed. This is not hosted-provider
+ingestion, routing compliance, or quiet-attention API acceptance.
 
 ## Expanded integration design — before further runtime changes
 

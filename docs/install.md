@@ -49,6 +49,29 @@ just test
 # time and `target/` disk usage by compiling additional feature combinations.
 ```
 
+### Focused request-scenario prerequisites
+
+Core request scenarios can launch `codex-code-mode-host` and `test_stdio_server`.
+Building only the `codex-core` test target does not build those executables:
+
+```bash
+# From codex-rs, build only the helpers needed by the selected scenarios.
+cargo build --locked -p codex-code-mode-host -p codex-rmcp-client \
+  --bin codex-code-mode-host --bin test_stdio_server
+# Match CI's test-thread stack for these scenarios; select the needed test filter.
+RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --test all <filter>
+```
+
+If the upstream V8 sandbox archive is unavailable, use the exact-version archive
+**and** binding procedure in [the V8 consumer guide](../third_party/v8/README.md)
+and [the existing CI setup action](../.github/actions/setup-rusty-v8/action.yml).
+Verify the downloaded manifest against the committed trusted digest, then both
+artifacts against that manifest, before setting child-process
+`RUSTY_V8_ARCHIVE` and `RUSTY_V8_SRC_BINDING_PATH`. Keep both overrides for the
+subsequent Cargo test command. Do not disable the sandbox or mix versions to make
+the build pass. Review every regenerated snapshot: a passing snapshot update can
+otherwise record a missing-helper error as its new expected output.
+
 ## Tracing / verbose logging
 
 Codex is written in Rust, so it honors the `RUST_LOG` environment variable to configure its logging behavior.
