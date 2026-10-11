@@ -16,10 +16,12 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (7; hash=c7eaf521f176989a):
+  tools (9; hash=69c4d5cea96d5827):
     - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
     - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
-    - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=7c8f464569dbaa9c
+    - function/context_status: Report the current model, active-turn state, context-window usage, and cumulative token usage for...; args=[]; hash=471acb7c26b9147d
+    - function/compact_context: Schedule context compaction for the current turn. The compaction runs after this tool result and ...; args=[discard_images, instructions, retry_websocket]; hash=40d9479a8dab6050
+    - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=07b2f86e1989d924
     - custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
     - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
@@ -50,10 +52,12 @@ Settings: relative to window 1
   reasoning: {"context":"all_turns","effort":"medium"}
   tools: <removed>
 -- request 4 (turn) --
-00:additional_tools/developer (1; hash=2e71c3c832baebb6):
-        - namespace/functions; hash=cea33529f2099460
+00:additional_tools/developer (1; hash=39a76c36a6afa133):
+        - namespace/functions; hash=54910e2411e44f45
           - custom/exec
           - function/wait
+          - function/context_status
+          - function/compact_context
           - function/request_user_input
 01:message/developer:
     <MODEL_INSTRUCTIONS>
@@ -187,10 +191,12 @@ Settings: relative to window 2
 ## Window 4 (after request 6: input diverged at item 00)
 Settings: same as window 2
 -- request 7 (turn) --
-00:additional_tools/developer (1; hash=2e71c3c832baebb6):
-        - namespace/functions; hash=cea33529f2099460
+00:additional_tools/developer (1; hash=39a76c36a6afa133):
+        - namespace/functions; hash=54910e2411e44f45
           - custom/exec
           - function/wait
+          - function/context_status
+          - function/compact_context
           - function/request_user_input
 01:message/developer:
     <MODEL_INSTRUCTIONS>
@@ -216,10 +222,12 @@ Settings: same as window 2
 ## Window 5 (after request 8: input diverged at item 04)
 Settings: same as window 2
 -- request 9 (turn) --
-00:additional_tools/developer (1; hash=2e71c3c832baebb6):
-        - namespace/functions; hash=cea33529f2099460
+00:additional_tools/developer (1; hash=39a76c36a6afa133):
+        - namespace/functions; hash=54910e2411e44f45
           - custom/exec
           - function/wait
+          - function/context_status
+          - function/compact_context
           - function/request_user_input
 01:message/developer:
     <MODEL_INSTRUCTIONS>
@@ -340,10 +348,12 @@ Settings: same as window 3
 ## Window 7 (after request 10: input diverged at item 00)
 Settings: same as window 2
 -- request 11 (turn) --
-00:additional_tools/developer (1; hash=2e71c3c832baebb6):
-        - namespace/functions; hash=cea33529f2099460
+00:additional_tools/developer (1; hash=39a76c36a6afa133):
+        - namespace/functions; hash=54910e2411e44f45
           - custom/exec
           - function/wait
+          - function/context_status
+          - function/compact_context
           - function/request_user_input
 01:message/developer:
     <MODEL_INSTRUCTIONS>
