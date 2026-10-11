@@ -449,13 +449,19 @@ async fn canonical_attention_revert_cold_resume_refuses_receipts_and_keeps_foreg
         .unwrap_err();
     assert!(err.to_string().contains("receipt lifetime version"));
     assert_eq!(turn_ids(&cold, id).await, vec!["one"]);
-    assert!(
-        cold.load_history(crate::LoadThreadHistoryParams {
+    let foreground = cold
+        .load_latest_model_context(crate::LoadThreadHistoryParams {
             thread_id: id,
             include_archived: false,
         })
         .await
-        .is_ok()
-    );
+        .expect("reverted foreground model context remains readable");
+    assert_eq!(foreground.thread_id, id);
+    assert!(foreground.items.iter().any(
+        |item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(turn)) if turn.turn_id == "one")
+    ));
+    assert!(!foreground.items.iter().any(
+        |item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(turn)) if turn.turn_id == "two")
+    ));
     cold.shutdown_thread(id).await.unwrap();
 }

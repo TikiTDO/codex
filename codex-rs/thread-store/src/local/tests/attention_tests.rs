@@ -223,13 +223,18 @@ async fn canonical_attention_unknown_lifetime_refuses_while_foreground_remains_r
                 .await
                 .unwrap_err();
             assert!(err.to_string().contains("receipt lifetime version"));
-            assert!(
-                cold.load_history(LoadThreadHistoryParams {
+            let foreground = cold
+                .load_latest_model_context(LoadThreadHistoryParams {
                     thread_id: id,
                     include_archived: false,
                 })
                 .await
-                .is_ok()
+                .expect("foreground model context remains readable without receipt proof");
+            assert_eq!(foreground.thread_id, id);
+            assert!(
+                foreground.items.iter().any(
+                    |item| matches!(item, RolloutItem::SessionMeta(meta) if meta.meta.id == id)
+                )
             );
             cold.shutdown_thread(id).await.unwrap();
         }
@@ -334,13 +339,19 @@ async fn canonical_attention_migration_removes_lifetime_proof_without_blocking_f
         .await
         .unwrap();
         assert!(cold.load_canonical_attention_receipts(id).await.is_err());
-        assert!(
-            cold.load_history(LoadThreadHistoryParams {
+        let foreground = cold
+            .load_latest_model_context(LoadThreadHistoryParams {
                 thread_id: id,
-                include_archived: false
+                include_archived: false,
             })
             .await
-            .is_ok()
+            .expect("migrated foreground model context remains readable");
+        assert_eq!(foreground.thread_id, id);
+        assert!(
+            foreground
+                .items
+                .iter()
+                .any(|item| matches!(item, RolloutItem::SessionMeta(meta) if meta.meta.id == id))
         );
         cold.shutdown_thread(id).await.unwrap();
     }
