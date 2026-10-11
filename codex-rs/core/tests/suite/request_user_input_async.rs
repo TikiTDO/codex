@@ -2,6 +2,7 @@ use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_features::Feature;
+use codex_prompts::REPOSITORY_QUESTION_ROUTING;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageDelivery;
 use codex_protocol::items::AgentMessageItem;
@@ -429,6 +430,7 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
             "Ask the user one or more questions during ongoing work. Use this tool only to request missing information, preferences, constraints, clarification, or approval. The tool returns immediately without ending the turn or waiting for a reply; any reply arrives asynchronously as a new user message. Keep questions concise, self-contained, and easy to understand, using a level of detail appropriate to the user and task. The UI always allows a free-text answer, including when suggested options are provided. A preselected option is not submitted automatically.",
         )
         .to_string();
+    let expected_description = format!("{expected_description}\n\n{REPOSITORY_QUESTION_ROUTING}");
     let test = test_codex()
         .with_model_info_override("gpt-5.2", move |model| {
             model.tool_mode = Some(ToolMode::CodeModeOnly);

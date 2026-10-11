@@ -1,6 +1,7 @@
 use super::*;
 use codex_features::Feature;
 use codex_features::Features;
+use codex_prompts::REPOSITORY_QUESTION_ROUTING;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::request_user_input::RequestUserInputQuestion;
 use codex_protocol::request_user_input::RequestUserInputQuestionOption;
@@ -25,7 +26,7 @@ fn request_user_input_tool_includes_questions_schema() {
         create_request_user_input_tool("Ask the user to choose.".to_string()),
         ToolSpec::Function(ResponsesApiTool {
             name: "request_user_input".to_string(),
-            description: "Ask the user to choose.".to_string(),
+            description: format!("Ask the user to choose.\n\n{REPOSITORY_QUESTION_ROUTING}"),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(BTreeMap::from([

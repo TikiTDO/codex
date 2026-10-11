@@ -6,6 +6,7 @@ use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_prompts::with_repository_question_routing;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageDelivery;
 use codex_protocol::items::AgentMessageItem;
@@ -78,7 +79,7 @@ impl ToolExecutor<ToolInvocation> for RequestUserInputAsyncHandler {
 
         ToolSpec::Function(ResponsesApiTool {
             name: TOOL_NAME.to_string(),
-            description: self.description.clone(),
+            description: with_repository_question_routing(&self.description),
             strict: false,
             defer_loading: None,
             parameters,
@@ -154,3 +155,7 @@ impl CoreToolRuntime for RequestUserInputAsyncHandler {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "request_user_input_async_tests.rs"]
+mod tests;
