@@ -40,8 +40,12 @@ custom parameters, unchanged default schemas and mode availability. A disposable
 model-visible tool-list check is separately required before claiming ingestion.
 
 The shared paragraph is now appended at both final consumers. Production library
-compilation passed; the new fixtures, affected context snapshots and ingestion
-check remain unfinished. This does not establish quiet-attention API acceptance.
+compilation and seventeen focused description/schema/mode/handler unit checks
+passed. After building the two required test helpers with verified pinned V8
+artifacts, all twenty-four selected request scenarios passed. An independent raw
+serialized mock-request check asserts the full paragraph in both descriptions;
+twenty-one regenerated snapshots were reviewed. This is not hosted-provider
+ingestion, routing compliance, or quiet-attention API acceptance.
 
 ## Expanded integration design — before further runtime changes
 
@@ -58,15 +62,36 @@ thread advertises its lazily materialized rollout path, but receipt recovery tri
 to read that nonexistent file. Starting a fake user turn or treating every missing
 history as empty would hide the defect.
 
-Review moving receipt custody to one exact-thread lifecycle owner. Creation can
-prove New/Cleared prior receipt state; resume must establish complete canonical
-receipt history under writer ownership. Forks must not inherit a parent's
-admissions. Client-visible startup replay is not automatically complete receipt
-history, especially with paginated or compacted model context. Recover latest
-per-batch notices from the complete canonical source, validate exact-thread
-identity, and refuse missing, malformed or incomplete recovery. Initialize before
-publishing a usable runtime, and update uncertain/final receipt state through the
-same owner as durable writes. Do not add a second app-server source of truth.
+Select Core `SessionServices::attention_ledger`, shared by exact-session handles,
+as the sole receipt decision owner. Persistence remains `LiveThread`/`ThreadStore`;
+add the strict `load_canonical_attention_receipts` operation, with unsupported
+default for stores that cannot prove the contract. App-server admission/list
+delegate to Core, not a second thread-state decision map. The complete selected
+owner/API/capture/readiness/transaction contract is
+[`canonical-attention-receipts.md`](canonical-attention-receipts.md), part of this
+whole plan and required reading before implementation.
+
+Known-empty state follows successfully acquired and committed genuinely new
+persistence ownership, never a source enum or arbitrary missing history. Resume
+strictly reconstructs complete canonical receipts before attention readiness.
+Compaction cannot reset the ledger, and child identities cannot inherit ancestor
+admissions. Failed recovery holds attention admission/listing while ordinary
+tolerant foreground startup remains usable.
+
+Reuse the existing sole lineage resolver, mapping physical rollout segments to
+logical owner IDs. Capture shared lifecycle leases and writer mutexes in the
+existing sorted logical-owner order, lifecycle before writer; flush/capture through
+non-reacquiring owner primitives. Release writer mutexes before strictly decoding
+finite opened representation prefixes, retaining lifecycle leases. Missing,
+malformed or incomplete in-prefix coverage refuses; later suffixes cannot enlarge
+the snapshot. No pointer walker or SQLite/model-context completeness authority.
+
+One Core transition mutex and Core-owned finite transactions preserve intent,
+admission and final settlement when an RPC waiter disappears. Confirm durable
+uncertain intent before invoking the existing scheduler, with storage locks
+released; flush final result before publication. Unknown write/admission or panic
+retains quarantine/unavailable state, never a blind retry. Teardown closes new
+admission and settles owned transactions before releasing persistence.
 
 Core retains scheduling and interactive-request admission. Preserve durable
 uncertain intent before inference, same-key retry, cross-key source quarantine,
@@ -87,20 +112,27 @@ latest compaction, paginated cold resume, and a fork with ancestor admissions.
 
 ### 2. Integrate estate tools without replacing estate authority
 
-Expose first-class, typed Desk, CC and Search calls inside the configured estate
-profile. The backend must reuse the existing semantic and credential/effect
-owners; do not inline their databases, addressing rules or authentication into
-Codex. Existing command descriptors and MCP projections are candidate leverage,
-not evidence that every needed operation is already available. The existing
-read-only command MCP covers selected CC and literal Search paths; it does not
-currently provide Desk, semantic Search or cursor/effecting operations. The
-enrolled coordination MCP is a separate contract and cannot substitute silently.
+Select the existing bin-MCP argv projection, extended as
+`observatory.bin-mcp.contract.v2` / `estate-tools.v2`, using Core's existing MCP
+runtime. Do not build a parallel native database/authentication backend. Its
+versioned manifest derives six closed typed tools from existing semantic owners:
+capabilities, Desk read/action, CC read/progress and Search. The complete selected
+operation/input/result/identity/effect/retry contract is
+[`estate-tool-contract.md`](estate-tool-contract.md), part of this whole plan and
+required reading before implementation.
 
-Bind one reviewed adapter and capability version. Missing capability produces a
-typed hold, not shell interpolation, guessed identity, wider credentials or
-native-question fallback. Repository activation must be explicit; unrelated
-repositories retain ordinary Codex behavior. Do not make an unconfigured estate
-transport a globally required launch dependency.
+The existing v1 bin projection already provides selected CC, literal/semantic
+Search and Desk read/publication/comment tools; v2 question/answer/closure,
+machine effect settlement and normalized cursor progress still require owner
+extensions. The command-host MCP and enrolled coordination MCP remain separate;
+do not substitute or combine their authority silently. The earlier inventory of
+one read-only projection was incomplete, not proof those features were absent.
+
+The launcher binds the selected profile, exact workspace/registered identity and
+credential owner. Model arguments cannot select actor, credentials, command or
+backend path. Missing capability holds rather than shell interpolation, guessed
+identity, wider credentials or native-question fallback. Activation stays explicit
+and optional outside the estate; no globally required transport dependency.
 
 Desk scope includes bounded reads, exact questions with options, review and
 validation requests, answers, closure and human-readable publication. Preserve
@@ -110,6 +142,37 @@ cursor-neutral now from cursor-advancing catch-up. Search must preserve literal
 versus semantic meaning and the returned corpus horizon. Cursor movement,
 publication and question closure are effects, not generic read-only tools.
 Conversation decisions must never authorize native execution or security effects.
+
+Owner-emitted machine results distinguish completed, held, pending, uncertain,
+refused and unsupported from process exit. Bind immutable operation IDs and
+results atomically with publication/question/voice-queue or cursor effects. A
+courtesy hold with a scheduled future send is not publication success. Lost reply
+or timeout reconciles/replays that same operation; it cannot generate a new ID and
+blindly repeat. Existing question-answer/closure guards and idempotency keys stay
+with their owner. V2 read-only routes cannot flush pending writes incidentally.
+
+Normalized cursor adoption is deliberately absent in the current command owner.
+Implement a separately admitted v2 cursor/epoch and result transaction there;
+reads never adopt legacy positions. Until supported/admitted, progress returns a
+named unsupported capability, not read-only success or a legacy fallback. This
+owner build remains in the full acceptance scope; schema application/adoption is
+a separate effect gate. Preserve v1 grants and ordinary native approval behavior;
+new v2 writes are not automatically approved.
+
+Native attention batch/source quarantine and external tool operation ID/digest are
+separate idempotency domains. An Accepted native receipt does not prove Desk
+publication, cursor movement or question closure; a completed external operation
+does not settle native admission. References may relate the records, never replace
+either owner's settlement. Each capability has independent readiness: an
+unavailable attention ledger does not disable ordinary admitted MCP operations,
+and missing tools cannot route through internal UserInput or native questions.
+
+Core keeps lifecycle receipts; external semantic owners keep operation journals
+and cursor state. Neither is model context or proof of known-empty state for the
+other. Native owned transactions and external owner journals survive lost
+observers/timeouts independently; reconcile with the correct owner. Reused MCP
+transport/descriptors cannot transfer another invocation's workspace/term
+authority. Existing native scheduler approval/question blockers remain in force.
 
 ### 3. Complete source routing and operator controls
 
@@ -147,14 +210,23 @@ code vetting or a working CLI supervisor.
 
 ### Review and acceptance boundary
 
-Before implementation, close complete canonical recovery and the typed tool
-adapter/effect contract in review. The associative tree is: exact thread, source,
+Before implementation, independently review this whole plan and both selected
+contract documents, including owner extensions, failure, cancellation and migration
+relations. Lifecycle and tool streams retain separate file custody and coherent
+returns; final integration must reconcile both. The associative tree is: exact thread, source,
 credential provenance, receipt, question and cursor are rank-zero evidence nodes;
 lifecycle state and routing cause are derived relations; scheduling, timing and
 tool exposure compose those relations without creating authority. Forward
 execution captures sources, persists intent, admits internally and settles exact
 receipts. Counterexamples and measured costs revise the plan; no online learning
 or third-party model runner is introduced.
+
+The complementary operator-side acceptance and morning-use stream is specified in
+[`estate-integration-morning.md`](estate-integration-morning.md), also required
+whole-plan reading. It binds one exact candidate to source/build, disposable owner
+effects, separately established provider ingestion, control/context measurements
+and an honest morning handoff. It adds no parallel receiver or implementation
+owner. Runtime implementation remains behind independent whole-plan review.
 
 Focused falsifiers must cover first idle admission without UserInput, cold resume
 and fork isolation, missing/corrupt history refusal, uncertain intent and lost
