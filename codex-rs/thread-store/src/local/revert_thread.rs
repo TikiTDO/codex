@@ -60,10 +60,23 @@ pub(super) async fn revert(
         });
     }
     // Failed strict proof preserves the existing foreground path, never empty proof.
-    let preserved_receipts =
-        super::attention::preservation_under_guards(thread_id, receipt_lineage, false)
-            .await
-            .ok();
+    let preserved_receipts = match super::attention::preservation_under_guards(
+        thread_id,
+        receipt_lineage,
+        false,
+    )
+    .await
+    {
+        Ok(notices) => Some(notices),
+        Err(error) => {
+            tracing::warn!(
+                thread_id = %thread_id,
+                error = %error,
+                "receipt preservation unavailable during revert"
+            );
+            None
+        }
+    };
     let mut source_meta = codex_rollout::read_session_meta_line(source_path.as_path())
         .await
         .map_err(|err| ThreadStoreError::Internal {

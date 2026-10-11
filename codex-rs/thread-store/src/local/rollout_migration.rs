@@ -571,9 +571,19 @@ impl LocalThreadStore {
             path = current_path;
         }
         let preserved_receipts =
-            super::attention::preservation_under_guards(thread_id, receipt_lineage, true)
+            match super::attention::preservation_under_guards(thread_id, receipt_lineage, true)
                 .await
-                .ok();
+            {
+                Ok(notices) => Some(notices),
+                Err(error) => {
+                    tracing::warn!(
+                        thread_id = %thread_id,
+                        error = %error,
+                        "receipt preservation unavailable during migration"
+                    );
+                    None
+                }
+            };
         let bytes_before = limiter.bytes_processed;
         let result = match self
             .migrate_one_rollout(

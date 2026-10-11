@@ -421,7 +421,15 @@ async fn canonical_attention_revert_cold_resume_refuses_receipts_and_keeps_foreg
         .as_object_mut()
         .unwrap()
         .remove("attention_receipt_lifetime_version");
-    std::fs::write(&path, format!("{head}\n{rest}")).unwrap();
+    // Only remove receipt proof. Preserve model projection byte coordinates.
+    let rewritten_head = head.to_string();
+    assert!(rewritten_head.len() <= contents.split_once('\n').unwrap().0.len());
+    let padding = " ".repeat(contents.split_once('\n').unwrap().0.len() - rewritten_head.len());
+    std::fs::write(&path, format!("{rewritten_head}{padding}\n{rest}")).unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().len(),
+        contents.len() as u64
+    );
     store
         .revert_thread(RevertThreadParams {
             thread_id: id,
