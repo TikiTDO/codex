@@ -64,7 +64,7 @@ use publish::remove_file_if_present;
 use publish::rewrite_subagent_history_boundary;
 use publish::rewritten_staged_rollout_path;
 use publish::staged_rollout_path;
-use publish::sync_parent_directory;
+pub(super) use publish::sync_parent_directory;
 use publish::write_migration_journal;
 use rollback_plan::RollbackPlan;
 use rollback_plan::RollbackPlanner;

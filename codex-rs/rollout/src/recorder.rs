@@ -890,7 +890,9 @@ impl RolloutRecorder {
         config: &impl RolloutConfigView,
         params: RolloutRecorderParams,
     ) -> std::io::Result<Self> {
-        Self::new_inner(config, params, /*writer_lock*/ None).await
+        Self::new_inner(config, params, /*writer_lock*/ None, false)
+            .await
+            .map(|(recorder, _)| recorder)
     }
 
     /// Opens a recorder under existing thread-store ownership, retaining it through background IO.
@@ -900,17 +902,37 @@ impl RolloutRecorder {
         params: RolloutRecorderParams,
         writer_lock: Arc<crate::WriterLockGuard>,
     ) -> std::io::Result<Self> {
-        Self::new_inner(config, params, Some(writer_lock)).await
+        Self::new_inner(config, params, Some(writer_lock), false)
+            .await
+            .map(|(recorder, _)| recorder)
+    }
+
+    /// Creates a new recorder outside canonical filename discovery, returning its
+    /// intended destination. The caller must close and sync it before publication.
+    /// Resume is rejected: existing canonical files are never moved into staging.
+    pub async fn new_unpublished_with_writer_lock(
+        config: &impl RolloutConfigView,
+        params: RolloutRecorderParams,
+        writer_lock: Arc<crate::WriterLockGuard>,
+    ) -> std::io::Result<(Self, PathBuf)> {
+        if matches!(params, RolloutRecorderParams::Resume { .. }) {
+            return Err(IoError::new(
+                std::io::ErrorKind::InvalidInput,
+                "unpublished recorder requires a new rollout",
+            ));
+        }
+        Self::new_inner(config, params, Some(writer_lock), true).await
     }
 
     async fn new_inner(
         config: &impl RolloutConfigView,
         params: RolloutRecorderParams,
         writer_lock: Option<Arc<crate::WriterLockGuard>>,
-    ) -> std::io::Result<Self> {
+        unpublished: bool,
+    ) -> std::io::Result<(Self, PathBuf)> {
         // Clone the cwd for the spawned task to collect git info asynchronously.
         let cwd = config.cwd().to_path_buf();
-        let state = match params {
+        let (state, canonical_path) = match params {
             RolloutRecorderParams::Create {
                 session_id,
                 conversation_id,
@@ -983,30 +1005,47 @@ impl RolloutRecorder {
                     context_window: initial_window_id.map(SessionContextWindow::new),
                 };
 
-                RolloutWriterState {
-                    writer: None,
-                    deferred_creation: true,
-                    pending_items: Vec::new(),
-                    meta: Some(session_meta),
-                    cwd: cwd.clone(),
-                    rollout_path: path,
-                    ordinal_state,
-                    last_logged_error: None,
-                }
+                let canonical_path = path.clone();
+                let path = if unpublished {
+                    let filename = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(|| IoError::other("new rollout has no valid filename"))?;
+                    path.with_file_name(format!(".{filename}.replacement.tmp"))
+                } else {
+                    path
+                };
+                (
+                    RolloutWriterState {
+                        writer: None,
+                        deferred_creation: true,
+                        pending_items: Vec::new(),
+                        meta: Some(session_meta),
+                        cwd: cwd.clone(),
+                        rollout_path: path,
+                        ordinal_state,
+                        last_logged_error: None,
+                    },
+                    canonical_path,
+                )
             }
             RolloutRecorderParams::Resume { path } => {
                 let (path, file, ordinal_state) =
                     open_rollout_for_append(path.as_path(), writer_lock.clone()).await?;
-                RolloutWriterState {
-                    writer: Some(JsonlWriter { file }),
-                    deferred_creation: false,
-                    pending_items: Vec::new(),
-                    meta: None,
-                    cwd: cwd.clone(),
-                    rollout_path: path,
-                    ordinal_state,
-                    last_logged_error: None,
-                }
+                let canonical_path = path.clone();
+                (
+                    RolloutWriterState {
+                        writer: Some(JsonlWriter { file }),
+                        deferred_creation: false,
+                        pending_items: Vec::new(),
+                        meta: None,
+                        cwd: cwd.clone(),
+                        rollout_path: path,
+                        ordinal_state,
+                        last_logged_error: None,
+                    },
+                    canonical_path,
+                )
             }
         };
         let rollout_path = state.rollout_path.clone();
@@ -1037,11 +1076,14 @@ impl RolloutRecorder {
         });
         writer_task.set_handle(handle);
 
-        Ok(Self {
-            tx,
-            writer_task,
-            rollout_path,
-        })
+        Ok((
+            Self {
+                tx,
+                writer_task,
+                rollout_path,
+            },
+            canonical_path,
+        ))
     }
 
     pub fn rollout_path(&self) -> &Path {

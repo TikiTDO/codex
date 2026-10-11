@@ -247,7 +247,7 @@ pub(super) async fn write_migration_journal(path: &Path) -> ThreadStoreResult<()
     sync_parent_directory(path).await
 }
 
-pub(super) async fn sync_parent_directory(path: &Path) -> ThreadStoreResult<()> {
+pub(in crate::local) async fn sync_parent_directory(path: &Path) -> ThreadStoreResult<()> {
     #[cfg(unix)]
     {
         let parent = path

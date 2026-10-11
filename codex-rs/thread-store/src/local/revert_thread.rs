@@ -147,7 +147,7 @@ pub(super) async fn revert(
 
     source_meta.multi_agent_version = multi_agent_version.or(source_meta.multi_agent_version);
     let rollout_id = ThreadId::new();
-    let recorder = create_replacement_recorder(
+    let (recorder, replacement_path) = create_replacement_recorder(
         store,
         source_meta,
         rollout_id,
@@ -157,8 +157,8 @@ pub(super) async fn revert(
         preserved_receipts.is_some(),
     )
     .await?;
-    let recorder = prepare_replacement(recorder, preserved_receipts).await?;
-    let replacement_path = recorder.rollout_path().to_path_buf();
+    // Retain the recorder's writer fence through the pointer CAS.
+    let _recorder = prepare_replacement(recorder, &replacement_path, preserved_receipts).await?;
     publish_replacement(
         &state_db,
         thread_id,
@@ -168,7 +168,7 @@ pub(super) async fn revert(
     .await
 }
 
-/// Own the unpublished file until its complete receipt copy is closed. Cleanup
+/// Own the hidden stage through complete close, sync, and canonical publication. Cleanup
 /// drains the writer before unlinking, retaining its cross-process fence.
 struct UnpublishedReplacement {
     recorder: Option<RolloutRecorder>,
@@ -213,6 +213,7 @@ impl Drop for UnpublishedReplacement {
 
 async fn prepare_replacement(
     recorder: RolloutRecorder,
+    canonical_path: &std::path::Path,
     preserved_receipts: Option<Vec<codex_protocol::attention::ThreadAttentionNotification>>,
 ) -> ThreadStoreResult<RolloutRecorder> {
     let mut replacement = UnpublishedReplacement::new(recorder);
@@ -222,7 +223,19 @@ async fn prepare_replacement(
         .expect("replacement still owned");
     let result = async {
         recorder.persist().await.map_err(thread_store_io_error)?;
-        stage_replacement_receipts(recorder, preserved_receipts).await
+        stage_replacement_receipts(recorder, preserved_receipts).await?;
+        let staged_path = recorder.rollout_path();
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(staged_path)
+            .await
+            .map_err(thread_store_io_error)?;
+        file.sync_all().await.map_err(thread_store_io_error)?;
+        drop(file);
+        tokio::fs::rename(staged_path, canonical_path)
+            .await
+            .map_err(thread_store_io_error)?;
+        super::rollout_migration::sync_parent_directory(canonical_path).await
     }
     .await;
     if let Err(error) = result {
@@ -234,7 +247,8 @@ async fn prepare_replacement(
         return Err(error);
     }
     // Disarm BEFORE submitting CAS: a cancelled SQL await can still commit.
-    // This closed file already contains the complete captured receipt state.
+    // Canonical discovery now sees only the complete, synchronized receipt state.
+    // Cleanup owns only the staging name, including a cancelled rename await.
     Ok(replacement.into_closed())
 }
 
@@ -291,7 +305,7 @@ async fn create_replacement_recorder(
     forked_from_ordinal_exclusive: Option<u64>,
     writer_lock: super::WriterLockGuard,
     receipt_lifetime_proved: bool,
-) -> ThreadStoreResult<RolloutRecorder> {
+) -> ThreadStoreResult<(RolloutRecorder, std::path::PathBuf)> {
     let config = RolloutConfig {
         codex_home: store.config.codex_home.clone(),
         sqlite: store.config.sqlite.clone(),
@@ -326,7 +340,7 @@ async fn create_replacement_recorder(
     if let Some(context_window) = source_meta.context_window {
         params = params.with_initial_window_id(context_window.window_id);
     }
-    RolloutRecorder::new_with_writer_lock(&config, params, writer_lock)
+    RolloutRecorder::new_unpublished_with_writer_lock(&config, params, writer_lock)
         .await
         .map_err(|err| ThreadStoreError::Internal {
             message: format!("failed to create reverted rollout: {err}"),

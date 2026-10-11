@@ -782,11 +782,10 @@ async fn canonical_attention_failed_staged_receipt_write_and_cas_keep_original_a
         .await
         .unwrap();
     let fence = store.acquire_writer_lock(id).unwrap();
-    let staged =
+    let (staged, _replacement) =
         super::create_replacement_recorder(&store, meta, ThreadId::new(), None, None, fence, true)
             .await
             .unwrap();
-    let replacement = staged.rollout_path().to_path_buf();
     staged.persist().await.unwrap();
     staged.shutdown().await.unwrap();
     // A closed staged writer cannot accept the receipt append. This error is
@@ -801,7 +800,25 @@ async fn canonical_attention_failed_staged_receipt_write_and_cas_keep_original_a
         original
     );
     assert!(original.exists());
-    // A losing pointer CAS removes precisely its unpublished replacement.
+    // Prepare a complete canonical file for the real losing-CAS control.
+    let abandoned_stage = staged.rollout_path().to_path_buf();
+    drop(staged);
+    tokio::fs::remove_file(abandoned_stage).await.unwrap();
+    let fence = store.acquire_writer_lock(id).unwrap();
+    let meta = codex_rollout::read_session_meta_line(&original)
+        .await
+        .unwrap()
+        .meta;
+    let (staged, replacement) =
+        super::create_replacement_recorder(&store, meta, ThreadId::new(), None, None, fence, true)
+            .await
+            .unwrap();
+    let _staged =
+        super::prepare_replacement(staged, &replacement, Some(preservation_notices(id, true)))
+            .await
+            .unwrap();
+    assert!(replacement.exists());
+    // A losing pointer CAS removes precisely its complete canonical replacement.
     assert!(matches!(
         super::publish_replacement(
             &db,
@@ -924,13 +941,11 @@ async fn historical_replacement_without_lifetime_proof(
     let fence = store.acquire_writer_lock(id).unwrap();
     // Reproduce the old writer: valid model base, same logical ID, no receipt copy
     // or lifetime promise. Use the real recorder and publication CAS.
-    let staged =
+    let (staged, replacement) =
         super::create_replacement_recorder(store, meta, ThreadId::new(), base, None, fence, false)
             .await
             .unwrap();
-    let replacement = staged.rollout_path().to_path_buf();
-    staged.persist().await.unwrap();
-    super::stage_replacement_receipts(&staged, None)
+    let _staged = super::prepare_replacement(staged, &replacement, None)
         .await
         .unwrap();
     super::publish_replacement(db, id, &source, &replacement)
@@ -1271,7 +1286,7 @@ async fn canonical_attention_unpublished_failed_replacement_never_claims_empty()
             .await
             .unwrap();
         let fence = store.acquire_writer_lock(id).unwrap();
-        let staged = super::create_replacement_recorder(
+        let (staged, canonical_path) = super::create_replacement_recorder(
             &store,
             meta,
             ThreadId::new(),
@@ -1288,7 +1303,7 @@ async fn canonical_attention_unpublished_failed_replacement_never_claims_empty()
             staged.shutdown().await.unwrap();
             // The real preparation owner must clean up even when persist cannot run.
             assert!(
-                super::prepare_replacement(staged, Some(expected.clone()))
+                super::prepare_replacement(staged, &canonical_path, Some(expected.clone()))
                     .await
                     .is_err()
             );
@@ -1369,86 +1384,177 @@ async fn canonical_attention_unpublished_failed_replacement_never_claims_empty()
 
 #[tokio::test]
 async fn canonical_attention_crash_orphan_ordinary_resume_never_claims_empty() {
-    let home = TempDir::new().unwrap();
-    let config = test_config(home.path());
-    let db = codex_state::StateRuntime::init(
-        config.sqlite.clone(),
-        config.default_model_provider_id.clone(),
-    )
-    .await
-    .unwrap();
-    let store = LocalThreadStore::new(config.clone(), Some(db.clone()));
-    let id = ThreadId::new();
-    create_paginated_thread(&store, id).await;
-    let expected = preservation_notices(id, true);
-    store
-        .append_items(AppendThreadItemsParams {
-            thread_id: id,
-            items: expected
-                .iter()
-                .cloned()
-                .map(|notice| RolloutItem::EventMsg(EventMsg::ThreadAttention(notice)))
-                .collect(),
-        })
-        .await
-        .unwrap();
-    let source = store.live_rollout_path(id).await.unwrap();
-    store.shutdown_thread(id).await.unwrap();
-    codex_rollout::state_db::reconcile_rollout(
-        Some(db.as_ref()),
-        &source,
-        "test-provider",
-        None,
-        &[],
-        Some(false),
-        None,
-    )
-    .await;
-    let meta = codex_rollout::read_session_meta_line(&source)
-        .await
-        .unwrap()
-        .meta;
-    let (guards, _) = super::super::attention::lock_replacement(&store, id, source.clone())
-        .await
-        .unwrap();
-    let fence = store.acquire_writer_lock(id).unwrap();
-    let staged =
-        super::create_replacement_recorder(&store, meta, ThreadId::new(), None, None, fence, true)
+    for published in [false, true] {
+        for missing_row in [false, true] {
+            let home = TempDir::new().unwrap();
+            let config = test_config(home.path());
+            let db = codex_state::StateRuntime::init(
+                config.sqlite.clone(),
+                config.default_model_provider_id.clone(),
+            )
             .await
             .unwrap();
-    let orphan = staged.rollout_path().to_path_buf();
-    staged.persist().await.unwrap();
-    staged.shutdown().await.unwrap();
-    assert!(
-        super::stage_replacement_receipts(&staged, Some(expected))
+            let store = LocalThreadStore::new(config.clone(), Some(db.clone()));
+            let id = ThreadId::new();
+            create_paginated_thread(&store, id).await;
+            let expected = preservation_notices(id, true);
+            let mut items = vec![
+                turn_started("one"),
+                turn_completed("one"),
+                turn_started("two"),
+            ];
+            items.extend(
+                expected
+                    .iter()
+                    .cloned()
+                    .map(|notice| RolloutItem::EventMsg(EventMsg::ThreadAttention(notice))),
+            );
+            items.push(turn_completed("two"));
+            store
+                .append_items(AppendThreadItemsParams {
+                    thread_id: id,
+                    items,
+                })
+                .await
+                .unwrap();
+            let source = store.live_rollout_path(id).await.unwrap();
+            store.shutdown_thread(id).await.unwrap();
+            codex_rollout::state_db::reconcile_rollout(
+                Some(db.as_ref()),
+                &source,
+                "test-provider",
+                None,
+                &[],
+                Some(false),
+                None,
+            )
+            .await;
+            let prepared = store
+                .prepare_fork(crate::PrepareForkParams {
+                    thread_id: id,
+                    boundary: crate::ForkBoundary::BeforeTurn("two".into()),
+                })
+                .await
+                .unwrap();
+            let base = prepared.history_base;
+            drop(prepared);
+            let meta = codex_rollout::read_session_meta_line(&source)
+                .await
+                .unwrap()
+                .meta;
+            let (guards, _) = super::super::attention::lock_replacement(&store, id, source.clone())
+                .await
+                .unwrap();
+            let fence = store.acquire_writer_lock(id).unwrap();
+            let (staged, canonical_path) = super::create_replacement_recorder(
+                &store,
+                meta,
+                ThreadId::new(),
+                base,
+                None,
+                fence,
+                true,
+            )
             .await
-            .is_err()
-    );
-    assert_eq!(
-        db.get_thread(id).await.unwrap().unwrap().rollout_path,
-        source
-    );
-    drop(staged);
-    drop(guards);
-    // Simulate process death bypassing asynchronous cleanup. Ordinary ID resume
-    // must not accept an incomplete replacement when its projection is absent.
-    let cold = LocalThreadStore::new(config, None);
-    cold.resume_thread(crate::ResumeThreadParams {
-        thread_id: id,
-        rollout_path: None,
-        history: None,
-        history_revision: None,
-        include_archived: false,
-        metadata: ThreadPersistenceMetadata {
-            cwd: Some(std::env::current_dir().unwrap()),
-            model_provider: "test-provider".into(),
-            memory_mode: ThreadMemoryMode::Enabled,
-        },
-    })
-    .await
-    .unwrap();
-    assert_eq!(cold.live_rollout_path(id).await.unwrap(), orphan);
-
-    assert!(cold.load_canonical_attention_receipts(id).await.is_err());
-    cold.shutdown_thread(id).await.unwrap();
+            .unwrap();
+            let staged_path = staged.rollout_path().to_path_buf();
+            assert!(
+                staged_path
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .ends_with(".replacement.tmp")
+            );
+            if published {
+                let recorder =
+                    super::prepare_replacement(staged, &canonical_path, Some(expected.clone()))
+                        .await
+                        .unwrap();
+                assert!(!staged_path.exists());
+                assert!(canonical_path.exists());
+                // Simulate death after complete publication but before submitting pointer CAS.
+                drop(recorder);
+            } else {
+                staged.persist().await.unwrap();
+                staged.shutdown().await.unwrap();
+                assert!(
+                    super::stage_replacement_receipts(&staged, Some(expected.clone()))
+                        .await
+                        .is_err()
+                );
+                // Simulate process death: bypass the async Drop cleanup owner altogether.
+                drop(staged);
+                assert!(staged_path.exists());
+                assert!(!canonical_path.exists());
+            }
+            assert_eq!(
+                db.get_thread(id).await.unwrap().unwrap().rollout_path,
+                source
+            );
+            drop(guards);
+            if missing_row {
+                db.delete_thread(id).await.unwrap();
+                assert!(db.get_thread(id).await.unwrap().is_none());
+            }
+            let cold = LocalThreadStore::new(config, missing_row.then(|| db.clone()));
+            cold.resume_thread(crate::ResumeThreadParams {
+                thread_id: id,
+                rollout_path: None,
+                history: None,
+                history_revision: None,
+                include_archived: false,
+                metadata: ThreadPersistenceMetadata {
+                    cwd: Some(std::env::current_dir().unwrap()),
+                    model_provider: "test-provider".into(),
+                    memory_mode: ThreadMemoryMode::Enabled,
+                },
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                cold.live_rollout_path(id).await.unwrap(),
+                if published { canonical_path } else { source }
+            );
+            assert_eq!(
+                crate::attention_receipts_for_preservation(
+                    crate::reduce_attention_receipts(
+                        id,
+                        cold.load_canonical_attention_receipts(id)
+                            .await
+                            .unwrap()
+                            .notices,
+                    )
+                    .unwrap()
+                ),
+                expected
+            );
+            let foreground = cold
+                .load_latest_model_context(crate::LoadThreadHistoryParams {
+                    thread_id: id,
+                    include_archived: false,
+                })
+                .await
+                .unwrap();
+            let turns = foreground
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    RolloutItem::EventMsg(EventMsg::TurnStarted(turn)) => {
+                        Some(turn.turn_id.as_str())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                turns,
+                if published {
+                    vec!["one"]
+                } else {
+                    vec!["one", "two"]
+                }
+            );
+            cold.shutdown_thread(id).await.unwrap();
+        }
+    }
 }
