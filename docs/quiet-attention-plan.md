@@ -74,6 +74,17 @@ background provenance before execution, and ordinary permission cleanup. A list
 or TUI projection is a view of the same receipt owner, not another admission
 decision. Admission remains distinct from consumption.
 
+The present `attention_snapshot` cannot supply that contract by calling ordinary
+`load_history(false)`: full-history reads reject paginated threads, and the legacy
+history helper discards the rollout decoder's parse-error count. A skipped damaged
+receipt could therefore look like an absent admission. Startup model context also
+intentionally stops at a qualifying compaction; it is not the recovery ledger.
+The reviewed recovery adapter must use the existing canonical lineage and writer
+ownership, validate the requested thread, and refuse any decode error or unknown
+coverage. Keep tolerant ordinary model-history behavior unchanged. Falsify recovery
+with a damaged receipt between otherwise valid records, a receipt older than the
+latest compaction, paginated cold resume, and a fork with ancestor admissions.
+
 ### 2. Integrate estate tools without replacing estate authority
 
 Expose first-class, typed Desk, CC and Search calls inside the configured estate
