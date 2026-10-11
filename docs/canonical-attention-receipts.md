@@ -71,3 +71,17 @@ Focused falsifiers must cover:
 - First idle admission without seeded user input and listing/retry after reconnect.
 
 These checks complement the whole plan's tool-adapter, pending-question, TUI, export, provider and disposable canary acceptance. Focused unit results do not substitute for API persistence, model ingestion or activation evidence. The strict representation-handle contract and transaction lifetime must be implemented explicitly; compiler feedback cannot weaken them.
+
+## Lifetime receipts and context replacement — reopened relation
+
+Current model-context lineage is not lifetime receipt coverage. An unloaded same-thread revert can exclude an admitted source while keeping the same logical ID; legacy rollback and bounded-subagent migration can also filter receipt events. Strictly parsing the resulting selected model prefix cannot establish an empty receipt ledger. This relation requires independent plan review before the affected implementation can be integrated.
+
+The selected correction keeps receipt state in canonical rollout events. Before a same-ID replacement selects a shorter model prefix, the existing strict capture and reducer obtain the full exact-thread state, including retryable Held bindings. The replacement writes one current notice per batch independently of its retained model prefix, flushes and closes that staged recorder, then performs the existing pointer CAS. A failed CAS leaves the original authoritative and removes only the unpublished replacement. Repeated revert carries the preserved state again, including revert wholly into parent context. A child with another logical ID remains isolated.
+
+The capture owner supplies a closed-writer, caller-held-guard path as well as its live-session path. Replacement resolves its logical-owner set first, acquires sorted lifecycle guards (exclusive target and shared ancestors), then sorted writers, and revalidates membership with at most one recapture. It cannot call a public method that reacquires its writer lock. The sole lineage walker, retained representation handles, strict decoder and finite frontiers remain the owners.
+
+Canonical migration preserves attention events independently of rollback instruction boundaries. Bounded-subagent migration also preserves the exact target's full receipt state alongside selected model context. Both validate the pinned source and preserved bindings before publishing the staged replacement. They reuse strict receipt capture; they do not add a receipt sidecar, a second lineage resolver or SQL admission truth.
+
+An older writer's replacement is not assumed complete. Existing rollout ownership/index and retained representations may permit bounded repair; their actual completeness must be proved. If that closure is unavailable, attention returns structured unavailable while ordinary foreground remains usable. A migration progress journal or valid current file is not evidence of retained lifetime receipt contents. This remains an owned repair-or-refuse requirement, not a deletion of legacy support.
+
+Additional falsifiers: Accepted and uncertain receipts followed by unload, revert before their turn, cold resume and same-/cross-key retry; repeated revert; revert into parent history; rollback then migration; bounded-subagent migration; staged write failure and failed CAS; older replacements with unprovable coverage refuse attention. No blanket revert prohibition or live activation follows from this correction.
