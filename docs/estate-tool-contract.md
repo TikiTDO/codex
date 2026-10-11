@@ -38,8 +38,14 @@ Keep the existing 5,000-byte normalized-input-schema policy; do not raise it as
 an unmeasured precaution. Generate and measure every schema before admission.
 A design-only six-family specimen measures 147, 1,427, 4,743, 1,342, 1,187 and
 1,323 UTF-8 schema bytes, respectively (10,169 total; MCP descriptors 11,511).
-This specimen is not the final owner grammar, native descriptor or token count:
-owner string/link/source bounds and normalization still need closure. It shows
+This specimen is not the final owner grammar or token count:
+owner string/link/source bounds still need closure. Native conversion of this
+exact specimen at `b30f447f` passed one focused fixture under the default policy:
+normalized schemas total 8,901 bytes, direct descriptors 10,327 bytes and augmented
+code-mode descriptors 15,140 bytes. The fixture compares the entire supported
+schema, closed operation branches and rendered discriminators/annotations. These
+are specimen byte measurements, not owner/runtime/provider or token evidence.
+The per-tool values and source/log digests are in the byte receipt. It shows
 that grouping alone does not require a 32-KB ceiling. Use concise descriptions,
 closed branches and reachable shared definitions; measure the completed manifest
 again. If it cannot fit intact, first simplify or split the affected family. Only
