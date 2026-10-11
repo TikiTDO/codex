@@ -11,6 +11,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn repository_question_routing_matches_reviewed_paragraph() {
+        assert_eq!(
+            REPOSITORY_QUESTION_ROUTING,
+            "Repository question routing: When the active repository provides Desk and directs operator questions there, use its Desk question, choice, review and validation features instead of request_user_input or request_user_input_async. Follow the repository's documented Desk commands and answer/closure workflow. If the required route is unavailable, report the hold; do not silently fall back to the native question tool. Conversation questions are not native execution, permission or security approval mechanisms, which remain on their existing routes. Outside such a repository, use this tool normally."
+        );
+    }
+
+    #[test]
     fn repository_question_routing_preserves_the_original_description() {
         for description in [
             "",
