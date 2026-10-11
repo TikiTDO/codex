@@ -37,6 +37,14 @@ async fn canonical_attention_first_read_materializes_only_acquired_new_lifecycle
         assert!(recovered.notices.is_empty());
         assert_eq!(recovered.coverage.len(), 1);
         assert!(recovered.coverage[0].end_byte_offset > 0);
+        assert_eq!(
+            codex_rollout::read_session_meta_line(&path)
+                .await
+                .unwrap()
+                .meta
+                .attention_receipt_lifetime_version,
+            Some(1)
+        );
         store.discard_thread(id).await.unwrap();
         assert!(store.load_canonical_attention_receipts(id).await.is_err());
     }
@@ -162,4 +170,178 @@ async fn canonical_attention_copied_fork_preserves_header_and_parent_receipts_as
             .iter()
             .all(|notice| notice.thread_id == parent.to_string())
     );
+}
+
+#[tokio::test]
+async fn canonical_attention_unknown_lifetime_refuses_while_foreground_remains_readable() {
+    for version in [None, Some(2)] {
+        for mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+            let home = TempDir::new().unwrap();
+            let id = ThreadId::new();
+            let store = LocalThreadStore::new(test_config(home.path()), None);
+            let mut params = create_thread_params(id);
+            params.history_mode = mode;
+            store.create_thread(params).await.unwrap();
+            store
+                .append_items(AppendThreadItemsParams {
+                    thread_id: id,
+                    items: vec![notice(id)],
+                })
+                .await
+                .unwrap();
+            let path = store.live_rollout_path(id).await.unwrap();
+            store.shutdown_thread(id).await.unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let (head, rest) = text.split_once('\n').unwrap();
+            let mut head: serde_json::Value = serde_json::from_str(head).unwrap();
+            match version {
+                Some(version) => {
+                    head["payload"]["attention_receipt_lifetime_version"] =
+                        serde_json::json!(version);
+                }
+                None => {
+                    head["payload"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("attention_receipt_lifetime_version");
+                }
+            }
+            std::fs::write(&path, format!("{head}\n{rest}")).unwrap();
+            let cold = LocalThreadStore::new(test_config(home.path()), None);
+            cold.resume_thread(ResumeThreadParams {
+                thread_id: id,
+                rollout_path: Some(path),
+                history: None,
+                history_revision: None,
+                include_archived: false,
+                metadata: thread_metadata(),
+            })
+            .await
+            .unwrap();
+            let err = cold
+                .load_canonical_attention_receipts(id)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("receipt lifetime version"));
+            assert!(
+                cold.load_history(LoadThreadHistoryParams {
+                    thread_id: id,
+                    include_archived: false,
+                })
+                .await
+                .is_ok()
+            );
+            cold.shutdown_thread(id).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn canonical_attention_migration_removes_lifetime_proof_without_blocking_foreground() {
+    for bounded_subagent in [false, true] {
+        let home = TempDir::new().unwrap();
+        let config = test_config(home.path());
+        let db = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .unwrap();
+        let store = LocalThreadStore::new(config.clone(), Some(db.clone()));
+        let id = ThreadId::new();
+        let mut params = create_thread_params(id);
+        params.history_mode = ThreadHistoryMode::Legacy;
+        if bounded_subagent {
+            params.source = codex_protocol::protocol::SessionSource::SubAgent(
+                codex_protocol::protocol::SubAgentSource::Other("receipt-fixture".into()),
+            );
+        }
+        store.create_thread(params).await.unwrap();
+        store
+            .append_items(AppendThreadItemsParams {
+                thread_id: id,
+                items: vec![notice(id)],
+            })
+            .await
+            .unwrap();
+        if bounded_subagent {
+            // This model-context boundary excludes the earlier receipt from bounded replay.
+            let compacted: codex_rollout::CompactedItem =
+                serde_json::from_value(serde_json::json!({
+                    "message": "", "replacement_history": [], "window_number": 1
+                }))
+                .unwrap();
+            store
+                .append_items(AppendThreadItemsParams {
+                    thread_id: id,
+                    items: vec![RolloutItem::Compacted(compacted)],
+                })
+                .await
+                .unwrap();
+        }
+        let path = store.live_rollout_path(id).await.unwrap();
+        assert_eq!(
+            store
+                .load_canonical_attention_receipts(id)
+                .await
+                .unwrap()
+                .notices
+                .len(),
+            1
+        );
+        store.shutdown_thread(id).await.unwrap();
+        codex_rollout::state_db::reconcile_rollout(
+            Some(db.as_ref()),
+            &path,
+            "test-provider",
+            None,
+            &[],
+            Some(false),
+            None,
+        )
+        .await;
+        let report = store
+            .migrate_rollouts(super::super::RolloutMigrationOptions {
+                mode: super::super::RolloutMigrationMode::Apply,
+                thread_ids: vec![id],
+                max_mib_per_second: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.outcomes.len(), 1);
+        assert_eq!(
+            report.outcomes[0].status,
+            super::super::RolloutMigrationStatus::Migrated
+        );
+        let path = report.outcomes[0].rollout_path.clone();
+        assert_eq!(
+            codex_rollout::read_session_meta_line(&path)
+                .await
+                .unwrap()
+                .meta
+                .attention_receipt_lifetime_version,
+            None
+        );
+        let cold = LocalThreadStore::new(config, Some(db));
+        cold.resume_thread(ResumeThreadParams {
+            thread_id: id,
+            rollout_path: Some(path),
+            history: None,
+            history_revision: None,
+            include_archived: false,
+            metadata: thread_metadata(),
+        })
+        .await
+        .unwrap();
+        assert!(cold.load_canonical_attention_receipts(id).await.is_err());
+        assert!(
+            cold.load_history(LoadThreadHistoryParams {
+                thread_id: id,
+                include_archived: false
+            })
+            .await
+            .is_ok()
+        );
+        cold.shutdown_thread(id).await.unwrap();
+    }
 }

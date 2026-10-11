@@ -142,6 +142,7 @@ async fn extract_metadata_from_rollout_uses_session_meta() {
         history_mode: ThreadHistoryMode::Paginated,
         history_base: None,
         subagent_history_start_ordinal: None,
+        attention_receipt_lifetime_version: None,
         multi_agent_version: None,
         context_window: None,
     };
@@ -266,6 +267,7 @@ async fn extract_metadata_from_rollout_returns_latest_memory_mode() {
         history_mode: Default::default(),
         history_base: None,
         subagent_history_start_ordinal: None,
+        attention_receipt_lifetime_version: None,
         multi_agent_version: None,
         context_window: None,
     };
@@ -615,6 +617,7 @@ fn write_rollout_in_sessions_with_cwd(
         history_mode,
         history_base: None,
         subagent_history_start_ordinal: None,
+        attention_receipt_lifetime_version: None,
         multi_agent_version: None,
         context_window: None,
     };

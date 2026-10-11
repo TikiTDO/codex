@@ -90,6 +90,8 @@ impl LegacyRolloutCanonicalizer {
         if metadata.meta.id != self.thread_id {
             return Err(migration_error("rollout metadata thread id changed"));
         }
+        // Tolerant/rollback/bounded model replay cannot prove lifetime receipts.
+        metadata.meta.attention_receipt_lifetime_version = None;
         metadata.meta.history_mode = ThreadHistoryMode::Paginated;
         metadata.meta.history_base = None;
         metadata.meta.subagent_history_start_ordinal = None;

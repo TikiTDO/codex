@@ -348,3 +348,114 @@ fn compress_rollout(path: &std::path::Path) {
     std::fs::write(path.with_extension("jsonl.zst"), compressed).expect("write compressed rollout");
     std::fs::remove_file(path).expect("remove plain rollout");
 }
+
+#[tokio::test]
+async fn canonical_attention_revert_cold_resume_refuses_receipts_and_keeps_foreground() {
+    let home = TempDir::new().unwrap();
+    let config = test_config(home.path());
+    let db = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await
+    .unwrap();
+    let store = LocalThreadStore::new(config.clone(), Some(db.clone()));
+    let id = ThreadId::new();
+    create_paginated_thread(&store, id).await;
+    let receipt = RolloutItem::EventMsg(EventMsg::ThreadAttention(
+        codex_protocol::attention::ThreadAttentionNotification {
+            thread_id: id.to_string(),
+            batch_id: "receipt".into(),
+            origins: vec![codex_protocol::attention::ThreadAttentionOrigin {
+                kind: codex_protocol::attention::ThreadAttentionOriginKind::Peer,
+                source_ref: "fixture:reverted".into(),
+                sender: None,
+            }],
+            admission: codex_protocol::attention::ThreadAttentionResponse::Held {
+                reason: codex_protocol::attention::ThreadAttentionHeldReason::AdmissionUncertain,
+            },
+        },
+    ));
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id: id,
+            items: vec![
+                turn_started("one"),
+                turn_completed("one"),
+                turn_started("two"),
+                receipt,
+                turn_completed("two"),
+            ],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .load_canonical_attention_receipts(id)
+            .await
+            .unwrap()
+            .notices
+            .len(),
+        1
+    );
+    let path = store.live_rollout_path(id).await.unwrap();
+    store.shutdown_thread(id).await.unwrap();
+    codex_rollout::state_db::reconcile_rollout(
+        Some(db.as_ref()),
+        &path,
+        "test-provider",
+        None,
+        &[],
+        Some(false),
+        None,
+    )
+    .await;
+    store
+        .revert_thread(RevertThreadParams {
+            thread_id: id,
+            before_turn_id: "two".into(),
+            multi_agent_version: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(turn_ids(&store, id).await, vec!["one"]);
+    let path = db.get_thread(id).await.unwrap().unwrap().rollout_path;
+    assert_eq!(
+        codex_rollout::read_session_meta_line(&path)
+            .await
+            .unwrap()
+            .meta
+            .attention_receipt_lifetime_version,
+        None
+    );
+    let cold = LocalThreadStore::new(config, Some(db));
+    cold.resume_thread(crate::ResumeThreadParams {
+        thread_id: id,
+        rollout_path: Some(path),
+        history: None,
+        history_revision: None,
+        include_archived: false,
+        metadata: ThreadPersistenceMetadata {
+            cwd: Some(std::env::current_dir().unwrap()),
+            model_provider: "test-provider".into(),
+            memory_mode: ThreadMemoryMode::Enabled,
+        },
+    })
+    .await
+    .unwrap();
+    let err = cold
+        .load_canonical_attention_receipts(id)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("receipt lifetime version"));
+    assert_eq!(turn_ids(&cold, id).await, vec!["one"]);
+    assert!(
+        cold.load_history(crate::LoadThreadHistoryParams {
+            thread_id: id,
+            include_archived: false,
+        })
+        .await
+        .is_ok()
+    );
+    cold.shutdown_thread(id).await.unwrap();
+}

@@ -3276,6 +3276,9 @@ pub struct SessionMeta {
     /// turn/item projection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_history_start_ordinal: Option<u64>,
+    /// Exact-thread attention lifetime proof. Physical replacement alone is not proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_receipt_lifetime_version: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub multi_agent_version: Option<MultiAgentVersion>,
     /// Initial context-window identity for consumers that tail rollout JSONL before compaction.
@@ -3312,6 +3315,7 @@ impl Default for SessionMeta {
             history_mode: ThreadHistoryMode::default(),
             history_base: None,
             subagent_history_start_ordinal: None,
+            attention_receipt_lifetime_version: None,
             multi_agent_version: None,
             context_window: None,
         }
@@ -6539,5 +6543,51 @@ mod tests {
                 .expect("new_or_append should return info");
 
         assert_eq!(info.model_context_window, Some(258_400));
+    }
+}
+
+#[cfg(test)]
+mod attention_lifetime_tests {
+    use super::SessionMeta;
+    use ts_rs::TS;
+
+    #[test]
+    fn canonical_attention_lifetime_marker_roundtrip_and_derived_exports() {
+        let meta = SessionMeta {
+            attention_receipt_lifetime_version: Some(1),
+            ..Default::default()
+        };
+        let mut value = serde_json::to_value(&meta).unwrap();
+        assert_eq!(value["attention_receipt_lifetime_version"], 1);
+        assert_eq!(
+            serde_json::from_value::<SessionMeta>(value.clone())
+                .unwrap()
+                .attention_receipt_lifetime_version,
+            Some(1)
+        );
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("attention_receipt_lifetime_version");
+        assert_eq!(
+            serde_json::from_value::<SessionMeta>(value)
+                .unwrap()
+                .attention_receipt_lifetime_version,
+            None
+        );
+        assert!(SessionMeta::decl().contains("attention_receipt_lifetime_version"));
+        let schema = serde_json::to_value(schemars::schema_for!(SessionMeta)).unwrap();
+        assert!(
+            schema["properties"]
+                .get("attention_receipt_lifetime_version")
+                .is_some()
+        );
+        assert!(
+            !schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|field| field == "attention_receipt_lifetime_version")
+        );
     }
 }

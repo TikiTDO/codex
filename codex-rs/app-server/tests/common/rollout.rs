@@ -278,6 +278,7 @@ fn create_fake_rollout_with_source_and_parent_thread_id(
         history_mode: Default::default(),
         history_base: None,
         subagent_history_start_ordinal: None,
+        attention_receipt_lifetime_version: None,
         multi_agent_version: None,
         context_window: None,
     };
@@ -374,6 +375,7 @@ pub fn create_fake_rollout_with_text_elements(
         history_mode: Default::default(),
         history_base: None,
         subagent_history_start_ordinal: None,
+        attention_receipt_lifetime_version: None,
         multi_agent_version: None,
         context_window: None,
     };

@@ -118,7 +118,13 @@ fn scan(
         notices: Vec::new(),
         coverage: Vec::new(),
     };
-    for (segment, file, frontier) in handles {
+    // The newest target header is the lifecycle proof. An ancestor's version is
+    // not a child's proof; an old inherited header cannot repair an unmarked target.
+    let target_segment = handles
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| unavailable("empty canonical coverage"))?;
+    for (index, (segment, file, frontier)) in handles.into_iter().enumerate() {
         let mut reader = BufReader::new(file.take(frontier));
         let mut bytes = Vec::new();
         let mut offset = 0_u64;
@@ -147,6 +153,12 @@ fn scan(
                     return Err(unavailable("wrong or absent canonical session identity"));
                 }
                 if let RolloutItem::SessionMeta(meta) = &line.item {
+                    if index == target_segment
+                        && (segment.owner_thread_id != thread_id
+                            || meta.meta.attention_receipt_lifetime_version != Some(1))
+                    {
+                        return Err(unavailable("unknown or missing receipt lifetime version"));
+                    }
                     paginated = meta.meta.history_mode
                         == codex_protocol::protocol::ThreadHistoryMode::Paginated;
                     if meta
@@ -209,6 +221,7 @@ mod tests {
             item: RolloutItem::SessionMeta(SessionMetaLine {
                 meta: SessionMeta {
                     id,
+                    attention_receipt_lifetime_version: Some(1),
                     ..Default::default()
                 },
                 git: None,

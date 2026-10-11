@@ -96,3 +96,10 @@ A retryable Held batch A can retain its immutable binding while batch B subseque
 The selected preservation order writes nonquarantining retryable Held states first, then Accepted/AdmissionUncertain states, with batch ID only a deterministic tie-breaker within each group. The shared chronological reducer skips an exactly identical previously observed notice before cross-key quarantine checks. Immutable binding checks, Accepted outcome consistency and refusal of two quarantining keys on one source remain. Runtime validation prevents A from writing a changed Held after B quarantines their source, so a retained prefix containing B already includes the unchanged latest A; copying it again is an identical observation. A prefix containing neither exact-target notice restores Held before quarantine. This uses existing canonical events without a second owner or ordinal schema.
 
 Additional falsifiers cover lexical B-before-A, arbitrary map insertion, Accepted and uncertain B, retained prefixes with both or neither target notices, repeated replacement, and contradictory quarantine still refused. This ordering refinement is part of the pending lifetime design review; it has not been implemented or tested.
+
+
+## Reviewed first slice
+
+The first slice admits attention only when the newest exact-target SessionMeta carries receipt-lifetime contract version1. Genuine new logical lifecycles explicitly write it; a generic recorder constructor defaults to unproved. Unknown or missing versions report structured attention unavailable while foreground remains tolerant. Parent lifecycle versions do not become a new child's admission identity.
+
+Same-ID revert and legacy migration deliberately omit that marker in this slice. They keep ordinary foreground operations usable and prevent recovery from claiming empty receipt state after selecting a shorter model context. Full guarded preservation, historic repair and transition-safe reduced-copy ordering above remain the separately held next slice; the first slice does not satisfy those requirements. Source review and focused falsifiers remain required before integration or activation.
