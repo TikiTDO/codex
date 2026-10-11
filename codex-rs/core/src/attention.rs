@@ -13,6 +13,8 @@ use codex_protocol::turn_input::{
 };
 use codex_rollout::RolloutItem;
 use codex_thread_store::LiveThread;
+use codex_thread_store::attention_receipt_is_quarantined as quarantined;
+use codex_thread_store::reduce_attention_receipts as reduce;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, MutexGuard};
@@ -35,57 +37,6 @@ struct LedgerState {
     readiness: Readiness,
     closing: bool,
     notices: HashMap<String, ThreadAttentionNotification>,
-}
-
-fn quarantined(notice: &ThreadAttentionNotification) -> bool {
-    matches!(
-        notice.admission,
-        ThreadAttentionResponse::Accepted { .. }
-            | ThreadAttentionResponse::Held {
-                reason: ThreadAttentionHeldReason::AdmissionUncertain
-            }
-    )
-}
-
-fn reduce(
-    thread_id: ThreadId,
-    notices: Vec<ThreadAttentionNotification>,
-) -> Result<HashMap<String, ThreadAttentionNotification>, AttentionError> {
-    let mut result: HashMap<String, ThreadAttentionNotification> = HashMap::new();
-    for notice in notices {
-        // Inherited model history never inherits another logical thread's admission.
-        if notice.thread_id != thread_id.to_string() {
-            continue;
-        }
-        codex_protocol::attention::validate_attention_metadata(&notice.batch_id, &notice.origins)
-            .map_err(|err| AttentionError::Unavailable(err.into()))?;
-        if let Some(previous) = result.get(&notice.batch_id) {
-            if previous.origins != notice.origins
-                || (matches!(previous.admission, ThreadAttentionResponse::Accepted { .. })
-                    && previous != &notice)
-            {
-                return Err(AttentionError::Unavailable(
-                    "contradictory canonical receipt binding".into(),
-                ));
-            }
-        }
-        if result.values().any(|previous| {
-            previous.batch_id != notice.batch_id
-                && quarantined(previous)
-                && previous.origins.iter().any(|origin| {
-                    notice
-                        .origins
-                        .iter()
-                        .any(|incoming| incoming.source_ref == origin.source_ref)
-                })
-        }) {
-            return Err(AttentionError::Unavailable(
-                "contradictory canonical source quarantine".into(),
-            ));
-        }
-        result.insert(notice.batch_id.clone(), notice);
-    }
-    Ok(result)
 }
 
 impl LedgerState {
@@ -435,5 +386,34 @@ mod tests {
             closed.snapshot(id, None).await,
             Err(AttentionError::Stopped)
         ));
+    }
+    #[test]
+    fn canonical_attention_preserved_cold_state_returns_same_key_and_refuses_cross_key() {
+        let id = ThreadId::new();
+        for uncertain in [false, true] {
+            let mut held = notice(id, "z-held", "shared");
+            held.admission = ThreadAttentionResponse::Held {
+                reason: ThreadAttentionHeldReason::BlockingRequest,
+            };
+            let mut admitted = notice(id, "a-admitted", "shared");
+            if !uncertain {
+                admitted.admission = accepted(ThreadAttentionDelivery::Started, "turn".into());
+            }
+            let original = vec![held, admitted.clone()];
+            let copy = codex_thread_store::attention_receipts_for_preservation(
+                reduce(id, original.clone()).unwrap(),
+            );
+            let state = LedgerState {
+                readiness: Readiness::Ready,
+                closing: false,
+                notices: reduce(id, [original, copy].concat()).unwrap(),
+            };
+            assert_eq!(
+                state.validate(&admitted).unwrap(),
+                Some(admitted.admission.clone())
+            );
+            assert!(state.validate(&notice(id, "another", "shared")).is_err());
+            assert!(state.validate(&notice(id, "z-held", "changed")).is_err());
+        }
     }
 }

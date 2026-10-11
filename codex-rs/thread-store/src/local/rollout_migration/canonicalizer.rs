@@ -82,6 +82,7 @@ impl LegacyRolloutCanonicalizer {
         &mut self,
         line: RolloutLine,
         writer: &mut BufWriter<File>,
+        receipt_lifetime_proved: bool,
     ) -> ThreadStoreResult<u64> {
         let timestamp = line.timestamp;
         let RolloutItem::SessionMeta(mut metadata) = line.item else {
@@ -90,8 +91,8 @@ impl LegacyRolloutCanonicalizer {
         if metadata.meta.id != self.thread_id {
             return Err(migration_error("rollout metadata thread id changed"));
         }
-        // Tolerant/rollback/bounded model replay cannot prove lifetime receipts.
-        metadata.meta.attention_receipt_lifetime_version = None;
+        // Only the independent strict full-source capture can supply this proof.
+        metadata.meta.attention_receipt_lifetime_version = receipt_lifetime_proved.then_some(1);
         metadata.meta.history_mode = ThreadHistoryMode::Paginated;
         metadata.meta.history_base = None;
         metadata.meta.subagent_history_start_ordinal = None;
@@ -313,6 +314,24 @@ impl LegacyRolloutCanonicalizer {
     ) -> ThreadStoreResult<u64> {
         let bytes_before = self.bytes_written;
         self.finish_implicit_turn(writer, timestamp).await?;
+        Ok(self.bytes_written - bytes_before)
+    }
+
+    pub(super) async fn write_preserved_receipts(
+        &mut self,
+        notices: &[codex_protocol::attention::ThreadAttentionNotification],
+        writer: &mut BufWriter<File>,
+        timestamp: &str,
+    ) -> ThreadStoreResult<u64> {
+        let bytes_before = self.bytes_written;
+        for notice in notices {
+            self.write_item(
+                writer,
+                timestamp,
+                RolloutItem::EventMsg(EventMsg::ThreadAttention(notice.clone())),
+            )
+            .await?;
+        }
         Ok(self.bytes_written - bytes_before)
     }
 

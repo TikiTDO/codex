@@ -31,11 +31,6 @@ pub(super) async fn revert(
         .ok_or(ThreadStoreError::Unsupported {
             operation: "revert_thread",
         })?;
-    let _lifecycle_guard = store.live_writer_locks.lock_lifecycle(thread_id).await;
-    let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
-    store.ensure_live_recorder_absent(thread_id).await?;
-    let writer_lock = store.acquire_writer_lock(thread_id)?;
-
     // Resolution may return a compressed sibling. Keep SQLite's exact stored path for the CAS.
     let stored_metadata = state_db
         .get_thread(thread_id)
@@ -49,6 +44,26 @@ pub(super) async fn revert(
         .await?
         .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
     let source_path = current_rollout.path;
+    // Discover the entire owner set before taking any lifecycle or writer lock.
+    let (_replacement_guards, receipt_lineage) =
+        super::attention::lock_replacement(store, thread_id, source_path.clone()).await?;
+    store.ensure_live_recorder_absent(thread_id).await?;
+    let writer_lock = store.acquire_writer_lock(thread_id)?;
+    let verified_current = thread_rollout_resolver::resolve_current(store, thread_id)
+        .await?
+        .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
+    if verified_current.path != source_path
+        || verified_current.rollout_id != current_rollout.rollout_id
+    {
+        return Err(ThreadStoreError::Conflict {
+            message: format!("thread {thread_id} changed before revert capture"),
+        });
+    }
+    // Failed strict proof preserves the existing foreground path, never empty proof.
+    let preserved_receipts =
+        super::attention::preservation_under_guards(thread_id, receipt_lineage, false)
+            .await
+            .ok();
     let mut source_meta = codex_rollout::read_session_meta_line(source_path.as_path())
         .await
         .map_err(|err| ThreadStoreError::Internal {
@@ -126,24 +141,59 @@ pub(super) async fn revert(
         history_base,
         forked_from_ordinal_exclusive,
         writer_lock,
+        preserved_receipts.is_some(),
     )
     .await?;
     let replacement_path = recorder.rollout_path().to_path_buf();
     recorder.persist().await.map_err(thread_store_io_error)?;
-    recorder.shutdown().await.map_err(thread_store_io_error)?;
+    stage_replacement_receipts(&recorder, preserved_receipts).await?;
+    publish_replacement(
+        &state_db,
+        thread_id,
+        expected_sqlite_path.as_path(),
+        replacement_path.as_path(),
+    )
+    .await
+}
 
+/// Called only after the staged header has been materialized. Receipt write and
+/// close must succeed before the pointer can be published by the caller.
+async fn stage_replacement_receipts(
+    recorder: &RolloutRecorder,
+    preserved_receipts: Option<Vec<codex_protocol::attention::ThreadAttentionNotification>>,
+) -> ThreadStoreResult<()> {
+    if let Some(notices) = preserved_receipts {
+        let items: Vec<_> = notices
+            .into_iter()
+            .map(|notice| {
+                codex_rollout::RolloutItem::EventMsg(
+                    codex_protocol::protocol::EventMsg::ThreadAttention(notice),
+                )
+            })
+            .collect();
+        recorder
+            .record_canonical_items(&items)
+            .await
+            .map_err(thread_store_io_error)?;
+        recorder.flush().await.map_err(thread_store_io_error)?;
+    }
+    recorder.shutdown().await.map_err(thread_store_io_error)
+}
+
+async fn publish_replacement(
+    state_db: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+    expected_sqlite_path: &std::path::Path,
+    replacement_path: &std::path::Path,
+) -> ThreadStoreResult<()> {
     let replaced = state_db
-        .replace_rollout_path_if_current(
-            thread_id,
-            expected_sqlite_path.as_path(),
-            replacement_path.as_path(),
-        )
+        .replace_rollout_path_if_current(thread_id, expected_sqlite_path, replacement_path)
         .await
         .map_err(|err| ThreadStoreError::Internal {
             message: format!("failed to switch thread {thread_id} to reverted rollout: {err}"),
         })?;
     if !replaced {
-        let _ = tokio::fs::remove_file(replacement_path.as_path()).await;
+        let _ = tokio::fs::remove_file(replacement_path).await;
         return Err(ThreadStoreError::Conflict {
             message: format!("thread {thread_id} changed while it was being reverted"),
         });
@@ -158,6 +208,7 @@ async fn create_replacement_recorder(
     history_base: Option<codex_protocol::protocol::HistoryPosition>,
     forked_from_ordinal_exclusive: Option<u64>,
     writer_lock: super::WriterLockGuard,
+    receipt_lifetime_proved: bool,
 ) -> ThreadStoreResult<RolloutRecorder> {
     let config = RolloutConfig {
         codex_home: store.config.codex_home.clone(),
@@ -185,9 +236,7 @@ async fn create_replacement_recorder(
     .with_selected_capability_roots(source_meta.selected_capability_roots)
     .with_runtime_workspace_roots(source_meta.runtime_workspace_roots)
     .with_multi_agent_version(source_meta.multi_agent_version)
-    // Model-prefix replacement does not yet preserve the full receipt lifetime.
-    // Keep ordinary revert usable, but never stamp a fresh empty attention proof.
-    .with_attention_receipt_lifetime_version(None)
+    .with_attention_receipt_lifetime_version(receipt_lifetime_proved.then_some(1))
     .with_history_mode(ThreadHistoryMode::Paginated)
     .with_history_base(history_base)
     .with_forked_from_ordinal_exclusive(forked_from_ordinal_exclusive)

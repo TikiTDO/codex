@@ -242,117 +242,187 @@ async fn canonical_attention_unknown_lifetime_refuses_while_foreground_remains_r
 }
 
 #[tokio::test]
-async fn canonical_attention_migration_removes_lifetime_proof_without_blocking_foreground() {
+async fn canonical_attention_migration_preserves_lifetime_independent_of_rollback_and_bounded_context()
+ {
+    use codex_protocol::attention::ThreadAttentionDelivery;
+    use codex_protocol::protocol::{ThreadRolledBackEvent, TurnStartedEvent, UserMessageEvent};
     for bounded_subagent in [false, true] {
-        let home = TempDir::new().unwrap();
-        let config = test_config(home.path());
-        let db = codex_state::StateRuntime::init(
-            config.sqlite.clone(),
-            config.default_model_provider_id.clone(),
-        )
-        .await
-        .unwrap();
-        let store = LocalThreadStore::new(config.clone(), Some(db.clone()));
-        let id = ThreadId::new();
-        let mut params = create_thread_params(id);
-        params.history_mode = ThreadHistoryMode::Legacy;
-        if bounded_subagent {
-            params.source = codex_protocol::protocol::SessionSource::SubAgent(
-                codex_protocol::protocol::SubAgentSource::Other("receipt-fixture".into()),
-            );
-        }
-        store.create_thread(params).await.unwrap();
-        store
-            .append_items(AppendThreadItemsParams {
-                thread_id: id,
-                items: vec![notice(id)],
-            })
-            .await
-            .unwrap();
-        if bounded_subagent {
-            // This model-context boundary excludes the earlier receipt from bounded replay.
-            let compacted: codex_rollout::CompactedItem =
-                serde_json::from_value(serde_json::json!({
-                    "message": "", "replacement_history": [], "window_number": 1
-                }))
+        for uncertain in [false, true] {
+            for proof in ["v1", "append-only", "unknown", "damaged"] {
+                let home = TempDir::new().unwrap();
+                let config = test_config(home.path());
+                let db = codex_state::StateRuntime::init(
+                    config.sqlite.clone(),
+                    config.default_model_provider_id.clone(),
+                )
+                .await
                 .unwrap();
-            store
-                .append_items(AppendThreadItemsParams {
+                let store = LocalThreadStore::new(config.clone(), Some(db.clone()));
+                let id = ThreadId::new();
+                let mut params = create_thread_params(id);
+                params.history_mode = ThreadHistoryMode::Legacy;
+                if bounded_subagent {
+                    params.source = codex_protocol::protocol::SessionSource::SubAgent(
+                        codex_protocol::protocol::SubAgentSource::Other("receipt-fixture".into()),
+                    );
+                }
+                store.create_thread(params).await.unwrap();
+                let RolloutItem::EventMsg(EventMsg::ThreadAttention(mut held)) = notice(id) else {
+                    unreachable!()
+                };
+                held.batch_id = "z-held".into();
+                held.admission = ThreadAttentionResponse::Held {
+                    reason: ThreadAttentionHeldReason::BlockingRequest,
+                };
+                let mut admitted = held.clone();
+                admitted.batch_id = "a-admitted".into();
+                admitted.admission = if uncertain {
+                    ThreadAttentionResponse::Held {
+                        reason: ThreadAttentionHeldReason::AdmissionUncertain,
+                    }
+                } else {
+                    ThreadAttentionResponse::Accepted {
+                        delivery: ThreadAttentionDelivery::Started,
+                        turn_id: Some("removed".into()),
+                    }
+                };
+                let expected = vec![held.clone(), admitted.clone()];
+                let start = RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: "removed".into(),
+                    root_turn_id: None,
+                    trace_id: None,
+                    started_at: Some(10),
+                    model_context_window: None,
+                    collaboration_mode_kind: Default::default(),
+                }));
+                store
+                    .append_items(AppendThreadItemsParams {
+                        thread_id: id,
+                        items: vec![
+                            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                                message: "keep".into(),
+                                ..Default::default()
+                            })),
+                            start,
+                            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                                message: "remove".into(),
+                                ..Default::default()
+                            })),
+                            RolloutItem::EventMsg(EventMsg::ThreadAttention(held)),
+                            RolloutItem::EventMsg(EventMsg::ThreadAttention(admitted)),
+                            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+                                ThreadRolledBackEvent { num_turns: 1 },
+                            )),
+                        ],
+                    })
+                    .await
+                    .unwrap();
+                if bounded_subagent {
+                    let compacted = serde_json::from_value(serde_json::json!({
+                        "message": "", "replacement_history": [], "window_number": 1,
+                    }))
+                    .unwrap();
+                    store
+                        .append_items(AppendThreadItemsParams {
+                            thread_id: id,
+                            items: vec![RolloutItem::Compacted(compacted)],
+                        })
+                        .await
+                        .unwrap();
+                }
+                let path = store.live_rollout_path(id).await.unwrap();
+                store.shutdown_thread(id).await.unwrap();
+                codex_rollout::state_db::reconcile_rollout(
+                    Some(db.as_ref()),
+                    &path,
+                    "test-provider",
+                    None,
+                    &[],
+                    Some(false),
+                    None,
+                )
+                .await;
+                if proof != "v1" {
+                    let bytes = std::fs::read_to_string(&path).unwrap();
+                    let (head, rest) = bytes.split_once('\n').unwrap();
+                    let mut head: serde_json::Value = serde_json::from_str(head).unwrap();
+                    if proof == "unknown" {
+                        head["payload"]["attention_receipt_lifetime_version"] = 99.into();
+                    } else {
+                        head["payload"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("attention_receipt_lifetime_version");
+                    }
+                    let suffix = if proof == "damaged" {
+                        "{invalid}\n"
+                    } else {
+                        ""
+                    };
+                    std::fs::write(&path, format!("{head}\n{rest}{suffix}")).unwrap();
+                }
+                let report = store
+                    .migrate_rollouts(super::super::RolloutMigrationOptions {
+                        mode: super::super::RolloutMigrationMode::Apply,
+                        thread_ids: vec![id],
+                        max_mib_per_second: None,
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(report.outcomes.len(), 1);
+                assert_eq!(
+                    report.outcomes[0].status,
+                    super::super::RolloutMigrationStatus::Migrated
+                );
+                let path = report.outcomes[0].rollout_path.clone();
+                let proved = matches!(proof, "v1" | "append-only");
+                assert_eq!(
+                    codex_rollout::read_session_meta_line(&path)
+                        .await
+                        .unwrap()
+                        .meta
+                        .attention_receipt_lifetime_version,
+                    proved.then_some(1)
+                );
+                let cold = LocalThreadStore::new(config, Some(db));
+                cold.resume_thread(ResumeThreadParams {
                     thread_id: id,
-                    items: vec![RolloutItem::Compacted(compacted)],
+                    rollout_path: Some(path),
+                    history: None,
+                    history_revision: None,
+                    include_archived: false,
+                    metadata: thread_metadata(),
                 })
                 .await
                 .unwrap();
+                let recovered = cold.load_canonical_attention_receipts(id).await;
+                if proved {
+                    let reduced =
+                        crate::reduce_attention_receipts(id, recovered.unwrap().notices).unwrap();
+                    assert_eq!(
+                        crate::attention_receipts_for_preservation(reduced),
+                        expected
+                    );
+                } else {
+                    assert!(recovered.is_err());
+                }
+                let foreground = cold
+                    .load_latest_model_context(LoadThreadHistoryParams {
+                        thread_id: id,
+                        include_archived: false,
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(foreground.thread_id, id);
+                assert!(foreground.items.iter().any(
+                    |item| matches!(item, RolloutItem::SessionMeta(meta) if meta.meta.id == id)
+                ));
+                if !bounded_subagent {
+                    assert!(!foreground.items.iter().any(|item|
+                        matches!(item, RolloutItem::EventMsg(EventMsg::UserMessage(event)) if event.message == "remove")));
+                }
+                cold.shutdown_thread(id).await.unwrap();
+            }
         }
-        let path = store.live_rollout_path(id).await.unwrap();
-        assert_eq!(
-            store
-                .load_canonical_attention_receipts(id)
-                .await
-                .unwrap()
-                .notices
-                .len(),
-            1
-        );
-        store.shutdown_thread(id).await.unwrap();
-        codex_rollout::state_db::reconcile_rollout(
-            Some(db.as_ref()),
-            &path,
-            "test-provider",
-            None,
-            &[],
-            Some(false),
-            None,
-        )
-        .await;
-        let report = store
-            .migrate_rollouts(super::super::RolloutMigrationOptions {
-                mode: super::super::RolloutMigrationMode::Apply,
-                thread_ids: vec![id],
-                max_mib_per_second: None,
-            })
-            .await
-            .unwrap();
-        assert_eq!(report.outcomes.len(), 1);
-        assert_eq!(
-            report.outcomes[0].status,
-            super::super::RolloutMigrationStatus::Migrated
-        );
-        let path = report.outcomes[0].rollout_path.clone();
-        assert_eq!(
-            codex_rollout::read_session_meta_line(&path)
-                .await
-                .unwrap()
-                .meta
-                .attention_receipt_lifetime_version,
-            None
-        );
-        let cold = LocalThreadStore::new(config, Some(db));
-        cold.resume_thread(ResumeThreadParams {
-            thread_id: id,
-            rollout_path: Some(path),
-            history: None,
-            history_revision: None,
-            include_archived: false,
-            metadata: thread_metadata(),
-        })
-        .await
-        .unwrap();
-        assert!(cold.load_canonical_attention_receipts(id).await.is_err());
-        let foreground = cold
-            .load_latest_model_context(LoadThreadHistoryParams {
-                thread_id: id,
-                include_archived: false,
-            })
-            .await
-            .expect("migrated foreground model context remains readable");
-        assert_eq!(foreground.thread_id, id);
-        assert!(
-            foreground
-                .items
-                .iter()
-                .any(|item| matches!(item, RolloutItem::SessionMeta(meta) if meta.meta.id == id))
-        );
-        cold.shutdown_thread(id).await.unwrap();
     }
 }
