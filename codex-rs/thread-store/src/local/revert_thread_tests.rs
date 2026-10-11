@@ -1223,3 +1223,74 @@ async fn canonical_attention_historic_skipped_generation_refuses_with_or_without
         }
     }
 }
+
+#[tokio::test]
+async fn canonical_attention_unpublished_failed_replacement_never_claims_empty() {
+    let home = TempDir::new().unwrap();
+    let config = test_config(home.path());
+    let db = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await
+    .unwrap();
+    let store = LocalThreadStore::new(config.clone(), Some(db.clone()));
+    let id = ThreadId::new();
+    create_paginated_thread(&store, id).await;
+    let expected = preservation_notices(id, true);
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id: id,
+            items: expected
+                .iter()
+                .cloned()
+                .map(|notice| RolloutItem::EventMsg(EventMsg::ThreadAttention(notice)))
+                .collect(),
+        })
+        .await
+        .unwrap();
+    let source = store.live_rollout_path(id).await.unwrap();
+    store.shutdown_thread(id).await.unwrap();
+    codex_rollout::state_db::reconcile_rollout(
+        Some(db.as_ref()),
+        &source,
+        "test-provider",
+        None,
+        &[],
+        Some(false),
+        None,
+    )
+    .await;
+    let meta = codex_rollout::read_session_meta_line(&source)
+        .await
+        .unwrap()
+        .meta;
+    let (guards, _) = super::super::attention::lock_replacement(&store, id, source.clone())
+        .await
+        .unwrap();
+    let fence = store.acquire_writer_lock(id).unwrap();
+    let staged =
+        super::create_replacement_recorder(&store, meta, ThreadId::new(), None, None, fence, true)
+            .await
+            .unwrap();
+    let orphan = staged.rollout_path().to_path_buf();
+    staged.persist().await.unwrap();
+    staged.shutdown().await.unwrap();
+    assert!(
+        super::stage_replacement_receipts(&staged, Some(expected))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        db.get_thread(id).await.unwrap().unwrap().rollout_path,
+        source
+    );
+    drop(staged);
+    drop(guards);
+    // An explicit path is accepted by actual cold acquisition without a SQL
+    // selection row. Failed publication cannot leave a false complete-empty proof.
+    let cold = LocalThreadStore::new(config, None);
+    resume_historic_fixture(&cold, id, orphan).await;
+    assert!(cold.load_canonical_attention_receipts(id).await.is_err());
+    cold.shutdown_thread(id).await.unwrap();
+}
