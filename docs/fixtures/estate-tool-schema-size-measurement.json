@@ -1,0 +1,99 @@
+{
+  "status": "design-only-generated-json-size-not-native-final-descriptor-or-tokens",
+  "rows": [
+    {
+      "tool": "estate_capabilities_v2",
+      "input_schema_utf8_bytes": 147,
+      "mcp_tool_descriptor_utf8_bytes": 317
+    },
+    {
+      "tool": "desk_read_v2",
+      "input_schema_utf8_bytes": 1427,
+      "mcp_tool_descriptor_utf8_bytes": 1625
+    },
+    {
+      "tool": "desk_act_v2",
+      "input_schema_utf8_bytes": 4743,
+      "mcp_tool_descriptor_utf8_bytes": 5082
+    },
+    {
+      "tool": "cc_read_v2",
+      "input_schema_utf8_bytes": 1342,
+      "mcp_tool_descriptor_utf8_bytes": 1539
+    },
+    {
+      "tool": "cc_progress_v2",
+      "input_schema_utf8_bytes": 1187,
+      "mcp_tool_descriptor_utf8_bytes": 1420
+    },
+    {
+      "tool": "search_v2",
+      "input_schema_utf8_bytes": 1323,
+      "mcp_tool_descriptor_utf8_bytes": 1528
+    }
+  ],
+  "total_input_schema_utf8_bytes": 10169,
+  "total_mcp_tool_descriptor_utf8_bytes": 11511,
+  "largest_input_schema_utf8_bytes": 4743,
+  "default_schema_policy_utf8_bytes": 5000,
+  "limits": "Native JsonSchema drops minLength/pattern/numeric limits/maxItems; supported descriptions and closed structure passed the native direct/code-mode specimen conversion at the pinned test head. Semantic owner enforcement, final string/link/option/source grammar, backend/profile/provider admission and tokens remain unproved.",
+  "native_design_specimen_measurement": {
+    "status": "native-design-specimen-conversion-pass-not-owner-profile-provider-or-tokens",
+    "source_head": "b30f447f5967080265e0d6f35354e9f7713d6d6b",
+    "fixture": "codex-rs/tools/tests/estate_schema_design.rs",
+    "specimen_sha256": "99f94fffb1aeac3c88324e1b65fe47663135ea13fa1315d254e6151c4d900077",
+    "result": "one passed; zero failed; default schema policy; direct and code-mode supported contract matched",
+    "log_sha256": "1e84e8874b00dd0d22df7c2f58591dc772a88b2937627fe0420be4d33e31ccd5",
+    "rows": [
+      {
+        "code_mode_descriptor_utf8_bytes": 496,
+        "direct_descriptor_utf8_bytes": 347,
+        "direct_schema_utf8_bytes": 163,
+        "tool": "estate_capabilities_v2",
+        "wire_schema_utf8_bytes": 147
+      },
+      {
+        "code_mode_descriptor_utf8_bytes": 1979,
+        "direct_descriptor_utf8_bytes": 1408,
+        "direct_schema_utf8_bytes": 1196,
+        "tool": "desk_read_v2",
+        "wire_schema_utf8_bytes": 1427
+      },
+      {
+        "code_mode_descriptor_utf8_bytes": 6684,
+        "direct_descriptor_utf8_bytes": 4524,
+        "direct_schema_utf8_bytes": 4171,
+        "tool": "desk_act_v2",
+        "wire_schema_utf8_bytes": 4743
+      },
+      {
+        "code_mode_descriptor_utf8_bytes": 2081,
+        "direct_descriptor_utf8_bytes": 1403,
+        "direct_schema_utf8_bytes": 1192,
+        "tool": "cc_read_v2",
+        "wire_schema_utf8_bytes": 1342
+      },
+      {
+        "code_mode_descriptor_utf8_bytes": 1839,
+        "direct_descriptor_utf8_bytes": 1264,
+        "direct_schema_utf8_bytes": 1017,
+        "tool": "cc_progress_v2",
+        "wire_schema_utf8_bytes": 1187
+      },
+      {
+        "code_mode_descriptor_utf8_bytes": 2061,
+        "direct_descriptor_utf8_bytes": 1381,
+        "direct_schema_utf8_bytes": 1162,
+        "tool": "search_v2",
+        "wire_schema_utf8_bytes": 1323
+      }
+    ],
+    "totals": {
+      "code_mode_descriptor_utf8_bytes": 15140,
+      "direct_descriptor_utf8_bytes": 10327,
+      "direct_schema_utf8_bytes": 8901,
+      "wire_schema_utf8_bytes": 10169
+    },
+    "limitations": "The authored six-family specimen only. Native JsonSchema drops unsupported range/pattern keywords; supported annotations survive. No final semantic owner grammar, input enforcement, backend/runtime/profile availability, provider ingestion/compliance, hosted request, tokens/savings, database or activation proof."
+  }
+}

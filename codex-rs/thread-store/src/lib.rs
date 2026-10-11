@@ -4,7 +4,13 @@
 //! Implementations are responsible for resolving that id to local rollout files, RPC requests, or
 //! any other backing store.
 
+mod attention;
 mod error;
+pub use attention::AttentionReceiptCoverage;
+pub use attention::CanonicalAttentionReceipts;
+pub use attention::attention_receipt_is_quarantined;
+pub use attention::attention_receipts_for_preservation;
+pub use attention::reduce_attention_receipts;
 mod in_memory;
 mod live_thread;
 mod local;

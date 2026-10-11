@@ -9,6 +9,48 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 
 impl Session {
+    /// Append runtime context only to a live regular task, never to the idle-start
+    /// reservation. The caller retains its source if the task cannot consume it.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "task identity and context admission must remain atomic"
+    )]
+    pub(crate) async fn inject_attention_if_running(
+        &self,
+        item: ResponseItem,
+    ) -> Result<String, codex_protocol::attention::ThreadAttentionHeldReason> {
+        use codex_protocol::attention::ThreadAttentionHeldReason;
+        let Some(_admission) = self.services.extensions.admit_turn_start() else {
+            return Err(ThreadAttentionHeldReason::ServerDraining);
+        };
+        let mut active = self.active_turn.lock().await;
+        let Some(active_task) = active.as_ref().and_then(|turn| turn.task.as_ref()) else {
+            return Err(ThreadAttentionHeldReason::Busy);
+        };
+        if active_task.kind != crate::state::TaskKind::Regular
+            || active_task.cancellation_token.is_cancelled()
+        {
+            return Err(ThreadAttentionHeldReason::Busy);
+        }
+        let turn_id = active_task.turn_context.sub_id.clone();
+        let turn_state = active
+            .as_mut()
+            .expect("checked active task")
+            .turn_state
+            .as_ref();
+        // Quiet context waits for the next ordinary consumption boundary. It
+        // neither signals Steer activity nor accepts another mailbox's delivery.
+        self.input_queue
+            .extend_attention_input_for_turn_state(
+                turn_state,
+                vec![PendingTurnInput::ResponseItem(ResponseItemEnvelope::new(
+                    item,
+                ))],
+            )
+            .await?;
+        Ok(turn_id)
+    }
+
     /// Returns the input if there is no active turn to inject into.
     #[expect(
         clippy::await_holding_invalid_type,

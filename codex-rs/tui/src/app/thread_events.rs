@@ -76,6 +76,8 @@ pub(super) struct ThreadEventStore {
     pub(super) active: bool,
     pub(super) buffered_agent_message_delta_bytes: usize,
     delegated_turns: VecDeque<String>,
+    // Active provenance must survive bounded notification-buffer eviction.
+    attention_turns: HashMap<String, codex_app_server_protocol::AttentionTurnStartedNotification>,
     recap_progress: recap::RecapProgress,
 }
 
@@ -98,6 +100,8 @@ impl ThreadEventStore {
             ThreadBufferedEvent::Notification(notification) => matches!(
                 notification.as_ref(),
                 ServerNotification::HookStarted(_)
+                    | ServerNotification::ThreadAttention(_)
+                    | ServerNotification::AttentionTurnStarted(_)
                     | ServerNotification::HookCompleted(_)
                     | ServerNotification::McpServerStatusUpdated(_)
                     | ServerNotification::McpServerOauthLoginCompleted(_)
@@ -121,6 +125,7 @@ impl ThreadEventStore {
             active: false,
             buffered_agent_message_delta_bytes: 0,
             delegated_turns: VecDeque::new(),
+            attention_turns: HashMap::new(),
             recap_progress: recap::RecapProgress::default(),
         }
     }
@@ -181,11 +186,18 @@ impl ThreadEventStore {
     }
 
     fn push_notification_inner(&mut self, notification: Cow<'_, ServerNotification>) {
+        if let ServerNotification::AttentionTurnStarted(marker) = notification.as_ref() {
+            self.attention_turns
+                .insert(marker.turn_id.clone(), marker.clone());
+        }
         let user_item = match notification.as_ref() {
             ServerNotification::ItemStarted(n) => Some((&n.turn_id, &n.item)),
             ServerNotification::ItemCompleted(n) => Some((&n.turn_id, &n.item)),
             _ => None,
         };
+        if let Some((turn_id, ThreadItem::UserMessage { .. })) = user_item {
+            self.attention_turns.remove(turn_id);
+        }
         if let Some((turn_id, ThreadItem::UserMessage { content, .. })) = user_item
             && turn_id.len() <= 512
             && crate::chatwidget::realtime_delegation_input(content).is_some()
@@ -207,6 +219,7 @@ impl ThreadEventStore {
                 }
             }
             ServerNotification::TurnCompleted(turn) => {
+                self.attention_turns.remove(&turn.turn.id);
                 if self
                     .active_reasoning_item
                     .as_ref()
@@ -376,6 +389,18 @@ impl ThreadEventStore {
             active_reasoning_item: self.active_reasoning_item.clone(),
             input_state: self.input_state.clone(),
         };
+        // Prepend lifecycle provenance even if its original notice was evicted.
+        // Replayed duplicates are idempotent in ChatWidget.
+        let mut markers = self.attention_turns.values().cloned().collect::<Vec<_>>();
+        markers.sort_by(|left, right| left.turn_id.cmp(&right.turn_id));
+        snapshot.events.splice(
+            0..0,
+            markers.into_iter().map(|marker| {
+                ThreadBufferedEvent::Notification(Box::new(
+                    ServerNotification::AttentionTurnStarted(marker),
+                ))
+            }),
+        );
         if let Some(latest_turn_id) = &self.latest_turn_id {
             replay_filter::omit_resolved_misalignment_errors(&mut snapshot, latest_turn_id);
         }

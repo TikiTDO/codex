@@ -58,6 +58,7 @@ use codex_protocol::turn_input::RecoverTurnRequest;
 use codex_protocol::turn_input::StartIfIdleSubmission;
 use codex_protocol::turn_input::SteerSubmission;
 use codex_protocol::turn_input::SuspendTurnOutcome;
+use codex_protocol::turn_input::TurnInput;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
@@ -426,6 +427,20 @@ impl CodexThread {
         }
     }
 
+    /// Starts quiet native attention when idle. The trusted classifier is separate
+    /// from client turn-trigger labels and never permits steering or operator input.
+    pub async fn start_attention_if_idle(
+        &self,
+        context: crate::context::InternalModelContextFragment,
+    ) -> CodexResult<StartIfIdleSubmission> {
+        let mut request = TurnInputRequest::new(TurnInput::ResponseItem(
+            ContextualUserFragment::into(context),
+        ));
+        request.background_attention = true;
+        request.start.turn_trigger = Some("attention".to_string());
+        self.start_turn_if_idle(request).await
+    }
+
     /// Starts a new internal continuation turn when idle, including in Plan mode.
     /// Rejects if a newer task has started, even if it has already finished.
     /// The input must be a response item; it is never treated as user authorization.
@@ -574,6 +589,54 @@ impl CodexThread {
         self.io.submit_turn_input(request, mode).await
     }
 
+    /// Canonical receipt projection from the exact Core persistence lifecycle.
+    pub async fn attention_snapshot(
+        &self,
+    ) -> Result<
+        Vec<codex_protocol::attention::ThreadAttentionNotification>,
+        codex_protocol::attention::AttentionError,
+    > {
+        self.session
+            .services
+            .attention_ledger
+            .snapshot(self.session.thread_id, self.session.live_thread())
+            .await
+    }
+
+    /// Once enqueued, dropping the caller cancels observation only. Core owns
+    /// the complete durable transaction independently of this waiter.
+    pub async fn submit_attention(
+        &self,
+        notice: codex_protocol::attention::ThreadAttentionNotification,
+        context: crate::context::InternalModelContextFragment,
+        blocking_request: bool,
+    ) -> Result<
+        codex_protocol::attention::ThreadAttentionResponse,
+        codex_protocol::attention::AttentionError,
+    > {
+        use codex_protocol::attention::AttentionError;
+        let mut request = TurnInputRequest::new(TurnInput::ResponseItem(
+            ContextualUserFragment::into(context),
+        ));
+        request.background_attention = true;
+        request.start.turn_trigger = Some("attention".to_string());
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        self.io
+            .submit(Op::Attention {
+                notice,
+                request: Box::new(request),
+                blocking_request,
+                reply,
+            })
+            .await
+            .map_err(|_| AttentionError::Stopped)?;
+        receiver.await.unwrap_or_else(|_| {
+            Err(AttentionError::Unavailable(
+                "Core dispatch exited before receipt settlement; strict recovery required".into(),
+            ))
+        })
+    }
+
     /// Persist whether this thread is eligible for future memory generation.
     pub async fn set_thread_memory_mode(&self, mode: ThreadMemoryMode) -> anyhow::Result<()> {
         self.session.set_thread_memory_mode(mode).await
@@ -589,6 +652,17 @@ impl CodexThread {
         items: Vec<ResponseItem>,
     ) -> Result<(), Vec<ResponseItem>> {
         self.session.inject_if_running(items).await
+    }
+
+    /// Runtime context admission does not steer, interrupt, or authorize a task.
+    /// Unlike general injection, an idle-start reservation is not a running task.
+    pub async fn inject_attention_if_running(
+        &self,
+        context: crate::context::InternalModelContextFragment,
+    ) -> Result<String, codex_protocol::attention::ThreadAttentionHeldReason> {
+        self.session
+            .inject_attention_if_running(ContextualUserFragment::into(context))
+            .await
     }
 
     /// Environment selections captured by the active turn, before later settings updates.

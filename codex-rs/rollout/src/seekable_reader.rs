@@ -68,11 +68,25 @@ pub fn read_rollout_prefix(path: &Path, max_bytes: usize) -> io::Result<Option<V
 /// Compressed files are decoded into an anonymous temporary file, keeping memory use bounded and
 /// preserving read-only access to the Codex home. Plain files retain their existing seek fast path.
 pub fn open_rollout_seekable_reader(path: &Path) -> io::Result<File> {
+    open_rollout_seekable_prefix_reader(path, None)
+}
+
+/// Retains the existing representation, decoding only the selected finite prefix
+/// when bounded. Invalid compressed suffixes beyond an inherited cutoff are not
+/// part of that snapshot. The caller still validates exact byte/record coverage.
+pub fn open_rollout_seekable_prefix_reader(
+    path: &Path,
+    max_bytes: Option<u64>,
+) -> io::Result<File> {
     match RolloutReader::open(path)? {
         RolloutReader::Plain(file) => Ok(file),
         RolloutReader::Compressed(file) => {
             let mut decoded = tempfile::tempfile()?;
-            io::copy(&mut zstd::stream::read::Decoder::new(file)?, &mut decoded)?;
+            let decoder = zstd::stream::read::Decoder::new(file)?;
+            io::copy(
+                &mut decoder.take(max_bytes.unwrap_or(u64::MAX)),
+                &mut decoded,
+            )?;
             decoded.rewind()?;
             Ok(decoded)
         }

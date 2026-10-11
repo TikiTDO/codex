@@ -1,0 +1,806 @@
+{
+  "schema": "rook.estate-tool-schema-design/v1",
+  "status": "design-only-not-provider-descriptors",
+  "tools": [
+    {
+      "name": "estate_capabilities_v2",
+      "description": "Inspect enabled estate operations and their actual readiness. Read-only; listing is not effect admission.",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "inspect"
+                ]
+              }
+            },
+            "required": [
+              "operation"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "desk_read_v2",
+      "description": "Read Desk messages, questions or caller-owned effect status without moving cursors or flushing pending posts. Expand exact returned references.",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "recent"
+                ]
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "description": "1..500; owner validates."
+              },
+              "room": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                "description": "Room: 1..64 ASCII letters/digits/dot/underscore/hyphen; owner resolves."
+              }
+            },
+            "required": [
+              "operation"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "show"
+                ]
+              },
+              "reference": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9223372036854775807,
+                    "description": "Positive signed-bigint ID; owner validates."
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^c[1-9][0-9]*$",
+                    "description": "Exact comment ID c followed by a positive integer; owner validates."
+                  }
+                ]
+              }
+            },
+            "required": [
+              "operation",
+              "reference"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "question"
+                ]
+              },
+              "reference": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854775807,
+                "description": "Positive signed-bigint ID; owner validates."
+              }
+            },
+            "required": [
+              "operation",
+              "reference"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "effect_status"
+                ]
+              },
+              "target_operation_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "description": "Canonical lowercase UUID; owner validates."
+              }
+            },
+            "required": [
+              "operation",
+              "target_operation_id"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "desk_act_v2",
+      "description": "Use Desk conversation and cursor operations. operation_id and target_operation_id are canonical lowercase UUIDs. An ID binds an immutable request, not permission. Reconcile pending/uncertain effects by that ID; never blindly repost. Native execution/security approvals remain separate.",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "wake"
+                ]
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "description": "1..500; owner validates."
+              },
+              "room": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                "description": "Room: 1..64 ASCII letters/digits/dot/underscore/hyphen; owner resolves."
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "catchup"
+                ]
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "description": "1..500; owner validates."
+              },
+              "room": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                "description": "Room: 1..64 ASCII letters/digits/dot/underscore/hyphen; owner resolves."
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "publish"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "room": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                "description": "Room: 1..64 ASCII letters/digits/dot/underscore/hyphen; owner resolves."
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "text",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "comment"
+                ]
+              },
+              "message_id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854775807,
+                "description": "Positive signed-bigint ID; owner validates."
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "message_id",
+              "text",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "question"
+                ]
+              },
+              "asked_of": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "room": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                "description": "Room: 1..64 ASCII letters/digits/dot/underscore/hyphen; owner resolves."
+              },
+              "request": {
+                "type": "string",
+                "enum": [
+                  "decision",
+                  "review",
+                  "validation"
+                ]
+              },
+              "link": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Nonempty; owner validates."
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Nonempty; owner validates."
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 2,
+                "maxItems": 6,
+                "description": "2..6 stable key/label pairs; owner validates."
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "asked_of",
+              "text",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "answer"
+                ]
+              },
+              "message_id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854775807,
+                "description": "Positive signed-bigint ID; owner validates."
+              },
+              "choice_key": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "message_id",
+              "choice_key",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "answer"
+                ]
+              },
+              "message_id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854775807,
+                "description": "Positive signed-bigint ID; owner validates."
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "message_id",
+              "text",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "close"
+                ]
+              },
+              "message_id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854775807,
+                "description": "Positive signed-bigint ID; owner validates."
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "message_id",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "release"
+                ]
+              },
+              "target_operation_id": {
+                "$ref": "#/$defs/uuid"
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "target_operation_id",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "cancel"
+                ]
+              },
+              "target_operation_id": {
+                "$ref": "#/$defs/uuid"
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "target_operation_id",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "$defs": {
+          "uuid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "Canonical lowercase UUID; owner validates."
+          }
+        }
+      }
+    },
+    {
+      "name": "cc_read_v2",
+      "description": "Read current or since-window CC, readable channels or cursor status. Preserve exact source epoch, coverage and expansion IDs; no cursor changes.",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "now"
+                ]
+              },
+              "channel": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "description": "1..500; owner validates."
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 40,
+                "maximum": 50000,
+                "description": "40..50000 characters; owner validates."
+              }
+            },
+            "required": [
+              "operation",
+              "channel"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "since"
+                ]
+              },
+              "channel": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "since": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "description": "1..500; owner validates."
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 40,
+                "maximum": 50000,
+                "description": "40..50000 characters; owner validates."
+              }
+            },
+            "required": [
+              "operation",
+              "channel",
+              "since"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "channels"
+                ]
+              }
+            },
+            "required": [
+              "operation"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "cursor_status"
+                ]
+              },
+              "channel": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              }
+            },
+            "required": [
+              "operation",
+              "channel"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "cc_progress_v2",
+      "description": "Advance normalized CC only through the existing progress owner and explicit admitted epoch/checkpoint. Replay the same operation_id after a lost reply; changed payload refuses.",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "catchup"
+                ]
+              },
+              "channel": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "expected_epoch": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "description": "1..500; owner validates."
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 40,
+                "maximum": 50000,
+                "description": "40..50000 characters; owner validates."
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "channel",
+              "expected_epoch",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "adopt"
+                ]
+              },
+              "channel": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "admitted_checkpoint_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "operation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "required": [
+              "operation",
+              "channel",
+              "admitted_checkpoint_id",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "$defs": {
+          "uuid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "Canonical lowercase UUID; owner validates."
+          }
+        }
+      }
+    },
+    {
+      "name": "search_v2",
+      "description": "Search literally (ALL terms by default), semantically (actual corpus horizon), or expand an exact returned source slug. No silent mode or stale fallback.",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "literal"
+                ]
+              },
+              "terms": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Nonempty; owner validates."
+                },
+                "minItems": 1
+              },
+              "any": {
+                "type": "boolean"
+              },
+              "oldest": {
+                "type": "boolean"
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "description": "1..500; owner validates."
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 40,
+                "maximum": 50000,
+                "description": "40..50000 characters; owner validates."
+              }
+            },
+            "required": [
+              "operation",
+              "terms"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "semantic"
+                ]
+              },
+              "question": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "description": "1..500; owner validates."
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 40,
+                "maximum": 50000,
+                "description": "40..50000 characters; owner validates."
+              }
+            },
+            "required": [
+              "operation",
+              "question"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "show"
+                ]
+              },
+              "source_slug": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Nonempty; owner validates."
+              },
+              "window": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50,
+                "description": "0..50 neighboring messages; owner validates."
+              }
+            },
+            "required": [
+              "operation",
+              "source_slug"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  ]
+}

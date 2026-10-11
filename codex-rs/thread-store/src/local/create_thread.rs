@@ -49,6 +49,9 @@ pub(super) async fn create_thread(
                 .collect()
         }))
         .with_multi_agent_version(params.multi_agent_version)
+        // This is an acquired, genuinely new exact logical lifecycle. A generic
+        // recorder constructor (also used by same-ID replacement) defaults unproved.
+        .with_attention_receipt_lifetime_version(Some(1))
         .with_history_mode(params.history_mode)
         .with_history_base(params.history_base)
         .with_forked_from_ordinal_exclusive(

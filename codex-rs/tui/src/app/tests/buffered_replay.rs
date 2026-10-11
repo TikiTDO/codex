@@ -1,6 +1,50 @@
 //! Real buffered notifications must use finalized rendering without losing live stream tails.
 
 use super::*;
+
+#[test]
+fn quiet_attention_provenance_survives_buffer_eviction_but_not_foreground_input() {
+    use codex_app_server_protocol::{
+        AttentionTurnStartedNotification, TurnItemsView, TurnStartedNotification,
+    };
+    let mut store = ThreadEventStore::new(1);
+    store.push_notification(ServerNotification::AttentionTurnStarted(
+        AttentionTurnStartedNotification {
+            thread_id: "thread".into(),
+            turn_id: "background".into(),
+        },
+    ));
+    store.push_notification(ServerNotification::TurnStarted(TurnStartedNotification {
+        thread_id: "thread".into(),
+        turn: Turn {
+            id: "background".into(),
+            items: Vec::new(),
+            items_view: TurnItemsView::Full,
+            status: TurnStatus::InProgress,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        },
+    }));
+    assert!(store.snapshot().events.iter().any(|event| matches!(event,
+        ThreadBufferedEvent::Notification(n)
+            if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(marker)
+                if marker.turn_id == "background"))));
+    store.push_notification(ServerNotification::ItemStarted(ItemStartedNotification {
+        thread_id: "thread".into(),
+        turn_id: "background".into(),
+        started_at_ms: 0,
+        item: ThreadItem::UserMessage {
+            id: "operator".into(),
+            content: Vec::new(),
+            client_id: None,
+        },
+    }));
+    assert!(!store.snapshot().events.iter().any(|event| matches!(event,
+        ThreadBufferedEvent::Notification(n)
+            if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(_)))));
+}
 use crate::chatwidget::tests::helpers::normalize_snapshot_paths;
 use crate::chatwidget::tests::helpers::render_bottom_popup;
 use codex_app_server_protocol::ItemCompletedNotification;

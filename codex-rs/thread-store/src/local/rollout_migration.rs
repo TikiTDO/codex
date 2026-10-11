@@ -64,7 +64,7 @@ use publish::remove_file_if_present;
 use publish::rewrite_subagent_history_boundary;
 use publish::rewritten_staged_rollout_path;
 use publish::staged_rollout_path;
-use publish::sync_parent_directory;
+pub(super) use publish::sync_parent_directory;
 use publish::write_migration_journal;
 use rollback_plan::RollbackPlan;
 use rollback_plan::RollbackPlanner;
@@ -93,6 +93,8 @@ struct CanonicalizationSource<'a> {
     staged_path: &'a Path,
     source_permissions: &'a std::fs::Permissions,
     canonical_session_meta: &'a RolloutLine,
+    // None is failed/unproved capture, never successful empty lifetime.
+    preserved_receipts: Option<&'a [codex_protocol::attention::ThreadAttentionNotification]>,
 }
 
 /// Controls whether eligible rollouts are reported or migrated.
@@ -482,6 +484,7 @@ impl LocalThreadStore {
         if metadata.meta.history_mode == ThreadHistoryMode::Paginated {
             let bytes_before = limiter.bytes_processed;
             let result = if pending_published_migration {
+                let _lifecycle_guard = self.live_writer_locks.lock_lifecycle(thread_id).await;
                 let _live_writer_guard = self.live_writer_locks.lock(thread_id).await;
                 match self
                     .recover_published_migration(
@@ -535,7 +538,9 @@ impl LocalThreadStore {
             )));
         }
 
-        let _live_writer_guard = self.live_writer_locks.lock(thread_id).await;
+        // Legacy conversion is closed replacement, under the estate maintenance fence.
+        let (_replacement_guards, receipt_lineage) =
+            super::attention::lock_replacement(self, thread_id, path.clone()).await?;
         let _writer_guard = match self.acquire_writer_lock(thread_id) {
             Ok(guard) => guard,
             Err(ThreadStoreError::Conflict { message }) => {
@@ -565,9 +570,31 @@ impl LocalThreadStore {
         {
             path = current_path;
         }
+        let preserved_receipts =
+            match super::attention::preservation_under_guards(thread_id, receipt_lineage, true)
+                .await
+            {
+                Ok(notices) => Some(notices),
+                Err(error) => {
+                    tracing::warn!(
+                        thread_id = %thread_id,
+                        error = %error,
+                        "receipt preservation unavailable during migration"
+                    );
+                    None
+                }
+            };
         let bytes_before = limiter.bytes_processed;
         let result = match self
-            .migrate_one_rollout(thread_id, &path, &journal_path, kind, legacy_names, limiter)
+            .migrate_one_rollout(
+                thread_id,
+                &path,
+                &journal_path,
+                kind,
+                legacy_names,
+                limiter,
+                preserved_receipts.as_deref(),
+            )
             .await
         {
             Ok(()) => Ok(RolloutMigrationStatus::Migrated),
@@ -606,6 +633,7 @@ impl LocalThreadStore {
         kind: RolloutMigrationKind,
         legacy_names: &HashMap<ThreadId, String>,
         limiter: &mut RolloutMigrationRateLimiter,
+        preserved_receipts: Option<&[codex_protocol::attention::ThreadAttentionNotification]>,
     ) -> ClassifiedMigrationResult<()> {
         if let Some(state_db) = &self.state_db
             && with_failure_reason(
@@ -707,6 +735,7 @@ impl LocalThreadStore {
             staged_path: &staged_path,
             source_permissions: &source_permissions,
             canonical_session_meta: &canonical_session_meta,
+            preserved_receipts,
         };
 
         // Everything up through a durable staged file is one legacy-to-paginated conversion
@@ -890,10 +919,22 @@ impl LocalThreadStore {
         let mut staged = BufWriter::with_capacity(PROJECTION_BATCH_BYTES as usize, staged_file);
         let mut canonicalizer = LegacyRolloutCanonicalizer::new(input.thread_id);
         let written = canonicalizer
-            .write_head_session_meta(input.canonical_session_meta.clone(), &mut staged)
+            .write_head_session_meta(
+                input.canonical_session_meta.clone(),
+                &mut staged,
+                input.preserved_receipts.is_some(),
+            )
             .await?;
         limiter.account(written).await;
         for item in items {
+            if input.preserved_receipts.is_some()
+                && matches!(
+                    &item,
+                    RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::ThreadAttention(_))
+                )
+            {
+                continue;
+            }
             let line = RolloutLine {
                 timestamp: input.canonical_session_meta.timestamp.clone(),
                 ordinal: None,
@@ -904,6 +945,14 @@ impl LocalThreadStore {
         }
         let written = canonicalizer
             .finish(&mut staged, &input.canonical_session_meta.timestamp)
+            .await?;
+        limiter.account(written).await;
+        let written = canonicalizer
+            .write_preserved_receipts(
+                input.preserved_receipts.unwrap_or_default(),
+                &mut staged,
+                &input.canonical_session_meta.timestamp,
+            )
             .await?;
         limiter.account(written).await;
         staged.flush().await.map_err(migration_error)?;
@@ -938,7 +987,11 @@ impl LocalThreadStore {
         let mut parsed_record_index = 0_usize;
         let mut canonicalizer = LegacyRolloutCanonicalizer::new(input.thread_id);
         let written = canonicalizer
-            .write_head_session_meta(input.canonical_session_meta.clone(), &mut staged)
+            .write_head_session_meta(
+                input.canonical_session_meta.clone(),
+                &mut staged,
+                input.preserved_receipts.is_some(),
+            )
             .await?;
         limiter.account(written).await;
         let mut last_timestamp = input.canonical_session_meta.timestamp.clone();
@@ -969,6 +1022,14 @@ impl LocalThreadStore {
                 line
             };
             last_timestamp = line.timestamp.clone();
+            if input.preserved_receipts.is_some()
+                && matches!(
+                    &line.item,
+                    RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::ThreadAttention(_))
+                )
+            {
+                continue;
+            }
             let written = canonicalizer.process_line(line, &mut staged).await?;
             limiter.account(written).await;
         }
@@ -981,6 +1042,14 @@ impl LocalThreadStore {
         }
 
         let written = canonicalizer.finish(&mut staged, &last_timestamp).await?;
+        limiter.account(written).await;
+        let written = canonicalizer
+            .write_preserved_receipts(
+                input.preserved_receipts.unwrap_or_default(),
+                &mut staged,
+                &last_timestamp,
+            )
+            .await?;
         limiter.account(written).await;
         staged.flush().await.map_err(migration_error)?;
         Ok(CanonicalizationAttempt::Complete {

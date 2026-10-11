@@ -877,6 +877,18 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadInjectItemsResponse,
     },
+    /// Admit bounded runtime source references without submitting user input.
+    ThreadAttention => "thread/attention" {
+        params: v2::ThreadAttentionParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadAttentionResponse,
+    },
+    /// Reconnect/cold-resume snapshot, independent of user-message history.
+    ThreadAttentionList => "thread/attention/list" {
+        params: v2::ThreadAttentionListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadAttentionListResponse,
+    },
     SkillsList => "skills/list" {
         params: v2::SkillsListParams,
         serialization: global_shared_read("config"),
@@ -1936,6 +1948,8 @@ server_notification_definitions! {
     Error => "error" (v2::ErrorNotification),
     ThreadStarted => "thread/started" (v2::ThreadStartedNotification),
     ThreadStatusChanged => "thread/status/changed" (v2::ThreadStatusChangedNotification),
+    ThreadAttention => "thread/attention" (v2::ThreadAttentionNotification),
+    AttentionTurnStarted => "attention/turn/started" (v2::AttentionTurnStartedNotification),
     ThreadArchived => "thread/archived" (v2::ThreadArchivedNotification),
     ThreadDeleted => "thread/deleted" (v2::ThreadDeletedNotification),
     ThreadUnarchived => "thread/unarchived" (v2::ThreadUnarchivedNotification),

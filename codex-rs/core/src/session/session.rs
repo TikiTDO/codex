@@ -1708,6 +1708,7 @@ impl Session {
             let reasoning_effort_override_enabled =
                 config.features.enabled(Feature::ReasoningEffortOverride) && !title_request;
             let services = SessionServices {
+                attention_ledger: Arc::new(crate::attention::AttentionLedger::default()),
                 // Start with an empty connection set. The initialized set is
                 // published after SessionConfigured so MCP events follow it.
                 mcp_runtime,

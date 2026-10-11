@@ -673,6 +673,19 @@ pub enum Op {
         reply: oneshot::Sender<CodexResult<TurnInputSubmission>>,
     },
 
+    /// Core owns intent, quiet admission and final settlement on this queue.
+    Attention {
+        notice: crate::attention::ThreadAttentionNotification,
+        request: Box<TurnInputRequest>,
+        blocking_request: bool,
+        reply: oneshot::Sender<
+            std::result::Result<
+                crate::attention::ThreadAttentionResponse,
+                crate::attention::AttentionError,
+            >,
+        >,
+    },
+
     /// Resume an interrupted regular turn.
     RecoverTurn {
         thread_settings: ThreadSettingsOverrides,
@@ -997,6 +1010,7 @@ impl Op {
             Self::RealtimeConversationClose => "realtime_conversation_close",
             Self::RealtimeConversationListVoices => "realtime_conversation_list_voices",
             Self::TurnInput { .. } => "turn_input",
+            Self::Attention { .. } => "attention",
             Self::RecoverTurn { .. } => "recover_turn",
             Self::SuspendTurnAndShutdown { .. } => "suspend_turn_and_shutdown",
             Self::ThreadSettings { .. } => "thread_settings",
@@ -1509,6 +1523,12 @@ pub enum EventMsg {
 
     /// A durable thread-scoped user-message queue changed.
     ThreadQueueChanged(ThreadQueueChangedEvent),
+
+    /// Persistent runtime notice, not a user message or a new task.
+    ThreadAttention(crate::attention::ThreadAttentionNotification),
+
+    /// Trusted background-turn classification, emitted before its ordinary start.
+    AttentionTurnStarted(crate::attention::AttentionTurnStartedNotification),
 
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),
@@ -3256,6 +3276,9 @@ pub struct SessionMeta {
     /// turn/item projection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_history_start_ordinal: Option<u64>,
+    /// Exact-thread attention lifetime proof. Physical replacement alone is not proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_receipt_lifetime_version: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub multi_agent_version: Option<MultiAgentVersion>,
     /// Initial context-window identity for consumers that tail rollout JSONL before compaction.
@@ -3292,6 +3315,7 @@ impl Default for SessionMeta {
             history_mode: ThreadHistoryMode::default(),
             history_base: None,
             subagent_history_start_ordinal: None,
+            attention_receipt_lifetime_version: None,
             multi_agent_version: None,
             context_window: None,
         }
@@ -6519,5 +6543,51 @@ mod tests {
                 .expect("new_or_append should return info");
 
         assert_eq!(info.model_context_window, Some(258_400));
+    }
+}
+
+#[cfg(test)]
+mod attention_lifetime_tests {
+    use super::SessionMeta;
+    use ts_rs::TS;
+
+    #[test]
+    fn canonical_attention_lifetime_marker_roundtrip_and_derived_exports() {
+        let meta = SessionMeta {
+            attention_receipt_lifetime_version: Some(1),
+            ..Default::default()
+        };
+        let mut value = serde_json::to_value(&meta).unwrap();
+        assert_eq!(value["attention_receipt_lifetime_version"], 1);
+        assert_eq!(
+            serde_json::from_value::<SessionMeta>(value.clone())
+                .unwrap()
+                .attention_receipt_lifetime_version,
+            Some(1)
+        );
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("attention_receipt_lifetime_version");
+        assert_eq!(
+            serde_json::from_value::<SessionMeta>(value)
+                .unwrap()
+                .attention_receipt_lifetime_version,
+            None
+        );
+        assert!(SessionMeta::decl().contains("attention_receipt_lifetime_version"));
+        let schema = serde_json::to_value(schemars::schema_for!(SessionMeta)).unwrap();
+        assert!(
+            schema["properties"]
+                .get("attention_receipt_lifetime_version")
+                .is_some()
+        );
+        assert!(
+            !schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|field| field == "attention_receipt_lifetime_version")
+        );
     }
 }

@@ -1,3 +1,4 @@
+use codex_prompts::with_repository_question_routing;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::request_user_input::RequestUserInputQuestion;
 use codex_tools::JsonSchema;
@@ -76,7 +77,7 @@ pub fn create_request_user_input_tool(description: String) -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: REQUEST_USER_INPUT_TOOL_NAME.to_string(),
-        description,
+        description: with_repository_question_routing(&description),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(

@@ -45,6 +45,9 @@ pub enum TurnInput {
 #[derive(Clone, Debug)]
 pub struct TurnInputRequest {
     pub input: TurnInput,
+    /// Trusted native attention provenance. Not serialized or inferred from a
+    /// client-supplied turn trigger; valid only for idle internal ResponseItem input.
+    pub background_attention: bool,
     pub thread_settings: ThreadSettingsOverrides,
     pub start: TurnStartOptions,
     pub additional_context: BTreeMap<String, AdditionalContextEntry>,
@@ -70,6 +73,7 @@ impl TurnInputRequest {
     pub fn new(input: TurnInput) -> Self {
         Self {
             input,
+            background_attention: false,
             thread_settings: ThreadSettingsOverrides::default(),
             start: TurnStartOptions::default(),
             additional_context: BTreeMap::new(),

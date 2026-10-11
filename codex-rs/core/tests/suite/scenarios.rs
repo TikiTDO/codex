@@ -417,7 +417,26 @@ async fn astra_asks_an_async_question_and_receives_the_answer_while_working() ->
         .iter()
         .map(|body| serde_json::from_slice(body))
         .collect::<serde_json::Result<Vec<serde_json::Value>>>()?;
+    // Independent reviewed wording: inspect the actual serialized request, not
+    // the helper that constructs the tool or the snapshot's description hash.
+    const REVIEWED_REPOSITORY_ROUTING: &str = "Repository question routing: When the active repository provides Desk and directs operator questions there, use its Desk question, choice, review and validation features instead of request_user_input or request_user_input_async. Follow the repository's documented Desk commands and answer/closure workflow. If the required route is unavailable, report the hold; do not silently fall back to the native question tool. Conversation questions are not native execution, permission or security approval mechanisms, which remain on their existing routes. Outside such a repository, use this tool normally.";
     for request in &requests {
+        for name in ["request_user_input", "request_user_input_async"] {
+            let tool = request["input"][0]["tools"]
+                .as_array()
+                .expect("Responses Lite tools")
+                .iter()
+                .flat_map(|namespace| namespace["tools"].as_array().into_iter().flatten())
+                .find(|tool| tool["name"] == name)
+                .expect("both question tools should be directly visible to the model");
+            assert!(
+                tool["description"]
+                    .as_str()
+                    .expect("question tool description")
+                    .ends_with(REVIEWED_REPOSITORY_ROUTING),
+                "{name} must retain the reviewed routing at the serialized request boundary"
+            );
+        }
         let tool = request["input"][0]["tools"]
             .as_array()
             .expect("Responses Lite tools")

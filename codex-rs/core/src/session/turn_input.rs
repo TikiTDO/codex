@@ -213,13 +213,21 @@ impl PreparedTurnInputSettings {
     skip_all,
     fields(conversation.id = %session.thread_id, turn.id)
 )]
-pub(super) async fn handle(
+pub(crate) async fn handle(
     session: &Arc<Session>,
     request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
     mode: TurnInputMode,
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
     let request = request.into();
+    if request.request.background_attention
+        && (!matches!(mode, TurnInputMode::StartIfIdle)
+            || !matches!(request.request.input, SubmittedTurnInput::ResponseItem(_)))
+    {
+        return Err(CodexErr::InvalidRequest(
+            "native attention requires idle internal response input".to_string(),
+        ));
+    }
     let result = match mode {
         TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
         TurnInputMode::StartIfIdle => {
@@ -437,6 +445,7 @@ async fn start_if_idle(
     } = request;
     let TurnInputRequest {
         input,
+        background_attention,
         thread_settings,
         start,
         additional_context,
@@ -538,6 +547,23 @@ async fn start_if_idle(
             return Err(error);
         }
     };
+    if background_attention {
+        session
+            .send_event(
+                turn_context.as_ref(),
+                EventMsg::AttentionTurnStarted(
+                    codex_protocol::attention::AttentionTurnStartedNotification {
+                        thread_id: session.thread_id.to_string(),
+                        turn_id: turn_context.sub_id.clone(),
+                    },
+                ),
+            )
+            .await;
+        if let Err(error) = session.flush_rollout().await {
+            session.clear_reserved_idle_turn(&turn_state).await;
+            return Err(CodexErr::Io(error));
+        }
+    }
     if let Some(responsesapi_client_metadata) = responsesapi_client_metadata {
         turn_context
             .turn_metadata_state

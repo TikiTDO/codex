@@ -15,6 +15,7 @@ use crate::ThreadStoreResult;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RolloutLineageSegment {
     pub(super) rollout_id: ThreadId,
+    pub(super) owner_thread_id: ThreadId,
     pub(super) rollout_path: PathBuf,
     pub(super) start_ordinal: u64,
     pub(super) end: Option<HistoryPosition>,
@@ -39,6 +40,7 @@ impl LocalThreadStore {
             requested_thread_id,
             LineageRepresentation::Existing,
             initial_path,
+            false,
         )
         .await
     }
@@ -51,6 +53,23 @@ impl LocalThreadStore {
             requested_thread_id,
             LineageRepresentation::PlainForReference,
             /*initial_path*/ None,
+            false,
+        )
+        .await
+    }
+
+    // Uses the same walker and never reacquires writer locks. Legacy roots are
+    // admitted only for strict receipts; paginated consumers retain their contract.
+    pub(super) async fn resolve_attention_lineage(
+        &self,
+        thread_id: ThreadId,
+        path: PathBuf,
+    ) -> ThreadStoreResult<RolloutLineage> {
+        self.resolve_rollout_lineage_with_representation(
+            thread_id,
+            LineageRepresentation::Existing,
+            Some(path),
+            true,
         )
         .await
     }
@@ -60,6 +79,7 @@ impl LocalThreadStore {
         requested_thread_id: ThreadId,
         representation: LineageRepresentation,
         mut initial_path: Option<PathBuf>,
+        allow_legacy: bool,
     ) -> ThreadStoreResult<RolloutLineage> {
         let mut segments = Vec::new();
         let mut seen = HashSet::new();
@@ -86,7 +106,11 @@ impl LocalThreadStore {
                         thread_rollout_resolver::rollout_id_from_path_or_legacy_thread_id(
                             &path,
                             requested_thread_id,
-                            ThreadHistoryMode::Paginated,
+                            if allow_legacy {
+                                ThreadHistoryMode::Legacy
+                            } else {
+                                ThreadHistoryMode::Paginated
+                            },
                         )?;
                     (rollout_id, path)
                 }
@@ -148,10 +172,18 @@ impl LocalThreadStore {
                     "source rollout belongs to another thread",
                 ));
             }
-            if meta.meta.history_mode != ThreadHistoryMode::Paginated {
+            if meta.meta.history_mode != ThreadHistoryMode::Paginated && !allow_legacy {
                 return Err(malformed_lineage(
                     requested_thread_id,
                     "source rollout is not paginated",
+                ));
+            }
+            if meta.meta.history_mode != ThreadHistoryMode::Paginated
+                && meta.meta.history_base.is_some()
+            {
+                return Err(malformed_lineage(
+                    requested_thread_id,
+                    "legacy rollout has a paginated history base",
                 ));
             }
             let rollout_path = match representation {
@@ -185,6 +217,7 @@ impl LocalThreadStore {
             };
             segments.push(RolloutLineageSegment {
                 rollout_id,
+                owner_thread_id: meta.meta.id,
                 rollout_path,
                 start_ordinal,
                 end,

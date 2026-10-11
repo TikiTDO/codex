@@ -214,6 +214,7 @@ async fn state_db_init_backfills_before_returning() -> anyhow::Result<()> {
             history_mode: Default::default(),
             history_base: None,
             subagent_history_start_ordinal: None,
+            attention_receipt_lifetime_version: None,
             multi_agent_version: None,
             context_window: None,
         },

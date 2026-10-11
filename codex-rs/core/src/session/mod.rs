@@ -265,7 +265,7 @@ pub(crate) mod time_reminder;
 mod token_budget;
 pub(crate) mod turn;
 pub(crate) mod turn_context;
-mod turn_input;
+pub(crate) mod turn_input;
 mod turn_suspension;
 mod world_state;
 use self::code_mode_warning::unsupported_code_mode_warning;
@@ -2528,6 +2528,18 @@ impl Session {
             warn!("failed to flush completed Guardian review: {err}");
         }
         self.deliver_event_raw(event).await;
+    }
+
+    /// A notice already persisted by the thread host must not be appended twice.
+    pub(crate) async fn deliver_attention_notice(
+        &self,
+        notice: codex_protocol::attention::ThreadAttentionNotification,
+    ) {
+        self.deliver_event_raw(Event {
+            id: notice.batch_id.clone(),
+            msg: EventMsg::ThreadAttention(notice),
+        })
+        .await;
     }
 
     async fn deliver_event_raw(&self, event: Event) {

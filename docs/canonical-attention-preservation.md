@@ -1,0 +1,42 @@
+# Canonical attention receipt preservation
+
+Attention admission belongs to the lifetime of an exact logical thread. Revert selects a shorter model prefix under the same identity; migration can likewise discard model records. Neither selection may erase an accepted or uncertain source quarantine, or the immutable binding of a retryable held batch.
+
+The existing canonical rollout remains the sole persisted receipt owner. The shared thread-store reducer validates exact identity, metadata, immutable origins, accepted outcomes and cross-batch quarantine; Core delegates recovery to it. Identical observations are idempotent after same-batch consistency validation and before cross-batch checks. Preservation serializes nonquarantining held states before accepted or admission-uncertain states, with batch ID breaking ties within each group. Display order is not replay order.
+
+Strict capture reuses the existing lineage resolver, decoder-owned finite representation handles and byte/ordinal validation. Live capture retains its lazy-header persist/flush barrier. Closed replacement supplies complete caller-held lifecycle and writer guards and never requests live recorder parts or reacquires its own lock. Resolve logical owners first, acquire sorted lifecycle guards (exclusive target for replacement, shared ancestors) followed by sorted writers, revalidate ownership, then capture. At most one recapture is allowed. Retain lifecycle protection through scanning and replacement publication.
+
+Before revert chooses a model boundary, capture and reduce the full current exact-thread lifetime. Append one current notice per batch after the replacement header independently of its inherited model prefix, flush and close before the existing SQLite pointer CAS. Stamp receipt-lifetime version 1 only after strict proof succeeds. Failed CAS discards only the unpublished replacement. Repeated revert and wholly inherited prefixes preserve target receipts; parent identity does not transfer receipt ownership. If proof fails, ordinary foreground revert remains available and the replacement carries no receipt-lifetime proof.
+
+The revert owner writes to a hidden sibling `.<canonical filename>.replacement.tmp` that canonical filename discovery rejects. It guards that stage during persistence, receipt copy, flush, close, file sync, atomic rename to the canonical sibling and parent-directory sync. Returned errors drain the recorder and remove only the staged path; cancellation or unwind starts the same bounded cleanup while retaining its writer fence. The guard always owns the staging name, so a cancelled rename cannot delete the complete canonical destination. It disarms before submitting the pointer CAS, because a cancelled database await may still commit. A failed CAS removes its complete losing replacement; no cleanup may delete a selected file.
+
+Process termination before rename can leave an undiscoverable incomplete stage. After rename, ordinary recovery by thread ID without a SQLite projection can discover only the complete copied state, including its quarantine and immutable bindings. No-projection recovery remains supported. Explicitly naming an unpublished stage is unsupported input; its noncanonical filename is outside ordinary resume discovery.
+
+Migration retains its existing estate maintenance fence and adds lifecycle-before-writer coordination, including pending publication recovery. Capture the complete strict source before ordinary rollback or bounded-subagent selection. Pass explicit proof-bearing reduced state into the existing canonical writers, preserving source-record indices and accounting for appended receipt ordinals and bytes before projection. Retain existing staged sync, source-change checks, projection closure, atomic publication and journal settlement. Tolerant model parsing is never strict receipt proof; failed capture leaves the marker absent while foreground conversion remains usable. An unmarked legacy target is provable only when its format is the complete append-only lifetime: legacy history mode, no inherited history base, and a successful strict full-source scan. A selected paginated generation, unknown version or damaged record cannot establish that closure. Failed preservation records the thread identity and cause in the log.
+
+Historic recovery is a required, separately planned third slice. Parseable selected bytes, a successful ordinary reference-index scan, and an empty migration progress journal cannot establish complete historical lifetime closure. Unknown, missing or damaged closure refuses attention while foreground context remains usable. This slice includes that refusal falsifier and makes no historic repair success claim.
+
+The associative-tree boundary separates model-prefix coverage from receipt-lifetime coverage. Logical identity, persisted lifetime proof, reduced state, physical coordinates and lifecycle protection compose strict capture → reduction → staged durable receipt publication → pointer cutover → cold recovery. The counterexample is an admitted source lost after a same-ID model rewrite; exact coverage and transition contracts determine legality.
+
+Acceptance covers accepted and uncertain batches across unloaded same-ID revert, same-key and cross-key cold retries, repeated revert, wholly inherited prefixes, ordinary rollback migration, bounded-subagent migration, lexical and insertion-order reversal of held/shared-source states, identical copies, contradictory quarantine, staged-write failure, pointer-CAS failure, unknown or damaged closure, concurrent representation changes and child isolation. Use model-context APIs for paginated foreground checks. Review the complete source and focused evidence before integration. No installation, production data migration, live-provider canary or activation is part of this change.
+
+## Historic recovery and refusal
+
+Historic attention recovery depends on lifetime closure, not the amount of readable model history.
+
+| Retained record | Recovery route |
+| --- | --- |
+| Current exact-target lifetime v1 and complete strict coverage | Recover the canonical reduced receipt state. |
+| Unmarked, intact append-only legacy target with no inherited history base | Existing migration captures its whole exact-thread receipt lifetime before model selection and writes proof-bearing preserved state. |
+| Unmarked paginated target, even with readable v1 ancestors | Refuse attention; selected model ancestry does not prove that all lifetime generations survived. |
+| Unknown version, damaged source or contradictory bindings | Refuse attention; ordinary foreground parsing remains tolerant. |
+
+The legacy migration is the bounded historic repair. It retains the existing maintenance fence, sorted lifecycle/writer capture and durable publication transaction. Its strict capture occurs before ordinary rollback or bounded-subagent model selection. A successful reduced-state copy permits v1; a parseable model context or a dry-run `Eligible` result does not. This does not add an automatic rewrite or a second recovery owner.
+
+`AlreadyPaginated` is a model-format migration status, not attention readiness or a historic repair result. An empty migration progress journal is a publication/projection marker, not a backup or receipt inventory. Model-history SQLite rows are likewise projections, not lifetime receipt truth.
+
+The current reference index discovers model ancestry and retained physical files, skipping unreadable metadata. Even a hypothetical error-free inventory cannot prove that an absent committed generation never existed. A later model replacement can reference an older ancestor directly, omitting an intervening generation that admitted attention. Reading all surviving same-ID files is therefore insufficient to promote an unmarked paginated target. No marker is copied from an ancestor, and no filename, timestamp or highest identifier supplies closure.
+
+The paired falsifiers retain a readable v1 ancestor with an excluded receipt, and a same-ID intervening generation omitted by the latest model base. The latter is checked with that generation present and absent. Empty journals and successful ordinary reference-index scans must not turn either target into an empty successful ledger. Foreground context remains readable. Matching proof-bearing replacements and complete legacy migrations remain the positive controls.
+
+Source review, focused checks and integration are separate from any installation, production data migration or activation.

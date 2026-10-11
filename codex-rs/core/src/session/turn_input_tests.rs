@@ -74,6 +74,160 @@ fn user_message(text: &str) -> ResponseItem {
     }
 }
 
+#[tokio::test]
+async fn quiet_attention_rejects_idle_reservations() {
+    let (session, _) = make_session_and_context().await;
+    *session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
+    assert_eq!(
+        session
+            .inject_attention_if_running(user_message("attention test"))
+            .await,
+        Err(codex_protocol::attention::ThreadAttentionHeldReason::Busy),
+    );
+    assert!(
+        !session
+            .input_queue
+            .has_pending_input(&session.active_turn)
+            .await
+    );
+}
+
+#[tokio::test]
+async fn quiet_attention_native_marker_rejects_user_input_and_steering() {
+    let (session, _) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let mut request = TurnInputRequest::user_input(Vec::new());
+    request.start.turn_trigger = Some("attention".into());
+    assert!(
+        !request.background_attention,
+        "a client label is not native provenance"
+    );
+    request.background_attention = true;
+    assert!(matches!(
+        handle(
+            &session,
+            request,
+            TurnInputMode::StartIfIdle,
+            "invalid-user".into()
+        )
+        .await,
+        Err(error) if matches!(error.details(), CodexErrorDetails::InvalidRequest(_)),
+    ));
+    let mut request =
+        TurnInputRequest::new(SubmittedTurnInput::ResponseItem(user_message("context")));
+    request.background_attention = true;
+    assert!(matches!(
+        handle(
+            &session,
+            request,
+            TurnInputMode::StartOrSteer,
+            "invalid-steer".into()
+        )
+        .await,
+        Err(error) if matches!(error.details(), CodexErrorDetails::InvalidRequest(_)),
+    ));
+    assert!(session.active_turn.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn quiet_attention_preserves_blocking_waiters_and_does_not_signal_steer() {
+    use crate::context::ContextualUserFragment;
+    use crate::context::InternalContextSource;
+    use crate::context::InternalModelContextFragment;
+    use codex_protocol::attention::ThreadAttentionHeldReason;
+
+    let (session, turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            Vec::new(),
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: true,
+            },
+        )
+        .await;
+    let turn_state = session
+        .active_turn
+        .lock()
+        .await
+        .as_ref()
+        .unwrap()
+        .turn_state
+        .clone();
+    let (activity, pending) = session
+        .input_queue
+        .subscribe_activity(Some(&turn_state))
+        .await;
+    assert_eq!(pending, None);
+    let (answer_tx, answer_rx) = tokio::sync::oneshot::channel();
+    turn_state
+        .lock()
+        .await
+        .insert_pending_user_input("original-question".into(), answer_tx);
+    let context = || {
+        ContextualUserFragment::into(InternalModelContextFragment::new(
+            InternalContextSource::from_static("attention"),
+            "Read cue:test; this is not task authority.",
+        ))
+    };
+    assert_eq!(
+        session.inject_attention_if_running(context()).await,
+        Err(ThreadAttentionHeldReason::BlockingRequest)
+    );
+    assert!(
+        !session
+            .input_queue
+            .has_pending_input(&session.active_turn)
+            .await
+    );
+    let answer_tx = turn_state
+        .lock()
+        .await
+        .remove_pending_user_input("original-question")
+        .expect("the original question callback survived attention");
+    assert!(!answer_tx.is_closed());
+    drop(answer_tx);
+    assert!(answer_rx.await.is_err());
+    assert_eq!(
+        session.inject_attention_if_running(context()).await,
+        Ok(turn_context.sub_id.clone())
+    );
+    assert!(
+        !activity.has_changed().unwrap(),
+        "quiet attention must not signal Steer"
+    );
+    let pending = session
+        .input_queue
+        .take_pending_input_for_turn_state(&turn_state)
+        .await;
+    assert!(matches!(pending.as_slice(), [TurnInput::ResponseItem(_)]));
+    assert!(
+        !session
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .task
+            .as_ref()
+            .unwrap()
+            .cancellation_token
+            .is_cancelled()
+    );
+    turn_state
+        .lock()
+        .await
+        .set_mailbox_delivery_phase(crate::state::MailboxDeliveryPhase::NextTurn);
+    assert_eq!(
+        session.inject_attention_if_running(context()).await,
+        Err(ThreadAttentionHeldReason::Busy)
+    );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
 async fn submit_start_only(
     session: &Arc<Session>,
     input: SubmittedTurnInput,
