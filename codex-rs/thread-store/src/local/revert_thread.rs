@@ -157,9 +157,8 @@ pub(super) async fn revert(
         preserved_receipts.is_some(),
     )
     .await?;
+    let recorder = prepare_replacement(recorder, preserved_receipts).await?;
     let replacement_path = recorder.rollout_path().to_path_buf();
-    recorder.persist().await.map_err(thread_store_io_error)?;
-    stage_replacement_receipts(&recorder, preserved_receipts).await?;
     publish_replacement(
         &state_db,
         thread_id,
@@ -167,6 +166,76 @@ pub(super) async fn revert(
         replacement_path.as_path(),
     )
     .await
+}
+
+/// Own the unpublished file until its complete receipt copy is closed. Cleanup
+/// drains the writer before unlinking, retaining its cross-process fence.
+struct UnpublishedReplacement {
+    recorder: Option<RolloutRecorder>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl UnpublishedReplacement {
+    fn new(recorder: RolloutRecorder) -> Self {
+        Self {
+            recorder: Some(recorder),
+            runtime: tokio::runtime::Handle::current(),
+        }
+    }
+
+    fn retire(&mut self) -> Option<tokio::task::JoinHandle<()>> {
+        let recorder = self.recorder.take()?;
+        Some(self.runtime.spawn(async move {
+            let path = recorder.rollout_path();
+            if let Err(error) = recorder.discard().await {
+                tracing::warn!(path = %path.display(), %error, "failed to drain unpublished replacement");
+            }
+            if let Err(error) = tokio::fs::remove_file(path).await
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(path = %path.display(), %error, "failed to remove unpublished replacement");
+            }
+        }))
+    }
+
+    fn into_closed(mut self) -> RolloutRecorder {
+        self.recorder.take().expect("replacement still owned")
+    }
+}
+
+impl Drop for UnpublishedReplacement {
+    fn drop(&mut self) {
+        // A cancelled cleanup await detaches this bounded task; the recorder and
+        // fence remain owned until already-running IO has drained and removal ends.
+        let _ = self.retire();
+    }
+}
+
+async fn prepare_replacement(
+    recorder: RolloutRecorder,
+    preserved_receipts: Option<Vec<codex_protocol::attention::ThreadAttentionNotification>>,
+) -> ThreadStoreResult<RolloutRecorder> {
+    let mut replacement = UnpublishedReplacement::new(recorder);
+    let recorder = replacement
+        .recorder
+        .as_ref()
+        .expect("replacement still owned");
+    let result = async {
+        recorder.persist().await.map_err(thread_store_io_error)?;
+        stage_replacement_receipts(recorder, preserved_receipts).await
+    }
+    .await;
+    if let Err(error) = result {
+        if let Some(cleanup) = replacement.retire()
+            && let Err(cleanup_error) = cleanup.await
+        {
+            tracing::warn!(%cleanup_error, "unpublished replacement cleanup task failed");
+        }
+        return Err(error);
+    }
+    // Disarm BEFORE submitting CAS: a cancelled SQL await can still commit.
+    // This closed file already contains the complete captured receipt state.
+    Ok(replacement.into_closed())
 }
 
 /// Called only after the staged header has been materialized. Receipt write and

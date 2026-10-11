@@ -1226,71 +1226,143 @@ async fn canonical_attention_historic_skipped_generation_refuses_with_or_without
 
 #[tokio::test]
 async fn canonical_attention_unpublished_failed_replacement_never_claims_empty() {
-    let home = TempDir::new().unwrap();
-    let config = test_config(home.path());
-    let db = codex_state::StateRuntime::init(
-        config.sqlite.clone(),
-        config.default_model_provider_id.clone(),
-    )
-    .await
-    .unwrap();
-    let store = LocalThreadStore::new(config.clone(), Some(db.clone()));
-    let id = ThreadId::new();
-    create_paginated_thread(&store, id).await;
-    let expected = preservation_notices(id, true);
-    store
-        .append_items(AppendThreadItemsParams {
-            thread_id: id,
-            items: expected
-                .iter()
-                .cloned()
-                .map(|notice| RolloutItem::EventMsg(EventMsg::ThreadAttention(notice)))
-                .collect(),
+    // Returned persistence failure, cancellation/drop, and unwind all retire staging.
+    for failure_mode in 0..3 {
+        let home = TempDir::new().unwrap();
+        let config = test_config(home.path());
+        let db = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .unwrap();
+        let store = LocalThreadStore::new(config.clone(), Some(db.clone()));
+        let id = ThreadId::new();
+        create_paginated_thread(&store, id).await;
+        let expected = preservation_notices(id, true);
+        store
+            .append_items(AppendThreadItemsParams {
+                thread_id: id,
+                items: expected
+                    .iter()
+                    .cloned()
+                    .map(|notice| RolloutItem::EventMsg(EventMsg::ThreadAttention(notice)))
+                    .collect(),
+            })
+            .await
+            .unwrap();
+        let source = store.live_rollout_path(id).await.unwrap();
+        store.shutdown_thread(id).await.unwrap();
+        codex_rollout::state_db::reconcile_rollout(
+            Some(db.as_ref()),
+            &source,
+            "test-provider",
+            None,
+            &[],
+            Some(false),
+            None,
+        )
+        .await;
+        let meta = codex_rollout::read_session_meta_line(&source)
+            .await
+            .unwrap()
+            .meta;
+        let (guards, _) = super::super::attention::lock_replacement(&store, id, source.clone())
+            .await
+            .unwrap();
+        let fence = store.acquire_writer_lock(id).unwrap();
+        let staged = super::create_replacement_recorder(
+            &store,
+            meta,
+            ThreadId::new(),
+            None,
+            None,
+            fence,
+            true,
+        )
+        .await
+        .unwrap();
+        let orphan = staged.rollout_path().to_path_buf();
+        staged.persist().await.unwrap();
+        if failure_mode == 0 {
+            staged.shutdown().await.unwrap();
+            // The real preparation owner must clean up even when persist cannot run.
+            assert!(
+                super::prepare_replacement(staged, Some(expected.clone()))
+                    .await
+                    .is_err()
+            );
+        } else {
+            // Queue actual receipt IO, then cancel/unwind the unpublished owner.
+            staged
+                .record_canonical_items(
+                    &expected
+                        .iter()
+                        .cloned()
+                        .map(|notice| RolloutItem::EventMsg(EventMsg::ThreadAttention(notice)))
+                        .collect::<Vec<_>>(),
+                )
+                .await
+                .unwrap();
+            let unpublished = super::UnpublishedReplacement::new(staged);
+            if failure_mode == 1 {
+                drop(unpublished);
+            } else {
+                assert!(
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                        let _unpublished = unpublished;
+                        panic!("cancel unpublished replacement by unwinding");
+                    }))
+                    .is_err()
+                );
+            }
+        }
+        // Fence release occurs only after queued IO drains and cleanup removes the file.
+        let released_fence = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Ok(fence) = store.acquire_writer_lock(id) {
+                    break fence;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
         })
         .await
         .unwrap();
-    let source = store.live_rollout_path(id).await.unwrap();
-    store.shutdown_thread(id).await.unwrap();
-    codex_rollout::state_db::reconcile_rollout(
-        Some(db.as_ref()),
-        &source,
-        "test-provider",
-        None,
-        &[],
-        Some(false),
-        None,
-    )
-    .await;
-    let meta = codex_rollout::read_session_meta_line(&source)
-        .await
-        .unwrap()
-        .meta;
-    let (guards, _) = super::super::attention::lock_replacement(&store, id, source.clone())
-        .await
-        .unwrap();
-    let fence = store.acquire_writer_lock(id).unwrap();
-    let staged =
-        super::create_replacement_recorder(&store, meta, ThreadId::new(), None, None, fence, true)
-            .await
-            .unwrap();
-    let orphan = staged.rollout_path().to_path_buf();
-    staged.persist().await.unwrap();
-    staged.shutdown().await.unwrap();
-    assert!(
-        super::stage_replacement_receipts(&staged, Some(expected))
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        db.get_thread(id).await.unwrap().unwrap().rollout_path,
-        source
-    );
-    drop(staged);
-    drop(guards);
-    // An explicit path is accepted by actual cold acquisition without a SQL
-    // selection row. Failed publication cannot leave a false complete-empty proof.
-    let cold = LocalThreadStore::new(config, None);
-    resume_historic_fixture(&cold, id, orphan).await;
-    assert!(cold.load_canonical_attention_receipts(id).await.is_err());
-    cold.shutdown_thread(id).await.unwrap();
+        assert!(!orphan.exists());
+        assert_eq!(
+            db.get_thread(id).await.unwrap().unwrap().rollout_path,
+            source
+        );
+        assert!(source.exists());
+        drop(released_fence);
+        drop(guards);
+        let unsupported = LocalThreadStore::new(config.clone(), None);
+        assert!(
+            unsupported
+                .resume_thread(crate::ResumeThreadParams {
+                    thread_id: id,
+                    rollout_path: Some(orphan),
+                    history: None,
+                    history_revision: None,
+                    include_archived: false,
+                    metadata: ThreadPersistenceMetadata {
+                        cwd: Some(std::env::current_dir().unwrap()),
+                        model_provider: "test-provider".into(),
+                        memory_mode: ThreadMemoryMode::Enabled,
+                    },
+                })
+                .await
+                .is_err()
+        );
+        let cold = LocalThreadStore::new(config, None);
+        resume_historic_fixture(&cold, id, source).await;
+        assert_eq!(
+            cold.load_canonical_attention_receipts(id)
+                .await
+                .unwrap()
+                .notices,
+            expected
+        );
+        cold.shutdown_thread(id).await.unwrap();
+    }
 }
