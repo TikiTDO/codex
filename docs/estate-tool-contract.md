@@ -34,6 +34,18 @@ every branch. There is no free-form argv, environment, endpoint, backend path,
 author, actor UUID or credential argument. Peer, channel and source selectors are
 data resolved by existing owners, not caller-selected authority.
 
+Select a finite profile ceiling of 32,768 normalized UTF-8 bytes per generated
+input schema. Generation must measure and refuse a larger schema, not truncate
+it. Set only the estate server's existing `tool_input_schema_max_bytes` to that
+ceiling in its explicitly selected launcher profile; leave other servers and
+global compaction behavior unchanged. The current default 5,000-byte MCP policy
+can remove definitions, nested object structure or composition, so a successful
+`tools/list` response alone cannot prove the closed model-visible contract.
+Capture both final direct and code-mode descriptors and compare operation
+discriminators, required fields and closed branches with the manifest. Any
+loss holds profile admission. This ceiling is a bounded initial choice, not a
+token-savings claim; descriptor/request measurements still decide the grouping.
+
 | tool | operations | class |
 | --- | --- | --- |
 | `estate_capabilities_v2` | inspect | read-only |
