@@ -3035,6 +3035,7 @@ dependencies = [
  "openssl-sys",
  "opentelemetry",
  "opentelemetry_sdk",
+ "png",
  "predicates",
  "pretty_assertions",
  "rand 0.9.3",

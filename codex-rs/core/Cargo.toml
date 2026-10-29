@@ -160,6 +160,7 @@ ctor = { workspace = true }
 insta = { workspace = true }
 maplit = { workspace = true }
 opentelemetry = { workspace = true }
+png = { workspace = true }
 predicates = { workspace = true }
 pretty_assertions = { workspace = true }
 test-case = "3.3.1"
