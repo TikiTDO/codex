@@ -3394,3 +3394,22 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
 
 #[path = "spec_plan_strict_third_party_tests.rs"]
 mod strict_third_party;
+
+#[tokio::test]
+async fn context_status_is_always_directly_available() {
+    for code_mode_only in [false, true] {
+        let plan = probe(|turn| {
+            if code_mode_only {
+                set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+            }
+        })
+        .await;
+
+        plan.assert_visible_contains(&["context_status"]);
+        plan.assert_registered_contains(&["context_status"]);
+        assert_eq!(
+            plan.exposure("context_status"),
+            ToolExposure::DirectModelOnly
+        );
+    }
+}

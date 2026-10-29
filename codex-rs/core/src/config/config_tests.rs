@@ -13891,3 +13891,34 @@ fn sqlite_home_env_conflict_reports_an_override() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn image_generation_output_dir_resolves_default_and_override() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let default_config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+    assert_eq!(
+        default_config.image_generation_output_dir,
+        codex_home.abs().join("generated_images")
+    );
+
+    let configured_output_dir = codex_home.abs().join("rook-scratch").join("images");
+    let configured = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            image_generation_output_dir: Some(configured_output_dir.clone()),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+    assert_eq!(
+        configured.image_generation_output_dir,
+        configured_output_dir
+    );
+    Ok(())
+}

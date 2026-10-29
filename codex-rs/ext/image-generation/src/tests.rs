@@ -51,6 +51,8 @@ async fn referenced_files_record_the_exact_bytes_read_for_each_request() {
     let args = ImagegenArgs {
         prompt: "combine the references".to_string(),
         transparent_background: false,
+        title: None,
+        metadata: None,
         referenced_image_paths: Some(vec![second.clone(), first.clone()]),
         num_last_images_to_include: None,
     };
@@ -119,6 +121,8 @@ async fn unreadable_or_invalid_reference_does_not_build_an_edit_request() {
         let args = ImagegenArgs {
             prompt: "edit the reference".to_string(),
             transparent_background: false,
+            title: None,
+            metadata: None,
             referenced_image_paths: Some(vec![path]),
             num_last_images_to_include: None,
         };
@@ -131,15 +135,21 @@ async fn unreadable_or_invalid_reference_does_not_build_an_edit_request() {
 }
 
 #[test]
-fn artifact_path_sanitizes_session_and_call_ids() {
-    let save_root = AbsolutePathBuf::current_dir().expect("current directory should be absolute");
+fn artifact_path_uses_local_date_timestamp_title_and_call_id() {
+    let output_dir = AbsolutePathBuf::current_dir().expect("current directory should be absolute");
+    let created_at = chrono::DateTime::parse_from_rfc3339("2026-07-30T10:45:12.123-04:00")
+        .expect("valid timestamp");
 
     assert_eq!(
-        image_generation_artifact_path(&save_root, "../session", "../call"),
-        save_root
-            .join("generated_images")
-            .join("___session")
-            .join("___call.png")
+        image_generation_artifact_path(
+            &output_dir,
+            &created_at,
+            "The First Window!",
+            "call_1234567890-extra",
+        ),
+        output_dir
+            .join("2026-07-30")
+            .join("20260730-104512-123-the-first-window-call12345678.png")
     );
 }
 
@@ -162,6 +172,8 @@ async fn omitted_references_generate_with_fixed_defaults() {
             &ImagegenArgs {
                 prompt: "paint a moonlit lake".to_string(),
                 transparent_background: false,
+                title: None,
+                metadata: None,
                 referenced_image_paths: None,
                 num_last_images_to_include: None,
             },
@@ -261,6 +273,8 @@ async fn recent_image_fallback_selects_newest_images_in_chronological_order() {
             &ImagegenArgs {
                 prompt: "change the lighting".to_string(),
                 transparent_background: false,
+                title: None,
+                metadata: None,
                 referenced_image_paths: None,
                 num_last_images_to_include: Some(5),
             },
@@ -285,6 +299,8 @@ async fn recent_image_fallback_passes_file_backed_image_to_edit_request() {
         &ImagegenArgs {
             prompt: "change the lighting".to_string(),
             transparent_background: false,
+            title: None,
+            metadata: None,
             referenced_image_paths: None,
             num_last_images_to_include: Some(1),
         },
@@ -336,6 +352,8 @@ async fn recent_image_fallback_passes_file_backed_tool_output_to_edit_request() 
         &ImagegenArgs {
             prompt: "change the lighting".to_string(),
             transparent_background: false,
+            title: None,
+            metadata: None,
             referenced_image_paths: None,
             num_last_images_to_include: Some(1),
         },
@@ -393,6 +411,8 @@ async fn conflicting_image_selectors_return_tool_error() {
         &ImagegenArgs {
             prompt: "change the lighting".to_string(),
             transparent_background: false,
+            title: None,
+            metadata: None,
             referenced_image_paths: Some(vec![
                 "/tmp/image.png"
                     .try_into()
@@ -418,6 +438,8 @@ async fn too_many_referenced_image_paths_return_tool_error() {
         &ImagegenArgs {
             prompt: "change the lighting".to_string(),
             transparent_background: false,
+            title: None,
+            metadata: None,
             referenced_image_paths: Some(
                 (0..6)
                     .map(|index| {
@@ -447,6 +469,8 @@ async fn recent_image_fallback_requires_requested_count() {
         &ImagegenArgs {
             prompt: "change the lighting".to_string(),
             transparent_background: false,
+            title: None,
+            metadata: None,
             referenced_image_paths: None,
             num_last_images_to_include: Some(2),
         },
@@ -586,5 +610,77 @@ fn expected_edit_request(prompt: &str, images: &[&str]) -> ImageEditRequest {
 fn function_payload() -> ToolPayload {
     ToolPayload::Function {
         arguments: "{}".to_string(),
+    }
+}
+
+#[tokio::test]
+async fn saved_artifact_uses_selected_metadata_and_does_not_overwrite_executor_file() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let root = AbsolutePathBuf::from_absolute_path(directory.path()).expect("absolute root");
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
+    let environment =
+        ToolEnvironment::new("test".to_string(), PathUri::from_abs_path(&root), &access);
+    let metadata = crate::metadata::ImageArtifactMetadata {
+        title: "The window".to_string(),
+        created_at: chrono::DateTime::parse_from_rfc3339("2026-10-29T10:00:00-04:00").unwrap(),
+        model: "test-model".to_string(),
+        creative: Default::default(),
+    };
+    let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([5, 10, 15, 255]));
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+    let result = base64::engine::general_purpose::STANDARD.encode(bytes.into_inner());
+    let expected = image_generation_artifact_path(
+        &root.join("generated_images"),
+        &metadata.created_at,
+        &metadata.title,
+        "call-1",
+    );
+    assert_eq!(
+        super::save_image_generation_result(None, Some(&environment), &metadata, "call-1", &result)
+            .await,
+        Some(expected.clone())
+    );
+    let saved = std::fs::read(expected.as_path()).expect("saved PNG");
+    assert_eq!(image::load_from_memory(&saved).unwrap().into_rgba8(), image);
+    let reader = png::Decoder::new(std::io::Cursor::new(&saved))
+        .read_info()
+        .unwrap();
+    assert_eq!(
+        reader
+            .info()
+            .utf8_text
+            .iter()
+            .find(|chunk| chunk.keyword == "Title")
+            .unwrap()
+            .get_text()
+            .unwrap(),
+        metadata.title
+    );
+    assert_eq!(
+        super::save_image_generation_result(None, Some(&environment), &metadata, "call-1", &result)
+            .await,
+        None
+    );
+    assert_eq!(std::fs::read(expected.as_path()).unwrap(), saved);
+
+    #[cfg(unix)]
+    {
+        std::fs::remove_dir_all(root.join("generated_images").as_path()).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("generated_images").as_path())
+            .unwrap();
+        assert_eq!(
+            super::save_image_generation_result(
+                None,
+                Some(&environment),
+                &metadata,
+                "call-2",
+                &result
+            )
+            .await,
+            None
+        );
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 }
