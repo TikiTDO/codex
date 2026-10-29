@@ -264,9 +264,11 @@ mod tests {
             image::load_from_memory(&output).unwrap().into_rgba8(),
             pixels
         );
-        let reader = png::Decoder::new(io::Cursor::new(&output))
+        let mut reader = png::Decoder::new(io::Cursor::new(&output))
             .read_info()
             .expect("decode");
+        // Metadata is appended before IEND, after image data; read_info stops at IDAT.
+        reader.finish().expect("read trailing metadata");
         let text = &reader.info().utf8_text;
         let get = |key| {
             text.iter()

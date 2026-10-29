@@ -643,9 +643,10 @@ async fn saved_artifact_uses_selected_metadata_and_does_not_overwrite_executor_f
     );
     let saved = std::fs::read(expected.as_path()).expect("saved PNG");
     assert_eq!(image::load_from_memory(&saved).unwrap().into_rgba8(), image);
-    let reader = png::Decoder::new(std::io::Cursor::new(&saved))
+    let mut reader = png::Decoder::new(std::io::Cursor::new(&saved))
         .read_info()
         .unwrap();
+    reader.finish().expect("read trailing metadata");
     assert_eq!(
         reader
             .info()
