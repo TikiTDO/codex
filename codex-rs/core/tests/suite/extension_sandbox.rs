@@ -71,6 +71,47 @@ const TINY_PNG_BYTES: &[u8] = &[
 const TINY_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 const TINY_PNG_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 
+fn assert_saved_image_artifact(
+    saved_path: &AbsolutePathBuf,
+    root: &std::path::Path,
+    filename_suffix: &str,
+    title: &str,
+    creative_text: Option<&str>,
+) -> Result<()> {
+    let day = saved_path
+        .as_path()
+        .parent()
+        .context("artifact day directory")?;
+    assert_eq!(day.parent(), Some(root));
+    chrono::NaiveDate::parse_from_str(day.file_name().unwrap().to_str().unwrap(), "%Y-%m-%d")?;
+    let filename = saved_path.as_path().file_name().unwrap().to_str().unwrap();
+    assert!(filename.ends_with(filename_suffix), "{filename}");
+    chrono::NaiveDateTime::parse_from_str(&filename[..19], "%Y%m%d-%H%M%S-%3f")?;
+    let saved = std::fs::read(saved_path.as_path())?;
+    assert_eq!(
+        image::load_from_memory(&saved)?.into_rgba8(),
+        image::load_from_memory(TINY_PNG_BYTES)?.into_rgba8(),
+    );
+    let mut reader = png::Decoder::new(std::io::Cursor::new(&saved)).read_info()?;
+    reader.finish()?;
+    let text = |key: &str| -> Result<String> {
+        Ok(reader
+            .info()
+            .utf8_text
+            .iter()
+            .find(|chunk| chunk.keyword == key)
+            .with_context(|| format!("missing PNG {key}"))?
+            .get_text()?)
+    };
+    assert_eq!(text("Title")?, title);
+    let metadata: serde_json::Value = serde_json::from_str(&text("Codex Metadata")?)?;
+    assert_eq!(metadata["title"], title);
+    assert_eq!(metadata["text"].as_str(), creative_text);
+    assert!(metadata.get("prompt").is_none());
+    assert!(metadata.get("revised_prompt").is_none());
+    Ok(())
+}
+
 fn image_generation_extensions(
     auth: &CodexAuth,
     resolve_save_root: impl Fn(&Config) -> Option<AbsolutePathBuf> + Send + Sync + 'static,
@@ -425,6 +466,8 @@ async fn extension_tool_uses_granted_turn_permissions_without_host_local_persist
                     "imagegen",
                     &json!({
                         "prompt": "edit the image",
+                        "title": "Granted edit",
+                        "metadata": {"text": "Permission fixture artifact"},
                         "referenced_image_paths": [image_path.display().to_string()],
                     })
                     .to_string(),
@@ -487,7 +530,13 @@ async fn extension_tool_uses_granted_turn_permissions_without_host_local_persist
             },
         })
         .await?;
+    let mut saved_path = None;
     wait_for_event(&test.codex, |event| {
+        if let EventMsg::ImageGenerationEnd(image) = event
+            && image.call_id == image_call_id
+        {
+            saved_path = image.saved_path.clone();
+        }
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
@@ -496,11 +545,7 @@ async fn extension_tool_uses_granted_turn_permissions_without_host_local_persist
         .last_request()
         .context("missing request containing extension output")?;
     let output = request.function_call_output(image_call_id);
-    let expected_path = test
-        .config
-        .cwd
-        .join("generated_images")
-        .join("image-edit-granted.png");
+    let expected_path = saved_path.context("granted image saved path")?;
     assert_eq!(
         output["output"][0],
         json!({
@@ -514,7 +559,13 @@ async fn extension_tool_uses_granted_turn_permissions_without_host_local_persist
             .as_str()
             .is_some_and(|hint| hint.contains(&expected_path.display().to_string()))
     );
-    assert_eq!(std::fs::read(expected_path.as_path())?, TINY_PNG_BYTES);
+    assert_saved_image_artifact(
+        &expected_path,
+        test.config.cwd.join("generated_images").as_path(),
+        "-granted-edit-imageeditgra.png",
+        "Granted edit",
+        Some("Permission fixture artifact"),
+    )?;
     assert!(!test.config.codex_home.join("generated_images").exists());
 
     Ok(())
@@ -727,8 +778,22 @@ async fn extension_tool_rebinds_granted_permissions_on_each_turn(
         })
     );
 
-    test.submit_text_turn("edit the same image in a new turn")
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "edit the same image in a new turn".into(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
+    let mut next_saved_path = None;
+    wait_for_event(&test.codex, |event| {
+        if let EventMsg::ImageGenerationEnd(image) = event
+            && image.call_id == next_image_call_id
+        {
+            next_saved_path = image.saved_path.clone();
+        }
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     let next_request = response_mock
         .last_request()
         .context("missing request containing next-turn extension output")?;
@@ -755,15 +820,14 @@ async fn extension_tool_rebinds_granted_permissions_on_each_turn(
                     "image_url": TINY_PNG_DATA_URL,
                 })
             );
-            assert_eq!(
-                std::fs::read(
-                    test.config
-                        .cwd
-                        .join("generated_images")
-                        .join("image-edit-next-turn.png")
-                )?,
-                TINY_PNG_BYTES
-            );
+            assert_saved_image_artifact(
+                &next_saved_path.context("session grant next-turn saved path")?,
+                test.config.cwd.join("generated_images").as_path(),
+                "-generated-image-imageeditnex.png",
+                "generated image",
+                None,
+            )?;
+            assert!(!test.config.codex_home.join("generated_images").exists());
         }
     }
 

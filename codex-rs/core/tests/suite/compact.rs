@@ -6198,3 +6198,71 @@ async fn remote_v2_compaction_refreshes_instructions_and_preserves_them_on_cold_
 
 #[path = "compact_program_tests.rs"]
 mod program_tests;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_status_reports_model_turn_and_distinct_token_windows() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "context-status-call";
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("status-seed", "seeded"),
+            ev_completed_with_tokens("status-seed-response", /*total_tokens*/ 2_500),
+        ]),
+    )
+    .await;
+    let first_turn_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_function_call(call_id, "context_status", "{}"),
+            ev_completed_with_tokens("status-response", /*total_tokens*/ 100),
+        ]),
+    )
+    .await;
+    let follow_up_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("status-done", FINAL_REPLY),
+            ev_completed_with_tokens("status-final", /*total_tokens*/ 50),
+        ]),
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_context_window = Some(10_000);
+            config.model_auto_compact_token_limit = Some(8_000);
+        })
+        .build(&server)
+        .await?;
+    test.submit_turn("seed context usage").await?;
+    test.submit_turn("report your context status").await?;
+
+    assert!(
+        first_turn_mock
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains("context_status"),
+        "context_status should be advertised to the model"
+    );
+    let (output, success) = follow_up_mock
+        .single_request()
+        .function_call_output_content_and_success(call_id)
+        .expect("context_status function output should be present");
+    assert_eq!(success, None);
+    let output: Value = serde_json::from_str(output.as_deref().expect("text output"))?;
+    assert_eq!(output["turn_active"], true);
+    assert_eq!(output["turn_kind"], "regular");
+    assert_eq!(output["context_window_tokens"], 9_500);
+    assert_eq!(output["auto_compact_limit"], 8_000);
+    assert!(output["model"].is_string());
+    assert!(output["reasoning_effort"].is_string());
+    assert!(output["context_tokens_used"].is_number());
+    assert!(output["context_tokens_remaining"].is_number());
+    assert!(output["session_total_usage"].is_object());
+
+    Ok(())
+}

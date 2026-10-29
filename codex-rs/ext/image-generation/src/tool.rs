@@ -3,6 +3,7 @@ use std::io;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use chrono::Local;
 use codex_api::ImageBackground;
 use codex_api::ImageEditRequest;
 use codex_api::ImageGenerationRequest;
@@ -61,6 +62,11 @@ use crate::IMAGEGEN_TOOL_NAME;
 use crate::artifact::image_generation_artifact_path;
 use crate::artifact::image_generation_output_hint;
 use crate::backend::CodexImagesBackend;
+use crate::metadata::ImageArtifactMetadata;
+use crate::metadata::ImagegenMetadata;
+use crate::metadata::embed_png_metadata;
+use crate::metadata::resolve_title;
+use crate::metadata::validate_metadata;
 
 const IMAGE_MODEL: &str = "gpt-image-2";
 const MAX_EDIT_IMAGES: usize = 5;
@@ -98,6 +104,11 @@ struct ImagegenArgs {
     /// Whether the output should have a transparent background. Defaults to false.
     #[serde(default)]
     transparent_background: bool,
+    /// Concise artifact title used in the saved filename and embedded metadata.
+    #[schemars(length(max = 120))]
+    title: Option<String>,
+    /// Optional, deliberately selected provenance. Omit private or incidental conversation data.
+    metadata: Option<ImagegenMetadata>,
     #[schemars(length(max = 5))]
     referenced_image_paths: Option<Vec<AbsolutePathBuf>>,
     #[schemars(range(min = 1, max = 5))]
@@ -155,6 +166,10 @@ impl ImageGenerationTool {
         call: ToolCall<'_>,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let args = parse_args(&call)?;
+        let title =
+            resolve_title(args.title.as_deref()).map_err(FunctionCallError::RespondToModel)?;
+        let creative_metadata = args.metadata.clone().unwrap_or_default();
+        validate_metadata(&creative_metadata).map_err(FunctionCallError::RespondToModel)?;
         let PreparedImageRequest {
             request,
             input_images,
@@ -246,12 +261,18 @@ impl ImageGenerationTool {
         };
         // TODO(anp): Migrate image tool path arguments and saved-path events to PathUri so image
         // operations can use the primary environment even when its paths are foreign to the host.
+        let artifact_metadata = ImageArtifactMetadata {
+            title,
+            created_at: Local::now().fixed_offset(),
+            model: IMAGE_MODEL.to_string(),
+            creative: creative_metadata,
+        };
         let saved_path = save_image_generation_result(
             self.save_root.as_ref(),
             call.environments
                 .iter()
                 .find(|environment| environment.cwd.to_abs_path().is_ok()),
-            &self.thread_id,
+            &artifact_metadata,
             &call.call_id,
             &result,
         )
@@ -347,18 +368,24 @@ fn usage_limit_failure(error: &CodexErr) -> Option<ImageGenerationFailure> {
 async fn save_image_generation_result(
     save_root: Option<&AbsolutePathBuf>,
     environment: Option<&ToolEnvironment<'_>>,
-    session_id: &str,
+    metadata: &ImageArtifactMetadata,
     call_id: &str,
     result: &str,
 ) -> Option<AbsolutePathBuf> {
     let (output_dir, save_result) = match save_root {
         Some(save_root) => {
-            let path = image_generation_artifact_path(save_root, session_id, call_id);
+            let path = image_generation_artifact_path(
+                save_root,
+                &metadata.created_at,
+                &metadata.title,
+                call_id,
+            );
             let output_dir = path.parent().unwrap_or_else(|| save_root.clone());
             let save_result: io::Result<AbsolutePathBuf> = async {
                 let bytes = BASE64_STANDARD
                     .decode(result.trim().as_bytes())
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                let bytes = embed_png_metadata(bytes, metadata)?;
                 if let Some(parent) = path.parent() {
                     LOCAL_FS
                         .create_directory(
@@ -407,8 +434,37 @@ async fn save_image_generation_result(
                     ));
                 }
 
-                let artifact_path = image_generation_artifact_path(&cwd, session_id, call_id);
-                let path = output_dir.join(artifact_path.as_path().file_name().unwrap_or_default());
+                let bytes = embed_png_metadata(bytes, metadata)?;
+                if bytes.len() > MAX_EXECUTOR_GENERATED_IMAGE_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "generated image with metadata exceeds the executor file size limit",
+                    ));
+                }
+                // Check the root before adding the date child: checking only the child would
+                // allow a symlinked generated_images root to escape the workspace.
+                let output_dir_uri = PathUri::from_abs_path(&output_dir);
+                fs.create_directory(
+                    &output_dir_uri,
+                    CreateDirectoryOptions {
+                        recursive: true,
+                        follow_symlinks: true,
+                    },
+                )
+                .await?;
+                let directory = fs.get_metadata(&output_dir_uri, Default::default()).await?;
+                if directory.is_symlink || !directory.is_directory {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "generated image directory is not a real directory",
+                    ));
+                }
+                let path = image_generation_artifact_path(
+                    &output_dir,
+                    &metadata.created_at,
+                    &metadata.title,
+                    call_id,
+                );
                 if let Some(parent) = path.parent() {
                     let parent_uri = PathUri::from_abs_path(&parent);
                     fs.create_directory(
