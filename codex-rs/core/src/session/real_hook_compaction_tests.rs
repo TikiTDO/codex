@@ -51,7 +51,7 @@ async fn run_real_hook_turn_case(
         } else {
             String::new()
         },
-        json!({"hookSpecificOutput":{"hookEventName":"UserPromptSubmit", "additionalContext":HOOK_TEXT}}),
+        json!({"continue":false,"decision":"block","reason":"async hook cannot stop this turn","systemMessage":"real async hook nonblocking warning","hookSpecificOutput":{"hookEventName":"UserPromptSubmit", "additionalContext":HOOK_TEXT}}),
     );
     let request_input = json!({"instructions": controls.then_some("preserve exact ready hook"), "discard_images": controls, "retry_websocket": retry});
     let first = responses::mount_sse_once(

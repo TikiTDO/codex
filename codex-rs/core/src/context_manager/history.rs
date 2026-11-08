@@ -687,13 +687,46 @@ impl ContextManager {
         self.items
     }
 
-    /// Removes inline image bodies and their adjacent harness labels from this
+    /// Removes typed image bodies and their adjacent message harness labels from this
     /// working history snapshot. Callers use this on a clone prepared for one
     /// compaction; the session's source transcript is not changed.
     pub(crate) fn discard_inline_images(&mut self) -> (usize, usize) {
         let mut removed_count = 0usize;
         let mut removed_bytes = 0usize;
         Arc::make_mut(&mut self.items).retain_mut(|envelope| {
+            match &mut envelope.item {
+                ResponseItem::FunctionCallOutput { output, .. }
+                | ResponseItem::CustomToolCallOutput { output, .. } => {
+                    if let Some(content) = output.content_items_mut() {
+                        for item in content {
+                            let FunctionCallOutputContentItem::InputImage { image, .. } = item
+                            else {
+                                continue;
+                            };
+                            removed_count = removed_count.saturating_add(1);
+                            if let ImageReference::Inline { image_url } = image {
+                                removed_bytes = removed_bytes.saturating_add(image_url.len());
+                            }
+                            // Keep the output, its positions and tool attribution, as the
+                            // native unsupported-media projection does. The model supports
+                            // images; this notice describes the caller's compaction policy.
+                            *item = FunctionCallOutputContentItem::InputText {
+                                text: "image omitted for compaction".to_string(),
+                            };
+                        }
+                    }
+                    return true;
+                }
+                ResponseItem::ImageGenerationCall { result, .. } => {
+                    if !result.is_empty() {
+                        removed_count = removed_count.saturating_add(1);
+                        removed_bytes = removed_bytes.saturating_add(result.len());
+                        result.clear();
+                    }
+                    return true;
+                }
+                _ => {}
+            }
             if !matches!(&envelope.item, ResponseItem::Message { content, .. }
                 if content.iter().any(|item| matches!(item, ContentItem::InputImage { .. })))
             {
