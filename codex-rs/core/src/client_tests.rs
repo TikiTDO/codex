@@ -2420,3 +2420,50 @@ async fn inference_tools_changes_follow_full_specs_across_turns() {
         );
     }
 }
+
+#[test]
+fn explicit_compaction_retry_resets_current_and_cached_state_but_keeps_turn_route() {
+    let mut client = test_model_client(SessionSource::Exec);
+    Arc::get_mut(&mut client.state).unwrap().provider = create_model_provider(
+        ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+        /*auth_manager*/ None,
+    );
+    let mut session = client.new_session();
+    session.turn_state.set("sticky-route".to_string()).unwrap();
+    session.websocket_session.auth_owner_generation = Some(123);
+    session.websocket_session.last_response_from_untraced_warmup = true;
+    session.websocket_session.set_connection_reused(true);
+    client
+        .state
+        .disable_websockets
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(session.retry_websocket());
+    assert_eq!(
+        session.turn_state.get().map(String::as_str),
+        Some("sticky-route")
+    );
+    assert_eq!(
+        session.websocket_session.auth_owner_generation,
+        Some(123),
+        "retry must not detach the current auth owner"
+    );
+    assert!(!session.websocket_session.last_response_from_untraced_warmup);
+    assert!(!session.websocket_session.connection_reused());
+    assert!(
+        !client
+            .state
+            .disable_websockets
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
+    // Later ordinary failure returns to sticky fallback; retry did not install a timer.
+    client
+        .state
+        .disable_websockets
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        client
+            .state
+            .disable_websockets
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
+}

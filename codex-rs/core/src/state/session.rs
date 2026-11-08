@@ -110,7 +110,44 @@ pub(crate) struct SessionState {
     initial_settings_pending: bool,
 }
 
+pub(crate) struct PreparedContextClear {
+    pub(crate) history: ContextManager,
+    window: AutoCompactWindow,
+    pub(crate) window_number: u64,
+    pub(crate) window_ids: AutoCompactWindowIds,
+    invalidate_reviews: bool,
+}
+
 impl SessionState {
+    pub(crate) fn prepare_context_clear(
+        &self,
+        items: Vec<ResponseItemEnvelope>,
+    ) -> PreparedContextClear {
+        let mut history = self.history.clone();
+        let invalidate_reviews = history.replace_compacted(items, None);
+        history.set_reference_context_item(None);
+        let mut window = self.auto_compact_window;
+        let (window_number, window_ids) = window.advance();
+        window.clear_prefill();
+        PreparedContextClear {
+            window_number,
+            window_ids,
+            history,
+            window,
+            invalidate_reviews,
+        }
+    }
+
+    pub(crate) fn install_context_clear(&mut self, prepared: PreparedContextClear) {
+        if prepared.invalidate_reviews {
+            std::mem::take(&mut self.history_reset).cancel();
+        }
+        self.history = prepared.history;
+        self.auto_compact_window = prepared.window;
+        self.reasoning_effort_pin = ReasoningEffortPin::Compacted;
+        self.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
+    }
+
     /// Create a new session state mirroring previous `State::default()` semantics.
     #[cfg(test)]
     pub(crate) fn new(session_configuration: SessionConfiguration) -> Self {

@@ -652,6 +652,10 @@ impl Session {
         }
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "private terminal persistence carries admission, then drops it before delivery without lock inversion"
+    )]
     pub async fn on_task_finished(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
@@ -904,11 +908,33 @@ impl Session {
         };
         let saved_guardian_completion =
             matches!(event, EventMsg::TurnComplete(_)) && self.is_private_guardian_reviewer().await;
-        if !saved_guardian_completion {
-            self.send_event(turn_context.as_ref(), event.clone()).await;
-        }
-
-        let cleared_active_turn = {
+        let cleared_active_turn = if saved_guardian_completion {
+            // Acquire before the event chain's realtime lock. The synchronous seam
+            // only releases this existing guard; it never reacquires admission there.
+            let mut active = self.active_turn.lock().await;
+            let finishing_state = Arc::clone(&turn_state);
+            let mut cleared = false;
+            let released = &mut cleared;
+            self.send_event_with_before_delivery(turn_context.as_ref(), event, move || {
+                if let Some(active_turn) = active.as_ref()
+                    && active_turn.task.is_none()
+                    && Arc::ptr_eq(&active_turn.turn_state, &finishing_state)
+                {
+                    *active = None;
+                    *released = true;
+                }
+                // Parent delivery may immediately request its next private review.
+                drop(active);
+            })
+            .await;
+            cleared
+        } else {
+            self.send_event(turn_context.as_ref(), event).await;
+            // Keep matching finishing ownership through the terminal barrier attempt.
+            // The post-idle barrier below remains: contributors may append more data.
+            if let Err(err) = self.flush_rollout().await {
+                warn!("failed to flush rollout before releasing finishing turn: {err}");
+            }
             let mut active = self.active_turn.lock().await;
             if let Some(active_turn) = active.as_ref()
                 && active_turn.task.is_none()
@@ -920,10 +946,6 @@ impl Session {
                 false
             }
         };
-        if saved_guardian_completion {
-            // The parent can request another review as soon as it receives this event.
-            self.send_event(turn_context.as_ref(), event).await;
-        }
         if cleared_active_turn {
             self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
         }

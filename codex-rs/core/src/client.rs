@@ -809,6 +809,17 @@ impl ModelClient {
         activated
     }
 
+    /// Reopen one explicit post-compaction WebSocket attempt. Its next failure uses
+    /// the ordinary sticky HTTP fallback; this creates no timed or automatic retry.
+    pub(crate) fn retry_websocket(&self) -> bool {
+        if !self.state.provider.info().supports_websockets {
+            return false;
+        }
+        let was_disabled = self.state.disable_websockets.swap(false, Ordering::Relaxed);
+        self.store_cached_websocket_session(WebsocketSession::default());
+        was_disabled
+    }
+
     pub(crate) async fn create_realtime_call_with_headers(
         &self,
         sdp: String,
@@ -1555,6 +1566,14 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    /// Preserve this turn's sticky routing token, but discard cached continuation
+    /// state before the caller-requested retry with replaced context.
+    pub(crate) fn retry_websocket(&mut self) -> bool {
+        let was_disabled = self.client.retry_websocket();
+        self.websocket_session.reset(Some("other"));
+        was_disabled
+    }
+
     pub(crate) fn inference_tools_changed(&self, tools: &Arc<[ToolSpec]>) -> bool {
         let previous = self
             .client

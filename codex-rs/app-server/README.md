@@ -775,3 +775,29 @@ Tracestate requirements merge individual fields within each member. For example,
 requiring `otel.tracestate.vendor.tenant` preserves an ordinary `vendor.region`.
 Only required fields and edits to their ancestors are protected; sibling fields
 retain their origins and remain writable.
+
+# Compaction controls and idle context clear
+
+`thread/compact/start` accepts `{threadId, input?}`. The optional one-shot input has
+`instructions`, `discardImages`, and `retryWebsocket`. Nonblank guidance and image
+discard apply to the actual local or remote summarizer, including when token-budget
+mode would otherwise reset without summarization. Default and retry-only requests
+retain native token-budget reset behavior. Image discard affects a working copy and
+the installed compacted window, not the source transcript. A transport retry is
+allowed only after successful compaction/reset; a failure returns to normal sticky
+HTTP fallback. The response acknowledges submission, not completion.
+
+The model's `compact_context` tool defers this work until its current sampling and
+all tools finish. Requests merge only within the invoking live turn; they do not
+transfer to a replacement turn. Ready async hook context reaches the summarizer, or
+the fresh native-reset window, once. Unfinished hooks do not delay compaction.
+
+`thread/context/clear` accepts `{threadId}` for a loaded, idle thread. It refuses
+active, reserved, and finishing turns rather than interrupting them. Successful
+clear appends and flushes a checkpoint before replacing effective context; earlier
+transcript items and retained provenance remain. The next regular turn rebuilds
+initial context instead of reusing stale context/world-state baselines. Completion
+is `thread/context/cleared` without a manufactured turn; refusal or storage failure
+is an error notification with `contextClearFailed` and does not fail another turn.
+The immediate response only acknowledges submission. A failed/cancelled durability
+barrier may still have affected disk; neither success nor rollback is implied.

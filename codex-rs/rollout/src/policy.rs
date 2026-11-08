@@ -149,6 +149,7 @@ fn persisted_event_msg(
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::PatchApplyEnd(_)
         | EventMsg::ContextCompacted(_)
+        | EventMsg::ContextCleared(_)
         | EventMsg::McpToolCallEnd(_)
         | EventMsg::WebSearchEnd(_)
         | EventMsg::ImageGenerationEnd(_) => {

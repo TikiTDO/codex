@@ -18,6 +18,7 @@ use crate::context::UserVerificationNotice;
 use crate::cyber_access_program;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::feedback_tags;
+use crate::hook_runtime::AsyncHookContextDisposition;
 use crate::hook_runtime::drain_async_hook_results;
 use crate::hook_runtime::hooks_for_model_request;
 use crate::hook_runtime::inspect_pending_input;
@@ -208,7 +209,7 @@ pub(crate) async fn run_turn(
         crate::guardian::check_pending_guardian_input(&sess, &turn_context).await?;
     }
     // Record results from hooks that finished after the previous turn before this turn's user prompt.
-    drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ true).await;
+    drain_async_hook_results(&sess, &turn_context, AsyncHookContextDisposition::RecordNow).await;
 
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
@@ -620,8 +621,14 @@ pub(crate) async fn run_turn(
                         .await;
                 }
                 can_drain_pending_input = true;
-                // Process async hooks only after sampling and its tools have finished.
-                drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ false).await;
+                // Claim intent only after tools finish, then route completed hook context
+                // according to the actual summary/reset owner before executing that intent.
+                let requested_compaction = claim_compaction_and_drain_async_hooks(
+                    &sess,
+                    &turn_context,
+                    &cancellation_token,
+                )
+                .await?;
                 let (has_pending_input, token_status) = async {
                     let has_pending_input =
                         sess.input_queue.has_pending_input(&sess.active_turn).await;
@@ -634,23 +641,26 @@ pub(crate) async fn run_turn(
                 }
                 .instrument(trace_span!("run_turn.collect_post_sampling_state"))
                 .await;
-                let needs_follow_up = model_needs_follow_up || has_pending_input;
+                let needs_follow_up =
+                    model_needs_follow_up || has_pending_input || requested_compaction.is_some();
                 let token_limit_reached = token_status.token_limit_reached;
 
-                super::async_compaction::maybe_start(
-                    &sess,
-                    &step_context,
-                    &world_state,
-                    if needs_follow_up {
-                        CompactionPhase::MidTurn
-                    } else {
-                        CompactionPhase::PostTurn
-                    },
-                    &cancellation_token,
-                    &token_status,
-                    client_session.turn_state_with_auth_owner(),
-                )
-                .await;
+                if requested_compaction.is_none() {
+                    super::async_compaction::maybe_start(
+                        &sess,
+                        &step_context,
+                        &world_state,
+                        if needs_follow_up {
+                            CompactionPhase::MidTurn
+                        } else {
+                            CompactionPhase::PostTurn
+                        },
+                        &cancellation_token,
+                        &token_status,
+                        client_session.turn_state_with_auth_owner(),
+                    )
+                    .await;
+                }
 
                 trace!(
                     turn_id = %turn_context.sub_id,
@@ -684,16 +694,17 @@ pub(crate) async fn run_turn(
                     );
                 }
 
-                let candidate = if needs_follow_up {
+                let candidate = if needs_follow_up && requested_compaction.is_none() {
                     super::async_compaction::take_ready(&sess, &turn_context).await
                 } else {
                     None
                 };
-                let should_roll_over = auto_compaction_enabled
-                    && needs_follow_up
-                    && (sess.take_new_context_window_request().await
-                        || token_limit_reached
-                        || candidate.is_some());
+                let should_roll_over = requested_compaction.is_some()
+                    || (auto_compaction_enabled
+                        && needs_follow_up
+                        && (sess.take_new_context_window_request().await
+                            || token_limit_reached
+                            || candidate.is_some()));
                 if auto_compaction_enabled {
                     let allow_auto_compact_fallback = !should_roll_over && !token_limit_reached;
                     super::token_budget::maybe_record(
@@ -707,16 +718,28 @@ pub(crate) async fn run_turn(
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if should_roll_over {
-                    let compacted = run_auto_compact(
-                        &sess,
-                        Arc::clone(&step_context),
-                        Arc::clone(&step_context),
-                        &mut client_session,
-                        CompactionReason::ContextLimit,
-                        CompactionPhase::MidTurn,
-                        candidate,
-                    )
-                    .await;
+                    let compacted = if let Some(input) = requested_compaction.as_ref() {
+                        run_requested_compact(
+                            &sess,
+                            Arc::clone(&step_context),
+                            &mut client_session,
+                            input,
+                            &cancellation_token,
+                        )
+                        .or_cancel(&cancellation_token)
+                        .await?
+                    } else {
+                        run_auto_compact(
+                            &sess,
+                            Arc::clone(&step_context),
+                            Arc::clone(&step_context),
+                            &mut client_session,
+                            CompactionReason::ContextLimit,
+                            CompactionPhase::MidTurn,
+                            candidate,
+                        )
+                        .await
+                    };
                     match compacted {
                         Ok(true) => {
                             if run_pending_session_start_hooks(&sess, &turn_context).await {
@@ -1583,6 +1606,134 @@ async fn maybe_run_previous_model_inline_compact(
     Ok(())
 }
 
+async fn ensure_live_compaction_turn(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    cancellation_token: &CancellationToken,
+) -> CodexResult<()> {
+    let current = sess.active_turn_context_and_cancellation_token().await;
+    if cancellation_token.is_cancelled()
+        || !current.is_some_and(|(current, task_token)| {
+            Arc::ptr_eq(&current, turn_context) && !task_token.is_cancelled()
+        })
+    {
+        return Err(CodexErr::TurnAborted);
+    }
+    Ok(())
+}
+
+pub(super) async fn claim_compaction_and_drain_async_hooks(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    cancellation_token: &CancellationToken,
+) -> CodexResult<Option<codex_protocol::protocol::CompactionInput>> {
+    ensure_live_compaction_turn(sess, turn_context, cancellation_token).await?;
+    let request = sess
+        .take_context_compaction_request(&turn_context.sub_id)
+        .await;
+    let native_reset = request.as_ref().is_some_and(|input| {
+        crate::compact::uses_native_token_budget_reset(
+            turn_context.config.features.enabled(Feature::TokenBudget),
+            Some(input),
+        )
+    });
+    if !native_reset {
+        let disposition = if request.is_some() {
+            AsyncHookContextDisposition::RecordNow
+        } else {
+            AsyncHookContextDisposition::QueueForNextStep
+        };
+        drain_async_hook_results(sess, turn_context, disposition).await;
+    }
+    // Native reset leaves published results in their existing channel until a
+    // successful reset can record them into the actual immediate continuation.
+    if request.is_some() {
+        ensure_live_compaction_turn(sess, turn_context, cancellation_token).await?;
+    }
+    Ok(request)
+}
+
+pub(super) async fn run_requested_compact(
+    sess: &Arc<Session>,
+    step_context: Arc<StepContext>,
+    client_session: &mut ModelClientSession,
+    input: &codex_protocol::protocol::CompactionInput,
+    cancellation_token: &CancellationToken,
+) -> CodexResult<bool> {
+    let turn_context = &step_context.turn;
+    // Token/status collection after the drain also awaited. Recheck immediately
+    // before this cancellable compaction starts, without retaining admission.
+    ensure_live_compaction_turn(sess, turn_context, cancellation_token).await?;
+    let world_state = Arc::new(
+        sess.build_world_state_for_step(&step_context, /*new_window*/ true)
+            .await?,
+    );
+    ensure_live_compaction_turn(sess, turn_context, cancellation_token).await?;
+    let _profile_guard = turn_context.turn_timing_state.begin_compaction();
+    let installed = if crate::compact::uses_native_token_budget_reset(
+        turn_context.config.features.enabled(Feature::TokenBudget),
+        Some(input),
+    ) {
+        crate::compact_token_budget::run_inline_auto_compact_task(
+            Arc::clone(sess),
+            Arc::clone(&step_context),
+            world_state,
+        )
+        .await?;
+        // Validate BEFORE the first try_recv; an obsolete owner consumes nothing.
+        ensure_live_compaction_turn(sess, turn_context, cancellation_token).await?;
+        drain_async_hook_results(sess, turn_context, AsyncHookContextDisposition::RecordNow).await;
+        ensure_live_compaction_turn(sess, turn_context, cancellation_token).await?;
+        true
+    } else {
+        match turn_context.provider.capabilities().remote_compaction {
+            RemoteCompactionSupport::V2 => {
+                emit_compact_metric(
+                    &sess.services.session_telemetry,
+                    "remote_v2",
+                    /*manual*/ true,
+                );
+                crate::compact_remote_v2::run_inline_remote_compact_task_with_input(
+                    Arc::clone(sess),
+                    Arc::clone(&step_context),
+                    Arc::clone(&step_context),
+                    client_session,
+                    world_state,
+                    CompactionReason::UserRequested,
+                    CompactionPhase::MidTurn,
+                    None,
+                    crate::compact_remote_v2::CompactionFallback::Foreground,
+                    Some(input),
+                )
+                .await?
+            }
+            RemoteCompactionSupport::Unsupported => {
+                emit_compact_metric(
+                    &sess.services.session_telemetry,
+                    "local",
+                    /*manual*/ true,
+                );
+                crate::compact::run_inline_compact_task_with_input(
+                    Arc::clone(sess),
+                    Arc::clone(turn_context),
+                    Arc::clone(&step_context),
+                    world_state,
+                    CompactionReason::UserRequested,
+                    CompactionPhase::MidTurn,
+                    Some(input),
+                )
+                .await?;
+                true
+            }
+        }
+    };
+    ensure_live_compaction_turn(sess, turn_context, cancellation_token).await?;
+    if installed && input.retry_websocket {
+        client_session.retry_websocket();
+    }
+    Ok(installed)
+}
+
 /// The replacement context may use a different model than the compactor.
 #[allow(clippy::too_many_arguments)]
 #[instrument(
@@ -2330,6 +2481,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::TurnModerationMetadata(_)
         | EventMsg::SafetyBuffering(_)
         | EventMsg::ContextCompacted(_)
+        | EventMsg::ContextCleared(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::TurnStarted(_)
         | EventMsg::ThreadSettingsApplied(_)
