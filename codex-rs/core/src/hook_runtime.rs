@@ -813,10 +813,16 @@ pub(crate) async fn record_pending_input(
 /// sampling, injects context into the active turn's pending-input queue so it
 /// reaches the next sampling request. Warnings and telemetry are handled in both
 /// cases.
+#[derive(Clone, Copy)]
+pub(crate) enum AsyncHookContextDisposition {
+    RecordNow,
+    QueueForNextStep,
+}
+
 pub(crate) async fn drain_async_hook_results(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
-    before_user_prompt: bool,
+    disposition: AsyncHookContextDisposition,
 ) {
     while let Ok(result) = sess.async_hook_results.try_recv() {
         let additional_contexts = result
@@ -830,7 +836,7 @@ pub(crate) async fn drain_async_hook_results(
             })
             .collect::<Vec<_>>();
 
-        if before_user_prompt {
+        if matches!(disposition, AsyncHookContextDisposition::RecordNow) {
             record_additional_contexts(sess, turn_context, additional_contexts).await;
         } else if !additional_contexts.is_empty() {
             let _ = sess

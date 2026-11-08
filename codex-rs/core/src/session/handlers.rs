@@ -264,13 +264,46 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
 }
 
 pub async fn compact(sess: &Arc<Session>, sub_id: String) {
+    compact_with_input(sess, sub_id, None).await;
+}
+
+pub async fn compact_with_input(
+    sess: &Arc<Session>,
+    sub_id: String,
+    input: Option<codex_protocol::protocol::CompactionInput>,
+) {
     // Stop the old turn before the compact task picks up the next turn's environments.
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
 
-    sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
+    sess.spawn_task(turn_context, Vec::new(), CompactTask::new(input))
+        .await;
+}
+
+pub(crate) const CONTEXT_CLEARED_MARKER: &str = "Context was cleared by request. The earlier conversation remains in the transcript, but is no longer part of effective context.";
+
+pub async fn clear_context(sess: &Arc<Session>, sub_id: String) {
+    let msg = match sess.clear_effective_context().await {
+        Ok(count) => {
+            if let Some(count) = count {
+                sess.send_event_raw(Event {
+                    id: sub_id.clone(),
+                    msg: EventMsg::TokenCount(count),
+                })
+                .await;
+            }
+            EventMsg::ContextCleared(codex_protocol::protocol::ContextClearedEvent)
+        }
+        Err(error) => EventMsg::Error(ErrorEvent {
+            misalignment: None,
+            message: error.to_string(),
+            codex_error_info: Some(CodexErrorInfo::ContextClearFailed),
+        }),
+    };
+    // Neither notification nor scheduling runs under admission/persistence guards.
+    sess.send_event_raw(Event { id: sub_id, msg }).await;
 }
 
 pub(super) async fn persist_thread_memory_mode_update(
@@ -717,6 +750,14 @@ pub(super) async fn submission_loop(
                 }
                 Op::Compact => {
                     compact(&sess, sub.id.clone()).await;
+                    false
+                }
+                Op::CompactWithInput { input } => {
+                    compact_with_input(&sess, sub.id.clone(), Some(input)).await;
+                    false
+                }
+                Op::ClearContext => {
+                    clear_context(&sess, sub.id.clone()).await;
                     false
                 }
                 Op::SetThreadMemoryMode { mode } => {

@@ -53,6 +53,7 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 #[cfg(test)]
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CompactionInput;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TruncationPolicy;
@@ -120,8 +121,40 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     candidate: Option<Box<BackgroundCompactionCandidate>>,
     fallback: CompactionFallback,
 ) -> CodexResult<bool> {
+    run_inline_remote_compact_task_with_input(
+        sess,
+        step_context,
+        replacement_step_context,
+        client_session,
+        world_state,
+        reason,
+        phase,
+        candidate,
+        fallback,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_inline_remote_compact_task_with_input(
+    sess: Arc<Session>,
+    step_context: Arc<StepContext>,
+    replacement_step_context: Arc<StepContext>,
+    client_session: &mut ModelClientSession,
+    world_state: Arc<WorldState>,
+    reason: CompactionReason,
+    phase: CompactionPhase,
+    candidate: Option<Box<BackgroundCompactionCandidate>>,
+    fallback: CompactionFallback,
+    compaction_input: Option<&CompactionInput>,
+) -> CodexResult<bool> {
     let compaction_metadata = CompactionTurnMetadata::new(
-        CompactionTrigger::Auto,
+        if compaction_input.is_some() {
+            CompactionTrigger::Manual
+        } else {
+            CompactionTrigger::Auto
+        },
         reason,
         CompactionImplementation::ResponsesCompactionV2,
         phase,
@@ -135,6 +168,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         compaction_metadata,
         candidate,
         fallback,
+        compaction_input,
     )
     .await
 }
@@ -143,6 +177,15 @@ pub(crate) async fn run_remote_compact_task(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
     world_state: Arc<WorldState>,
+) -> CodexResult<()> {
+    run_remote_compact_task_with_input(sess, step_context, world_state, None).await
+}
+
+pub(crate) async fn run_remote_compact_task_with_input(
+    sess: Arc<Session>,
+    step_context: Arc<StepContext>,
+    world_state: Arc<WorldState>,
+    compaction_input: Option<&CompactionInput>,
 ) -> CodexResult<()> {
     let compaction_metadata = CompactionTurnMetadata::new(
         CompactionTrigger::Manual,
@@ -159,6 +202,7 @@ pub(crate) async fn run_remote_compact_task(
         compaction_metadata,
         /*candidate*/ None,
         CompactionFallback::Foreground,
+        compaction_input,
     )
     .await
     .map(|_| ())
@@ -174,7 +218,14 @@ async fn run_remote_compact_task_inner(
     compaction_metadata: CompactionTurnMetadata,
     candidate: Option<Box<BackgroundCompactionCandidate>>,
     fallback: CompactionFallback,
+    compaction_input: Option<&CompactionInput>,
 ) -> CodexResult<bool> {
+    // Captured candidates lack this request's controls. Do not wait for or adopt them.
+    let candidate = if compaction_input.is_some() {
+        None
+    } else {
+        candidate
+    };
     let turn_context = &step_context.turn;
     let trigger = compaction_metadata.trigger();
     let reason = compaction_metadata.reason();
@@ -216,7 +267,10 @@ async fn run_remote_compact_task_inner(
     } else {
         None
     };
-    let candidate = if candidate.is_none() && fallback == CompactionFallback::Foreground {
+    let candidate = if compaction_input.is_none()
+        && candidate.is_none()
+        && fallback == CompactionFallback::Foreground
+    {
         crate::session::async_compaction::wait_for_pending(sess, step_context).await
     } else {
         candidate
@@ -233,6 +287,7 @@ async fn run_remote_compact_task_inner(
         started_item.as_ref(),
         candidate.map(|candidate| *candidate),
         fallback,
+        compaction_input,
     ))
     .await;
     if matches!(result, Ok(false)) {

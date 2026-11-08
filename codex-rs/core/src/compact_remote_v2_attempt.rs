@@ -29,6 +29,7 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CompactionInput;
 use codex_protocol::protocol::TokenUsage;
 use codex_rollout_trace::CompactionTraceContext;
 use tokio_util::sync::CancellationToken;
@@ -47,7 +48,10 @@ pub(super) struct RemoteCompactV2Attempt {
 }
 
 pub(super) enum RemoteCompactV2AttemptInput<'a> {
-    Foreground(Option<&'a mut ModelClientSession>),
+    Foreground(
+        Option<&'a mut ModelClientSession>,
+        Option<&'a CompactionInput>,
+    ),
     Background(BackgroundCompactionInput),
 }
 
@@ -87,10 +91,11 @@ pub(super) async fn run_remote_compact_v2_attempt(
         transport,
         captured_window,
     ) = match input {
-        RemoteCompactV2AttemptInput::Foreground(client_session) => {
+        RemoteCompactV2AttemptInput::Foreground(client_session, compaction_input) => {
             let model_info = turn_context.model_info();
             let mut history = sess.clone_history().await;
             let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
+            crate::compact::prepare_compaction_history(&mut history, compaction_input);
             let tools_in_history = step_context.settings.model_info.use_responses_lite
                 && history
                     .raw_items()
@@ -103,6 +108,8 @@ pub(super) async fn run_remote_compact_v2_attempt(
             } else {
                 sess.get_prompt_base_instructions().await
             };
+            let base_instructions =
+                crate::compact::apply_compaction_instructions(base_instructions, compaction_input);
             let (rewritten_outputs, estimated_deleted_tokens) =
                 trim_function_call_history_to_fit_context_window(
                     &mut history,

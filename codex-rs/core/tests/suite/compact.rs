@@ -6373,3 +6373,213 @@ async fn context_status_reports_model_turn_and_distinct_token_windows() -> Resul
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_summarizes_at_safe_mid_turn_boundary() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "compact-context-call";
+    let first_turn_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_function_call(call_id, "compact_context", "{}"),
+            ev_completed_with_tokens("compact-tool-response", /*total_tokens*/ 100),
+        ]),
+    )
+    .await;
+    let summary = "MODEL_REQUESTED_COMPACTION_SUMMARY";
+    let compact_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("compact-summary", &auto_summary(summary)),
+            ev_completed_with_tokens("compact-response", /*total_tokens*/ 50),
+        ]),
+    )
+    .await;
+    let follow_up_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("compact-done", FINAL_REPLY),
+            ev_completed_with_tokens("compact-final", /*total_tokens*/ 25),
+        ]),
+    )
+    .await;
+
+    let model_provider = non_openai_model_provider(&server);
+    let test = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+            set_test_compact_prompt(config);
+            config.model_context_window = Some(10_000);
+            config.model_auto_compact_token_limit = Some(9_000);
+        })
+        .build(&server)
+        .await?;
+    test.submit_turn("compact when you judge it useful").await?;
+
+    assert!(
+        first_turn_mock
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains("compact_context"),
+        "compact_context should be advertised to the model"
+    );
+    let compact_request = compact_mock.single_request();
+    let (output, success) = compact_request
+        .function_call_output_content_and_success(call_id)
+        .expect("compact_context function output should precede compaction");
+    assert_eq!(success, None);
+    assert!(
+        output
+            .as_deref()
+            .is_some_and(|output| output.contains("scheduled"))
+    );
+    assert!(
+        body_contains_text(
+            &compact_request.body_json().to_string(),
+            SUMMARIZATION_PROMPT
+        ),
+        "model-requested compaction should use the normal summarization prompt"
+    );
+    assert!(
+        follow_up_mock
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains(summary),
+        "the same turn should continue from compacted context"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_applies_guidance_and_discards_inline_images() -> Result<()> {
+    compact_context_controls_case(false, false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_token_budget_controls_still_run_local_summarizer() -> Result<()> {
+    compact_context_controls_case(true, false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_remote_guidance_and_discard_reach_actual_compactor() -> Result<()> {
+    compact_context_controls_case(false, true).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_token_budget_controls_still_run_remote_summarizer() -> Result<()> {
+    compact_context_controls_case(true, true).await
+}
+
+async fn compact_context_controls_case(token_budget: bool, remote: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "compact-context-controls-call";
+    let guidance = "PRESERVE_THIS_CALLER_GUIDANCE";
+    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    let first_turn_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_function_call(
+                call_id,
+                "compact_context",
+                &json!({
+                    "instructions": guidance,
+                    "discard_images": true,
+                    "retry_websocket": false,
+                })
+                .to_string(),
+            ),
+            ev_completed_with_tokens("compact-controls-tool-response", /*total_tokens*/ 100),
+        ]),
+    )
+    .await;
+    let compact_mock = mount_sse_once(
+        &server,
+        if remote {
+            remote_v2_compaction_response()
+        } else {
+            sse(vec![
+                ev_assistant_message("compact-controls-summary", "CONTROLLED_COMPACTION_SUMMARY"),
+                ev_completed_with_tokens("compact-controls-response", /*total_tokens*/ 50),
+            ])
+        },
+    )
+    .await;
+    let follow_up_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("compact-controls-done", FINAL_REPLY),
+            ev_completed_with_tokens("compact-controls-final", /*total_tokens*/ 25),
+        ]),
+    )
+    .await;
+
+    let model_provider = non_openai_model_provider(&server);
+    let test = test_codex()
+        .with_config(move |config| {
+            if !remote {
+                config.model_provider = model_provider;
+            }
+            if token_budget {
+                config.features.enable(Feature::TokenBudget).unwrap();
+            }
+            set_test_compact_prompt(config);
+            config.model_context_window = Some(10_000);
+            config.model_auto_compact_token_limit = Some(9_000);
+        })
+        .build(&server)
+        .await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![
+            UserInput::Image {
+                image: ImageReference::Inline {
+                    image_url: image_url.to_string(),
+                },
+                detail: None,
+            },
+            UserInput::Text {
+                text: "compact this image-bearing turn".to_string(),
+                text_elements: Vec::new(),
+            },
+        ]))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    assert!(
+        first_turn_mock
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains(image_url),
+        "the original request should contain the source image"
+    );
+    let compact_body = compact_mock.single_request().body_json().to_string();
+    assert!(
+        compact_body.contains(guidance),
+        "caller guidance should reach the compactor"
+    );
+    assert!(
+        !compact_body.contains(image_url),
+        "discarded image bytes should not reach the compactor"
+    );
+    let follow_up_body = follow_up_mock.single_request().body_json().to_string();
+    assert!(
+        !follow_up_body.contains(guidance),
+        "one-shot compactor guidance must not become session instructions"
+    );
+    assert!(
+        !follow_up_body.contains(image_url),
+        "discarded image bytes should not return in installed compacted history"
+    );
+
+    Ok(())
+}

@@ -26,6 +26,7 @@ use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::tasks::AnySessionTask;
+use codex_protocol::protocol::CompactionInput;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ReviewDecision;
@@ -100,6 +101,7 @@ pub(crate) struct TurnState {
     pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pub(crate) pending_input: TurnInputQueue,
     mailbox_delivery_phase: MailboxDeliveryPhase,
+    context_compaction_request: Option<CompactionInput>,
     pub(crate) tool_calls: u64,
     pub(crate) has_memory_citation: bool,
     pub(crate) token_usage_at_turn_start: TokenUsage,
@@ -175,6 +177,17 @@ impl Drop for NetworkApprovalPrompt<'_> {
 }
 
 impl TurnState {
+    pub(crate) fn request_context_compaction(&mut self, input: CompactionInput) {
+        match &mut self.context_compaction_request {
+            Some(current) => current.merge(input),
+            None => self.context_compaction_request = Some(input),
+        }
+    }
+
+    pub(crate) fn take_context_compaction_request(&mut self) -> Option<CompactionInput> {
+        self.context_compaction_request.take()
+    }
+
     pub(crate) fn track_network_prompt<'a>(
         &self,
         events: &'a async_channel::Sender<Event>,
@@ -312,5 +325,30 @@ impl TurnState {
 
     pub(crate) fn set_mailbox_delivery_phase(&mut self, phase: MailboxDeliveryPhase) {
         self.mailbox_delivery_phase = phase;
+    }
+}
+
+#[cfg(test)]
+mod compaction_request_tests {
+    use super::*;
+    #[test]
+    fn pending_compaction_merges_only_in_its_turn_and_is_taken_once() {
+        let mut first = TurnState::default();
+        first.request_context_compaction(CompactionInput {
+            instructions: Some("first".into()),
+            discard_images: true,
+            retry_websocket: false,
+        });
+        first.request_context_compaction(CompactionInput {
+            instructions: Some("second".into()),
+            discard_images: false,
+            retry_websocket: true,
+        });
+        let mut replacement = TurnState::default();
+        assert!(replacement.take_context_compaction_request().is_none());
+        let input = first.take_context_compaction_request().unwrap();
+        assert_eq!(input.instructions.as_deref(), Some("first\n\nsecond"));
+        assert!(input.discard_images && input.retry_websocket);
+        assert!(first.take_context_compaction_request().is_none());
     }
 }

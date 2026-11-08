@@ -1040,6 +1040,7 @@ impl MessageProcessor {
             | ClientRequest::TurnSteer { .. }
             | ClientRequest::ReviewStart { .. }
             | ClientRequest::ThreadCompactStart { .. }
+            | ClientRequest::ThreadContextClear { .. }
             | ClientRequest::ThreadShellCommand { .. }
             | ClientRequest::ThreadQueueStart { .. }
             | ClientRequest::ThreadRealtimeStart { .. } => {
@@ -1513,6 +1514,11 @@ impl MessageProcessor {
             ClientRequest::ThreadCompactStart { params, .. } => {
                 self.thread_processor
                     .thread_compact_start(&request_id, params)
+                    .await
+            }
+            ClientRequest::ThreadContextClear { params, .. } => {
+                self.thread_processor
+                    .thread_context_clear(&request_id, params)
                     .await
             }
             ClientRequest::ThreadBackgroundTerminalsClean { params, .. } => {

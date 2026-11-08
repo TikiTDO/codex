@@ -688,6 +688,55 @@ impl AdditionalContextEntry {
     }
 }
 
+/// Caller controls for one compaction; original rollout items remain append-only.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct CompactionInput {
+    /// Additional instructions for what the compacted context should preserve,
+    /// summarize, or otherwise emphasize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub instructions: Option<String>,
+
+    /// Omit inline image bodies from the compactor input and installed compacted
+    /// history. The original transcript remains unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(alias = "discard_images")]
+    pub discard_images: bool,
+
+    /// After a successful compaction, allow the next model request to try the
+    /// Responses WebSocket transport again. A failed attempt returns the session
+    /// to sticky HTTP fallback; this does not enable automatic retries.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(alias = "retry_websocket")]
+    pub retry_websocket: bool,
+}
+
+impl CompactionInput {
+    pub fn has_summary_controls(&self) -> bool {
+        self.discard_images
+            || self
+                .instructions
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty())
+    }
+
+    pub fn merge(&mut self, newer: Self) {
+        if let Some(instructions) = newer.instructions.filter(|value| !value.trim().is_empty()) {
+            match &mut self.instructions {
+                Some(existing) if !existing.trim().is_empty() => {
+                    existing.push_str("\n\n");
+                    existing.push_str(&instructions);
+                }
+                slot => *slot = Some(instructions),
+            }
+        }
+        self.discard_images |= newer.discard_images;
+        self.retry_websocket |= newer.retry_websocket;
+    }
+}
+
 /// Submission operation
 // Keep diagnostic fields explicit so new payload fields do not enter logs by default.
 #[derive(derive_more::Debug)]
@@ -878,6 +927,13 @@ pub enum Op {
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
+
+    /// Request compaction with caller-authored, one-shot controls.
+    #[debug("CompactWithInput {{ discard_images: {}, retry_websocket: {} }}", input.discard_images, input.retry_websocket)]
+    CompactWithInput { input: CompactionInput },
+
+    /// Append an effective-context clear checkpoint while idle; preserve the transcript.
+    ClearContext,
 
     /// Set whether the thread remains eligible for memory generation.
     ///
@@ -1115,7 +1171,8 @@ impl Op {
             Self::DynamicToolResponse { .. } => "dynamic_tool_response",
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
-            Self::Compact => "compact",
+            Self::Compact | Self::CompactWithInput { .. } => "compact",
+            Self::ClearContext => "clear_context",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
             Self::Review { .. } => "review",
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",
@@ -1558,6 +1615,9 @@ pub enum EventMsg {
 
     /// Conversation history was compacted (either automatically or manually).
     ContextCompacted(ContextCompactedEvent),
+
+    /// Effective context cleared without deleting the transcript or starting a turn.
+    ContextCleared(ContextClearedEvent),
 
     /// Legacy persisted marker for dropping the last N user turns.
     /// Retained for replay of existing rollouts; live rollback operations are unsupported.
@@ -2101,6 +2161,8 @@ pub enum CodexErrorInfo {
     },
     // Retained to deserialize errors recorded in legacy rollouts.
     ThreadRollbackFailed,
+    /// A context clear was refused or could not establish durability.
+    ContextClearFailed,
     Other,
 }
 
@@ -2108,7 +2170,9 @@ impl CodexErrorInfo {
     /// Whether this error should mark the current turn as failed when replaying history.
     pub fn affects_turn_status(&self) -> bool {
         match self {
-            Self::ThreadRollbackFailed | Self::ActiveTurnNotSteerable { .. } => false,
+            Self::ThreadRollbackFailed
+            | Self::ContextClearFailed
+            | Self::ActiveTurnNotSteerable { .. } => false,
             Self::ContextWindowExceeded
             | Self::SessionBudgetExceeded
             | Self::UsageLimitExceeded
@@ -2380,6 +2444,9 @@ pub struct SafetyBufferingEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ContextCompactedEvent;
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ContextClearedEvent;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TurnCompleteEvent {
@@ -6765,5 +6832,61 @@ mod tests {
         );
 
         assert_eq!(info.model_context_window, Some(258_400));
+    }
+}
+
+#[cfg(test)]
+mod estate_compaction_input_tests {
+    use super::*;
+    #[test]
+    fn compaction_input_empty_and_retry_only_keep_native_reset_but_controls_require_summary() {
+        assert!(!CompactionInput::default().has_summary_controls());
+        let mut input = CompactionInput {
+            retry_websocket: true,
+            ..Default::default()
+        };
+        assert!(!input.has_summary_controls());
+        input.instructions = Some("  \n ".into());
+        assert!(!input.has_summary_controls());
+        input.merge(CompactionInput {
+            instructions: Some("preserve evidence".into()),
+            ..Default::default()
+        });
+        assert!(input.has_summary_controls());
+        assert_eq!(input.instructions.as_deref(), Some("preserve evidence"));
+        assert!(input.retry_websocket);
+        let discarded = CompactionInput {
+            discard_images: true,
+            ..Default::default()
+        };
+        assert!(discarded.has_summary_controls());
+    }
+    #[test]
+    fn context_clear_failure_is_serialized_and_does_not_fail_an_unrelated_turn() {
+        let error = CodexErrorInfo::ContextClearFailed;
+        assert!(!error.affects_turn_status());
+        let wire = serde_json::to_string(&error).unwrap();
+        assert_eq!(
+            serde_json::from_str::<CodexErrorInfo>(&wire).unwrap(),
+            error
+        );
+    }
+}
+
+#[cfg(test)]
+mod compaction_input_diagnostic_tests {
+    use super::*;
+    #[test]
+    fn compact_op_debug_omits_caller_guidance() {
+        let op = Op::CompactWithInput {
+            input: CompactionInput {
+                instructions: Some("CALLER_GUIDANCE_NOT_FOR_LOGS".into()),
+                discard_images: true,
+                ..Default::default()
+            },
+        };
+        let debug = format!("{op:?}");
+        assert!(!debug.contains("CALLER_GUIDANCE_NOT_FOR_LOGS"));
+        assert!(debug.contains("discard_images: true"));
     }
 }

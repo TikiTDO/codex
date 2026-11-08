@@ -3436,3 +3436,28 @@ async fn context_status_is_always_directly_available() {
         );
     }
 }
+
+#[tokio::test]
+async fn compact_context_stays_direct_for_plain_and_code_mode_only_models() {
+    for code_mode_only in [false, true] {
+        let plan = probe(|turn| {
+            if code_mode_only {
+                set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+            }
+        })
+        .await;
+        plan.assert_visible_contains(&["compact_context"]);
+        plan.assert_registered_contains(&["compact_context"]);
+        assert_eq!(
+            plan.exposure("compact_context"),
+            ToolExposure::DirectModelOnly
+        );
+        if code_mode_only {
+            let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME)
+            else {
+                panic!("expected code mode exec tool");
+            };
+            assert!(!exec.description.contains("compact_context"));
+        }
+    }
+}

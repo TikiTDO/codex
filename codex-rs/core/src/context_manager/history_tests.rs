@@ -3877,3 +3877,102 @@ fn text_only_items_count_decoded_content() {
 
     assert_eq!(estimated, "Hello, \"world\"!\nこんにちは".len() as i64);
 }
+
+#[test]
+fn discard_inline_images_removes_bodies_and_adjacent_labels_from_working_copy() {
+    let image_url = "data:image/png;base64,abc";
+    let original = ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "before".to_string(),
+            },
+            ContentItem::InputText {
+                text: r#"<image name=[Image #1] path="/tmp/example.png">"#.to_string(),
+            },
+            ContentItem::InputImage {
+                image: ImageReference::Inline {
+                    image_url: image_url.to_string(),
+                },
+                detail: None,
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
+            content_item_kinds: Some(vec![ContentItemKind("hook_context".into()); 5]),
+            content_item_metadata: Some(
+                vec![codex_protocol::models::ContentItemMetadata::command_hook(); 5],
+            ),
+            ..Default::default()
+        }),
+    };
+    let source = create_history_with_items(vec![original.clone()]);
+    let mut working = source.clone();
+
+    let (count, bytes) = working.discard_inline_images();
+
+    assert_eq!((count, bytes), (1, image_url.len()));
+    assert_eq!(raw_items(&source), vec![original]);
+    let annotated_working_items = raw_items(&working);
+    let [
+        ResponseItem::Message {
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        },
+    ] = annotated_working_items.as_slice()
+    else {
+        panic!("retained annotation metadata missing")
+    };
+    assert_eq!(
+        metadata.content_item_kinds,
+        Some(vec![ContentItemKind("hook_context".into()); 2])
+    );
+    assert_eq!(
+        metadata.content_item_metadata,
+        Some(vec![codex_protocol::models::ContentItemMetadata::command_hook(); 2])
+    );
+    let working_items = raw_items(&working);
+    let [ResponseItem::Message { content, .. }] = working_items.as_slice() else {
+        panic!("expected one retained user message");
+    };
+    assert_eq!(
+        content,
+        &[
+            ContentItem::InputText {
+                text: "before".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ]
+    );
+}
+
+#[test_case::test_case("developer"; "hook developer context")]
+#[test_case::test_case("user"; "user text")]
+#[test_case::test_case("assistant"; "assistant text")]
+fn discard_inline_images_preserves_no_image_envelopes_exactly(role: &str) {
+    let item = codex_context_fragments::message_from_parts(
+        role,
+        vec![codex_context_fragments::AnnotatedContent::text(
+            "PRESERVE_NO_IMAGE_TEXT",
+            ContentItemKind("hook_context".into()),
+            codex_protocol::models::ContentItemMetadata::command_hook(),
+        )],
+    );
+    let source = create_history_with_items(vec![item]);
+    let before = source.annotated_items().to_vec();
+    let mut working = source.clone();
+    assert_eq!(working.discard_inline_images(), (0, 0));
+    assert_eq!(working.annotated_items(), before);
+    assert_eq!(source.annotated_items(), before);
+}
