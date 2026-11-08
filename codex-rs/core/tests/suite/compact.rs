@@ -6583,3 +6583,178 @@ async fn compact_context_controls_case(token_budget: bool, remote: bool) -> Resu
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_discards_actual_view_image_in_local_compactor() -> Result<()> {
+    compact_context_view_image_case(false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_discards_actual_view_image_in_remote_compactor() -> Result<()> {
+    compact_context_view_image_case(true).await
+}
+
+async fn compact_context_view_image_case(remote: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let view_call = "discard-view-image-call";
+    let guidance = "KEEP_TOOL_IMAGE_COMPACTION_GUIDANCE";
+    let message_image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    let provider = non_openai_model_provider(&server);
+    let test = test_codex()
+        .with_model_info_override("gpt-5.5", |model| {
+            model.input_modalities = vec![
+                codex_protocol::openai_models::InputModality::Text,
+                codex_protocol::openai_models::InputModality::Image,
+            ];
+        })
+        .with_config(move |config| {
+            config.model = Some("gpt-5.5".into());
+            if !remote {
+                config.model_provider = provider;
+            }
+            set_test_compact_prompt(config);
+            config.model_context_window = Some(10_000);
+            config.model_auto_compact_token_limit = Some(9_000);
+        })
+        .build(&server)
+        .await?;
+    let path = test.cwd.path().join("discard-test.png");
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([24u8, 56, 90, 255])).save(&path)?;
+    let first = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_function_call(view_call, "view_image", &json!({"path": path}).to_string()),
+            ev_completed_with_tokens("view-image-response", 100),
+        ]),
+    )
+    .await;
+    let viewed = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_function_call(
+                "discard-controls-call",
+                "compact_context",
+                &json!({
+                    "instructions": guidance, "discard_images": true,
+                })
+                .to_string(),
+            ),
+            ev_completed_with_tokens("discard-controls-response", 150),
+        ]),
+    )
+    .await;
+    let compact = mount_sse_once(
+        &server,
+        if remote {
+            remote_v2_compaction_response()
+        } else {
+            sse(vec![
+                ev_assistant_message("view-summary", "TOOL_IMAGE_FREE_SUMMARY"),
+                ev_completed_with_tokens("view-summary-response", 50),
+            ])
+        },
+    )
+    .await;
+    let continuation = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("view-final", FINAL_REPLY),
+            ev_completed_with_tokens("view-final-response", 25),
+        ]),
+    )
+    .await;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![
+            UserInput::Image {
+                image: ImageReference::Inline {
+                    image_url: message_image.into(),
+                },
+                detail: None,
+            },
+            UserInput::Text {
+                text: "View the disposable image, then compact without images".into(),
+                text_elements: vec![],
+            },
+        ]))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert!(
+        first
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains(message_image)
+    );
+    let viewed_request = viewed.single_request();
+    let output = viewed_request.function_call_output(view_call);
+    let actual_image = output["output"]
+        .as_array()
+        .expect("actual view_image structured output")
+        .iter()
+        .find(|part| part["type"] == "input_image")
+        .and_then(|part| part["image_url"].as_str())
+        .expect("actual native image producer")
+        .to_string();
+    assert!(actual_image.starts_with("data:image/png;base64,"));
+    let compact_body = compact.single_request().body_json();
+    let serialized = compact_body.to_string();
+    assert!(serialized.contains(guidance));
+    assert!(!serialized.contains(&actual_image));
+    assert!(!serialized.contains(message_image));
+    // Real compactor input retains both sides of the native call and a nonempty output.
+    let input = compact_body["input"].as_array().expect("compactor input");
+    assert!(
+        input
+            .iter()
+            .any(|item| item["type"] == "function_call" && item["call_id"] == view_call)
+    );
+    let projected_output = input
+        .iter()
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == view_call)
+        .expect("paired projected output");
+    assert!(
+        projected_output
+            .to_string()
+            .contains("image omitted for compaction")
+    );
+    let installed = continuation.single_request().body_json().to_string();
+    assert!(!installed.contains(&actual_image));
+    assert!(!installed.contains(message_image));
+    assert!(!installed.contains(guidance));
+    // Compaction projects a copy; original typed native output survives in the source rollout.
+    let rollout = fs::read_to_string(test.codex.rollout_path().expect("rollout path"))?;
+    let original_outputs = rollout
+        .lines()
+        .map(|line| {
+            codex_rollout::parse_rollout_line(line)
+                .expect("rollout item")
+                .item
+        })
+        .filter_map(|item| match item {
+            RolloutItem::ResponseItem(envelope) => match envelope.item {
+                ResponseItem::FunctionCallOutput {
+                    call_id, output, ..
+                } if call_id.as_deref() == Some(view_call) => Some(output),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(original_outputs.len(), 1);
+    assert!(
+        original_outputs[0]
+            .content_items()
+            .expect("original structured output")
+            .iter()
+            .any(|part| matches!(part,
+                codex_protocol::models::FunctionCallOutputContentItem::InputImage {
+                    image: ImageReference::Inline { image_url }, ..
+                } if image_url == &actual_image
+            ))
+    );
+    Ok(())
+}
