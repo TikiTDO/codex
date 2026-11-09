@@ -43,6 +43,17 @@ impl ChatWidget {
         if !is_resume_initial_replay && !is_retry_error {
             self.restore_retry_status_header_if_present();
         }
+        let native_turn = match &notification {
+            ServerNotification::TurnStarted(n) => Some((&n.thread_id, &n.turn)),
+            ServerNotification::TurnCompleted(n) => Some((&n.thread_id, &n.turn)),
+            _ => None,
+        };
+        if let Some((thread_id, turn)) = native_turn
+            && self.thread_id().is_some_and(|id| id.to_string() == *thread_id)
+            && turn.items.iter().any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. }))
+        {
+            self.background_attention_turns.remove(&turn.id);
+        }
         match notification {
             ServerNotification::AttentionTurnStarted(notification) => {
                 if self

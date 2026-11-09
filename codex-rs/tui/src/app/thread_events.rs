@@ -178,6 +178,12 @@ pub(super) enum ThreadEventAttachment {
 }
 
 #[derive(Debug)]
+enum AttentionTurnProvenance {
+    Background(codex_app_server_protocol::AttentionTurnStartedNotification),
+    Foreground,
+}
+
+#[derive(Debug)]
 pub(super) struct ThreadEventStore {
     pub(super) session: Option<ThreadSessionState>,
     pub(super) turns: Vec<Turn>,
@@ -195,7 +201,7 @@ pub(super) struct ThreadEventStore {
     pub(super) buffered_agent_message_delta_bytes: usize,
     delegated_turns: VecDeque<String>,
     // Provenance survives while active OR reachable in native replay material.
-    attention_turns: HashMap<String, codex_app_server_protocol::AttentionTurnStartedNotification>,
+    attention_turns: HashMap<String, AttentionTurnProvenance>,
     recap_progress: recap::RecapProgress,
 }
 
@@ -305,14 +311,23 @@ impl ThreadEventStore {
         self.push_notification_inner(Cow::Borrowed(notification));
     }
 
+    pub(super) fn suppresses_attention_marker(&self, notification: &ServerNotification) -> bool {
+        matches!(notification, ServerNotification::AttentionTurnStarted(marker)
+            if matches!(self.attention_turns.get(&marker.turn_id),
+                Some(AttentionTurnProvenance::Foreground)))
+    }
+
     fn push_notification_inner(&mut self, notification: Cow<'_, ServerNotification>) {
+        if self.suppresses_attention_marker(notification.as_ref()) {
+            return;
+        }
         let user_item = match notification.as_ref() {
             ServerNotification::ItemStarted(n) => Some((&n.turn_id, &n.item.payload)),
             ServerNotification::ItemCompleted(n) => Some((&n.turn_id, &n.item.payload)),
             _ => None,
         };
         if let Some((turn_id, ThreadItemPayload::UserMessage { .. })) = user_item {
-            self.attention_turns.remove(turn_id);
+            self.attention_turns.insert(turn_id.clone(), AttentionTurnProvenance::Foreground);
             self.buffer.retain(|event| {
                 !matches!(event, ThreadBufferedEvent::Notification(n)
                 if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(marker)
@@ -326,12 +341,22 @@ impl ThreadEventStore {
         {
             self.delegated_turns.push_back(turn_id.clone());
         }
+        let native_turn = match notification.as_ref() {
+            ServerNotification::TurnStarted(n) => Some(&n.turn),
+            ServerNotification::TurnCompleted(n) => Some(&n.turn),
+            _ => None,
+        };
+        if let Some(turn) = native_turn
+            && turn.items.iter().any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. }))
+        {
+            self.attention_turns.insert(turn.id.clone(), AttentionTurnProvenance::Foreground);
+        }
         self.pending_interactive_replay
             .note_server_notification(notification.as_ref());
         match notification.as_ref() {
             ServerNotification::AttentionTurnStarted(marker) => {
                 self.attention_turns
-                    .insert(marker.turn_id.clone(), marker.clone());
+                    .insert(marker.turn_id.clone(), AttentionTurnProvenance::Background(marker.clone()));
             }
             ServerNotification::TurnStarted(turn) => {
                 self.set_active_turn_id(turn.turn.id.clone());
@@ -446,7 +471,15 @@ impl ThreadEventStore {
     }
 
     pub(super) fn reconcile_attention_turns(&mut self) {
-        let foreground = genuine_user_turn_ids(&self.turns, self.buffer.iter());
+        let mut foreground = genuine_user_turn_ids(&self.turns, self.buffer.iter());
+        for id in &foreground {
+            self.attention_turns.insert(id.clone(), AttentionTurnProvenance::Foreground);
+        }
+        // A user event can leave the bounded buffer while its turn remains
+        // reachable. Retained foreground has the same native horizon as background.
+        foreground.extend(self.attention_turns.iter().filter_map(|(id, provenance)| {
+            matches!(provenance, AttentionTurnProvenance::Foreground).then(|| id.clone())
+        }));
         // Remove stale raw markers too: refresh/replay must never resurrect a
         // classification invalidated by genuine input in either native source.
         self.buffer
@@ -459,7 +492,7 @@ impl ThreadEventStore {
             .chain(self.buffer.iter().filter_map(buffered_event_turn_id))
             .collect::<HashSet<_>>();
         self.attention_turns
-            .retain(|id, _| !foreground.contains(id) && reachable.contains(id.as_str()));
+            .retain(|id, _| reachable.contains(id.as_str()));
     }
 
     fn trim_delegated_turns(&mut self) {
@@ -540,7 +573,14 @@ impl ThreadEventStore {
         };
         // Prepend lifecycle provenance even if its original notice was evicted.
         // Replayed duplicates are idempotent in ChatWidget.
-        let mut markers = self.attention_turns.values().cloned().collect::<Vec<_>>();
+        let foreground = self.attention_turns.iter().filter_map(|(id, provenance)| {
+            matches!(provenance, AttentionTurnProvenance::Foreground).then(|| id.clone())
+        }).collect::<HashSet<_>>();
+        snapshot.events.retain(|event| !is_contradictory_attention_marker(event, &foreground));
+        let mut markers = self.attention_turns.values().filter_map(|provenance| match provenance {
+            AttentionTurnProvenance::Background(marker) => Some(marker.clone()),
+            AttentionTurnProvenance::Foreground => None,
+        }).collect::<Vec<_>>();
         markers.sort_by(|left, right| left.turn_id.cmp(&right.turn_id));
         snapshot.events.splice(
             0..0,

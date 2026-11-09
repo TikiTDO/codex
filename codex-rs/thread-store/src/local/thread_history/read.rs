@@ -114,11 +114,21 @@ pub(in crate::local) async fn list_turns(
     let lineage = store
         .resolve_rollout_lineage_for_history_page(params.thread_id)
         .await?;
+    list_turns_on_lineage(store, params, &lineage).await
+}
+
+/// Same native query/mapping body, for callers already owning a validated finite lineage.
+pub(in crate::local) async fn list_turns_on_lineage(
+    store: &LocalThreadStore,
+    params: ListTurnsParams,
+    lineage: &RolloutLineage,
+) -> ThreadStoreResult<TurnPage> {
+    validate_page_size(params.page_size)?;
     let pool = store.thread_history_db().await?;
     let page = page_turn_rows(
         pool,
         params.thread_id,
-        &lineage,
+        lineage,
         params.cursor.as_deref(),
         params.page_size,
         params.sort_direction,
@@ -136,7 +146,7 @@ pub(in crate::local) async fn list_turns(
             {
                 // Synthetic fork-boundary rows are interrupted without local summary IDs.
                 // Load their summary from the earliest visible source turn.
-                load_inherited_summary_items(pool, &lineage, &turn).await?
+                load_inherited_summary_items(pool, lineage, &turn).await?
             }
             StoredTurnItemsView::Summary => turn.summary_items,
         };
@@ -287,6 +297,15 @@ pub(super) fn parse_cursor(
         return Err(invalid_cursor(cursor));
     }
     Ok(Some(cursor_value))
+}
+
+pub(in crate::local) fn turn_cursor_ordinal(
+    cursor: &str,
+    thread_id: ThreadId,
+) -> ThreadStoreResult<u64> {
+    parse_cursor(Some(cursor), thread_id, CursorScope::Turns)?
+        .map(|cursor| cursor.rollout_ordinal)
+        .ok_or_else(|| invalid_cursor(cursor))
 }
 
 pub(super) fn serialize_cursor(

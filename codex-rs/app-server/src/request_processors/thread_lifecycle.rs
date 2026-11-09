@@ -17,6 +17,10 @@ use std::borrow::Cow;
 #[path = "thread_listener_shutdown_tests.rs"]
 mod listener_shutdown_tests;
 
+#[cfg(test)]
+#[path = "attention_resume_tests.rs"]
+mod attention_resume_tests;
+
 #[derive(Clone)]
 pub(super) struct ListenerTaskContext {
     pub(super) thread_manager: Arc<ThreadManager>,
@@ -1015,6 +1019,86 @@ pub(super) async fn handle_thread_listener_command(
     }
 }
 
+/// The store supplies sound scoped provenance; this only joins existing typed
+/// response/current evidence. A marker never creates a retained turn.
+fn attention_resume_markers(
+    target: ThreadId,
+    mut presentation: codex_thread_store::CanonicalAttentionPresentation,
+    foreground: HashSet<String>,
+    active_turn_id: Option<String>,
+) -> Option<Vec<codex_app_server_protocol::AttentionTurnStartedNotification>> {
+    if presentation.thread_id != target {
+        return None;
+    }
+    presentation.foreground_turn_ids.extend(foreground);
+    presentation.retained_turn_ids.extend(active_turn_id);
+    let target = target.to_string();
+    let mut markers = HashMap::new();
+    for marker in presentation.markers {
+        if marker.thread_id == target
+            && presentation.retained_turn_ids.contains(&marker.turn_id)
+            && !presentation.foreground_turn_ids.contains(&marker.turn_id)
+        {
+            markers.insert(marker.turn_id.clone(), marker);
+        }
+    }
+    Some(markers.into_values().collect())
+}
+
+/// Shared by warm listener resume and cold CLIENT resume, after the native
+/// response/usage/goal/request replay and before idle. Receipts are independent.
+pub(super) async fn restore_attention_after_resume(
+    conversation_id: ThreadId,
+    conversation: &CodexThread,
+    connection_id: ConnectionId,
+    thread_state_manager: &ThreadStateManager,
+    outgoing: &Arc<OutgoingMessageSender>,
+    mut foreground: HashSet<String>,
+) {
+    let presentation = conversation.attention_presentation().await;
+    let state = thread_state_manager.thread_state(conversation_id).await;
+    let active_turn_id = {
+        let state = state.lock().await;
+        foreground.extend(state.active_turn_snapshot_with_items_view(TurnItemsView::Summary)
+            .filter(|turn| turn.items.iter().any(|item|
+                matches!(item.payload, ThreadItemPayload::UserMessage { .. })))
+            .map(|turn| turn.id));
+        state.active_turn_id().map(str::to_owned)
+    };
+    let markers = match presentation {
+        Ok(presentation) => attention_resume_markers(conversation_id, presentation, foreground, active_turn_id),
+        Err(error) => {
+            tracing::warn!(%error, thread_id = %conversation_id, "native attention source/view unavailable");
+            None
+        }
+    };
+    if let Some(markers) = markers {
+        for marker in markers {
+            outgoing.send_server_notification_to_connections(
+                &[connection_id], ServerNotification::AttentionTurnStarted(marker),
+            ).await;
+        }
+    } else {
+        tracing::warn!(thread_id = %conversation_id, "attention resume native presentation unavailable");
+        send_thread_warning(outgoing, thread_state_manager, conversation_id,
+            "Runtime attention notice history could not be restored; coverage is incomplete.".to_owned()).await;
+    }
+    match conversation.attention_snapshot().await {
+        Ok(notices) => {
+            for notice in notices {
+                outgoing.send_server_notification_to_connections(
+                    &[connection_id], ServerNotification::ThreadAttention(notice),
+                ).await;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "canonical attention resume receipts unavailable");
+            send_thread_warning(outgoing, thread_state_manager, conversation_id,
+                "Canonical runtime attention receipts are unavailable; no empty-ready state is implied.".to_owned()).await;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[expect(
     clippy::await_holding_invalid_type,
@@ -1031,7 +1115,7 @@ pub(super) async fn handle_pending_thread_resume_request(
     pending_thread_unloads: &PendingThreadUnloads,
     mut pending: crate::thread_state::PendingThreadResumeRequest,
 ) {
-    let (active_turn_metadata, mut active_turn, active_page_params) = {
+    let (active_turn_metadata, mut active_turn, active_page_params, active_foreground) = {
         let state = thread_state.lock().await;
         let active_page_params = pending.initial_turns_page.as_ref().filter(|params| {
             pending
@@ -1057,6 +1141,10 @@ pub(super) async fn handle_pending_thread_resume_request(
             state.active_turn_metadata_snapshot(),
             active_turn,
             active_page_params,
+            state.active_turn_snapshot_with_items_view(TurnItemsView::Summary)
+                .filter(|turn| turn.items.iter().any(|item|
+                    matches!(item.payload, ThreadItemPayload::UserMessage { .. })))
+                .map(|turn| turn.id),
         )
     };
     if let Some(store) = pending.resume_cursor_store.as_deref()
@@ -1160,6 +1248,14 @@ pub(super) async fn handle_pending_thread_resume_request(
     if pending.initial_turns_page.is_none() {
         initial_turns_page = None;
     }
+    // Classification uses typed native evidence independently of the client's
+    // requested history view/redaction. Summary retains the first UserMessage.
+    let mut attention_foreground = thread.turns.iter()
+        .chain(initial_turns_page.iter().flat_map(|page| page.data.iter()))
+        .filter(|turn| turn.items.iter().any(|item|
+            matches!(item.payload, ThreadItemPayload::UserMessage { .. })))
+        .map(|turn| turn.id.clone()).collect::<HashSet<_>>();
+    attention_foreground.extend(active_foreground);
     if pending.redact_resume_payloads {
         redact_thread_resume_payloads(&mut thread.turns);
         if let Some(initial_turns_page) = initial_turns_page.as_mut() {
@@ -1283,61 +1379,10 @@ pub(super) async fn handle_pending_thread_resume_request(
     outgoing
         .replay_requests_to_connection_for_thread(connection_id, conversation_id)
         .await;
-    // Runtime notices are not UserMessages and therefore are absent from turn
-    // history replay. Restore their latest state after the resume subscription.
-    match conversation.load_history(false).await {
-        Ok(history) => {
-            let mut attention_turns = HashMap::new();
-            for item in history.items {
-                match item {
-                    RolloutItem::EventMsg(EventMsg::AttentionTurnStarted(marker))
-                        if marker.thread_id == conversation_id.to_string() =>
-                    {
-                        attention_turns.insert(marker.turn_id.clone(), marker);
-                    }
-                    _ => {}
-                }
-            }
-            // Listener commands run before subsequent live Core events. Restore
-            // provenance before errors/completion can reach this connection.
-            for marker in attention_turns.into_values() {
-                outgoing
-                    .send_server_notification_to_connections(
-                        &[connection_id],
-                        ServerNotification::AttentionTurnStarted(marker),
-                    )
-                    .await;
-            }
-            match conversation.attention_snapshot().await {
-                Ok(notices) => {
-                    for notice in notices {
-                        outgoing
-                            .send_server_notification_to_connections(
-                                &[connection_id],
-                                ServerNotification::ThreadAttention(notice),
-                            )
-                            .await;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "canonical attention resume receipts unavailable");
-                    send_thread_warning(outgoing, thread_state_manager, conversation_id,
-                        "Canonical runtime attention receipts are unavailable; no empty-ready state is implied.".to_owned()).await;
-                }
-            }
-        }
-        Err(error) => {
-            tracing::warn!(%error, "attention resume coverage unavailable");
-            send_thread_warning(
-                outgoing,
-                thread_state_manager,
-                conversation_id,
-                "Runtime attention notice history could not be restored; coverage is incomplete."
-                    .to_string(),
-            )
-            .await;
-        }
-    }
+    restore_attention_after_resume(
+        conversation_id, conversation.as_ref(), connection_id,
+        thread_state_manager, outgoing, attention_foreground,
+    ).await;
     // App-server owns resume response and snapshot ordering, so wait until
     // replay completes before letting extensions react to the idle thread.
     conversation

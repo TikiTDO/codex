@@ -261,6 +261,18 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
+    /// Strict finite native presentation, independent of receipt lifetime readiness.
+    fn load_canonical_attention_presentation(
+        &self,
+        _thread_id: ThreadId,
+    ) -> ThreadStoreFuture<'_, crate::CanonicalAttentionPresentation> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "load_canonical_attention_presentation",
+            })
+        })
+    }
+
     /// Loads persisted history for resume, fork, and memory jobs.
     fn load_history(
         &self,

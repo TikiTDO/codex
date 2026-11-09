@@ -610,6 +610,13 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(attention::load(self, thread_id))
     }
 
+    fn load_canonical_attention_presentation(
+        &self,
+        thread_id: ThreadId,
+    ) -> ThreadStoreFuture<'_, crate::CanonicalAttentionPresentation> {
+        Box::pin(attention::load_presentation(self, thread_id))
+    }
+
     fn load_history(
         &self,
         params: LoadThreadHistoryParams,

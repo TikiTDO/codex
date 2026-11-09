@@ -7,6 +7,8 @@
 mod attention;
 mod error;
 pub use attention::AttentionReceiptCoverage;
+pub use attention::AttentionPresentationScope;
+pub use attention::CanonicalAttentionPresentation;
 pub use attention::CanonicalAttentionReceipts;
 pub use attention::attention_receipt_is_quarantined;
 pub use attention::attention_receipts_for_preservation;

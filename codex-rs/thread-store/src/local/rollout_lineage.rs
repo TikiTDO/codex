@@ -91,6 +91,22 @@ impl LocalThreadStore {
         .await
     }
 
+    /// Presentation uses the same HistoryPage traversal, with an acquired path.
+    /// An intact Legacy root is supported; Legacy ancestors of Paginated roots are not.
+    pub(super) async fn resolve_attention_presentation_lineage(
+        &self,
+        thread_id: ThreadId,
+        path: PathBuf,
+    ) -> ThreadStoreResult<RolloutLineage> {
+        self.resolve_rollout_lineage_with_mode(
+            thread_id,
+            LineageResolutionMode::HistoryPage,
+            Some(path),
+            true,
+        )
+        .await
+    }
+
     async fn resolve_rollout_lineage_with_mode(
         &self,
         requested_thread_id: ThreadId,
@@ -196,7 +212,11 @@ impl LocalThreadStore {
                     "source rollout belongs to another thread",
                 ));
             }
-            if meta.meta.history_mode != ThreadHistoryMode::Paginated && !allow_legacy {
+            if meta.meta.history_mode != ThreadHistoryMode::Paginated
+                && (!allow_legacy
+                    || (matches!(mode, LineageResolutionMode::HistoryPage)
+                        && next_rollout_id.is_some()))
+            {
                 return Err(malformed_lineage(
                     requested_thread_id,
                     "source rollout is not paginated",
