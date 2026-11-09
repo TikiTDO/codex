@@ -15,12 +15,14 @@ use tokio_util::sync::CancellationToken;
 enum HistoryChange {
     Replacement,
     Account,
+    CallerControls,
 }
 
 #[test_case(HistoryChange::Replacement, CompactionFallback::Skip; "replacement optional")]
 #[test_case(HistoryChange::Account, CompactionFallback::Skip; "account optional")]
 #[test_case(HistoryChange::Replacement, CompactionFallback::Foreground; "replacement required")]
 #[test_case(HistoryChange::Account, CompactionFallback::Foreground; "account required")]
+#[test_case(HistoryChange::CallerControls, CompactionFallback::Foreground; "valid candidate excluded for caller controls")]
 #[tokio::test]
 async fn prepared_prefix_rejection_respects_caller_intent(
     change: HistoryChange,
@@ -107,11 +109,12 @@ async fn prepared_prefix_rejection_respects_caller_intent(
         HistoryChange::Account => {
             candidate.prefix.auth_owner_generation = Some(auth.unwrap_or_default().wrapping_add(1));
         }
+        HistoryChange::CallerControls => {}
     }
     // Rewritten histories still fit the captured length; length alone cannot reject them.
     let history = sess.clone_history().await;
     assert!(history.annotated_items().len() >= candidate.prefix.len);
-    if !matches!(change, HistoryChange::Account) {
+    if matches!(change, HistoryChange::Replacement) {
         assert_ne!(history.history_version(), candidate.prefix.generation);
     }
     let before = sess
@@ -121,25 +124,47 @@ async fn prepared_prefix_rejection_respects_caller_intent(
         .cloned()
         .collect::<Vec<_>>();
     let mut analytics = CompactionAnalyticsDetails::default();
-    let installed = run_compaction(
-        &sess,
-        &step,
-        &step,
-        /*client_session*/ None,
-        &WorldState::default(),
-        CompactionTurnMetadata::new(
-            CompactionTrigger::Auto,
-            CompactionReason::ContextLimit,
-            CompactionImplementation::ResponsesCompactionV2,
-            CompactionPhase::PreTurn,
-        ),
-        &mut analytics,
-        /*started_item*/ None,
-        Some(candidate),
-        fallback,
-    )
-    .await
-    .expect("reject stale result without failing compaction");
+    let installed = if matches!(change, HistoryChange::CallerControls) {
+        let mut client = sess.services.model_client.new_session();
+        let controls = CompactionInput {
+            instructions: Some("ACTUAL_CALLER_NOT_PREPARED".into()),
+            ..Default::default()
+        };
+        run_inline_remote_compact_task_with_input(
+            Arc::clone(&sess),
+            Arc::clone(&step),
+            Arc::clone(&step),
+            &mut client,
+            Arc::new(WorldState::default()),
+            CompactionReason::UserRequested,
+            CompactionPhase::MidTurn,
+            Some(Box::new(candidate)),
+            fallback,
+            Some(&controls),
+        )
+        .await
+    } else {
+        run_compaction(
+            &sess,
+            &step,
+            &step,
+            /*client_session*/ None,
+            &WorldState::default(),
+            CompactionTurnMetadata::new(
+                CompactionTrigger::Auto,
+                CompactionReason::ContextLimit,
+                CompactionImplementation::ResponsesCompactionV2,
+                CompactionPhase::PreTurn,
+            ),
+            &mut analytics,
+            /*started_item*/ None,
+            Some(candidate),
+            fallback,
+            None,
+        )
+        .await
+    }
+    .expect("reject stale or caller-incompatible prepared result without failing compaction");
     // The foreground response has no usage; stale candidate statistics must not leak.
     assert_eq!(
         (
@@ -165,6 +190,15 @@ async fn prepared_prefix_rejection_respects_caller_intent(
         CompactionFallback::Foreground => {
             assert!(installed);
             assert_eq!(requests.requests().len(), 1);
+            if matches!(change, HistoryChange::CallerControls) {
+                assert!(
+                    requests
+                        .single_request()
+                        .body_json()
+                        .to_string()
+                        .contains("ACTUAL_CALLER_NOT_PREPARED")
+                );
+            }
             let summaries = after
                 .iter()
                 .filter_map(|item| match item {

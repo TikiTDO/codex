@@ -371,6 +371,8 @@ pub(super) async fn prepare_forked_history(
                     RolloutItem::EventMsg(
                         EventMsg::ItemCompleted(_)
                             | EventMsg::TokenCount(_)
+                            | EventMsg::ThreadAttention(_)
+                            | EventMsg::AttentionTurnStarted(_)
                             | EventMsg::ThreadGoalUpdated(_)
                             | EventMsg::ThreadSettingsApplied(_),
                     )

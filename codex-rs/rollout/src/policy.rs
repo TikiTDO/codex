@@ -132,6 +132,8 @@ fn persisted_event_msg(
     match ev {
         EventMsg::ItemCompleted(event) => persisted_item_completed_event(ev, event, history_mode),
         EventMsg::TokenCount(_)
+        | EventMsg::ThreadAttention(_)
+        | EventMsg::AttentionTurnStarted(_)
         | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::TurnAborted(_)
@@ -149,6 +151,7 @@ fn persisted_event_msg(
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::PatchApplyEnd(_)
         | EventMsg::ContextCompacted(_)
+        | EventMsg::ContextCleared(_)
         | EventMsg::McpToolCallEnd(_)
         | EventMsg::WebSearchEnd(_)
         | EventMsg::ImageGenerationEnd(_) => {

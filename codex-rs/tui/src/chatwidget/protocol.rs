@@ -43,7 +43,48 @@ impl ChatWidget {
         if !is_resume_initial_replay && !is_retry_error {
             self.restore_retry_status_header_if_present();
         }
+        let native_turn = match &notification {
+            ServerNotification::TurnStarted(n) => Some((&n.thread_id, &n.turn)),
+            ServerNotification::TurnCompleted(n) => Some((&n.thread_id, &n.turn)),
+            _ => None,
+        };
+        if let Some((thread_id, turn)) = native_turn
+            && self.thread_id().is_some_and(|id| id.to_string() == *thread_id)
+            && turn.items.iter().any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. }))
+        {
+            self.background_attention_turns.remove(&turn.id);
+        }
         match notification {
+            ServerNotification::AttentionTurnStarted(notification) => {
+                if self
+                    .thread_id()
+                    .is_some_and(|id| id.to_string() == notification.thread_id)
+                {
+                    self.background_attention_turns.insert(notification.turn_id);
+                }
+            }
+            ServerNotification::ThreadAttention(notification) => {
+                if self
+                    .thread_id()
+                    .is_none_or(|id| id.to_string() != notification.thread_id)
+                {
+                    return;
+                }
+                let batch_id = notification.batch_id.clone();
+                if let Some(current) = self.attention_notices.get(&batch_id) {
+                    let mut current = current.lock().expect("attention notice lock");
+                    if *current == notification {
+                        return;
+                    }
+                    *current = notification;
+                } else {
+                    let notice = Arc::new(std::sync::Mutex::new(notification));
+                    self.attention_notices
+                        .insert(batch_id.clone(), Arc::clone(&notice));
+                    self.add_to_history(history_cell::AttentionHistoryCell { notice, batch_id });
+                }
+                self.request_redraw();
+            }
             ServerNotification::McpServerOauthLoginCompleted(notification) => {
                 if notification.success {
                     self.add_info_message(
@@ -236,6 +277,8 @@ impl ChatWidget {
                         self.handle_non_retry_error(
                             notification.error.message,
                             notification.error.codex_error_info,
+                            self.background_attention_turns
+                                .contains(&notification.turn_id),
                         );
                     }
                 }
@@ -415,6 +458,12 @@ impl ChatWidget {
             | ServerNotification::ProjectChanged(_)
             | ServerNotification::ThreadProjectUpdated(_) => {}
             ServerNotification::ContextCompacted(_) => {}
+            ServerNotification::ContextCleared(_) => self.add_info_message(
+                "Context cleared. Earlier conversation stays in the session record and above; \
+                 the model no longer sees it."
+                    .to_string(),
+                /*hint*/ None,
+            ),
         }
         // Tool and hook activity can recreate a hidden row with its default
         // heading. Restore the selected status before that row is rendered.
@@ -442,6 +491,9 @@ impl ChatWidget {
         // this TUI already rendered locally. Once that turn ends, another
         // client can submit the same text and it still needs its own user cell.
         self.last_rendered_user_message_display = None;
+        let background_attention = self
+            .background_attention_turns
+            .contains(&notification.turn.id);
         let mut question_drafts = None;
         let live_turn =
             replay_kind.is_none() && self.last_turn_id() == Some(notification.turn.id.as_str());
@@ -490,7 +542,7 @@ impl ChatWidget {
                 {
                     self.speak_completed_realtime_delegation(&notification.turn.id, item);
                 }
-                if replay_kind.is_none() {
+                if replay_kind.is_none() && !background_attention {
                     question_drafts = self.take_question_drafts();
                 }
                 self.last_non_retry_error = None;
@@ -502,7 +554,7 @@ impl ChatWidget {
                 );
             }
             TurnStatus::Interrupted => {
-                if replay_kind.is_none() {
+                if replay_kind.is_none() && !background_attention {
                     question_drafts = self.take_question_drafts();
                 }
                 self.last_non_retry_error = None;
@@ -517,7 +569,7 @@ impl ChatWidget {
                 self.on_interrupted_turn(reason);
             }
             TurnStatus::Failed => {
-                if replay_kind.is_none() {
+                if replay_kind.is_none() && !background_attention {
                     question_drafts = self.take_question_drafts();
                 }
                 let error = notification
@@ -547,7 +599,11 @@ impl ChatWidget {
                             self.maybe_send_next_queued_input();
                         }
                     } else {
-                        self.handle_non_retry_error(error.message, error.codex_error_info);
+                        self.handle_non_retry_error(
+                            error.message,
+                            error.codex_error_info,
+                            background_attention,
+                        );
                     }
                 } else {
                     self.last_non_retry_error = None;
@@ -578,6 +634,13 @@ impl ChatWidget {
         replay_kind: Option<ReplayKind>,
     ) {
         self.restore_realtime_transcripts_before_turn(&notification.turn_id);
+        if matches!(
+            &notification.item.payload,
+            ThreadItemPayload::UserMessage { .. }
+        ) {
+            self.background_attention_turns
+                .remove(&notification.turn_id);
+        }
         match notification.item.payload {
             ThreadItemPayload::UserMessage { content, .. } if replay_kind.is_none() => {
                 self.note_realtime_user_item_started(&notification.turn_id, &content);
@@ -696,6 +759,13 @@ impl ChatWidget {
             && self.status_state.reasoning_item_id.as_ref() != Some(id)
         {
             return;
+        }
+        if matches!(
+            &notification.item.payload,
+            ThreadItemPayload::UserMessage { .. }
+        ) {
+            self.background_attention_turns
+                .remove(&notification.turn_id);
         }
         match notification.item.payload {
             item @ ThreadItemPayload::CommandExecution { .. } => {

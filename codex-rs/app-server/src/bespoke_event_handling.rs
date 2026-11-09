@@ -20,6 +20,7 @@ use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ContextClearedNotification;
 use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::DynamicToolCallParams;
 use codex_app_server_protocol::EnvironmentConnectionNotification;
@@ -160,6 +161,16 @@ pub(crate) async fn apply_bespoke_event_handling(
     } = event;
     let approval_starts_command = msg.command_approval_start().is_some();
     match msg {
+        EventMsg::AttentionTurnStarted(notification) => {
+            outgoing
+                .send_server_notification(ServerNotification::AttentionTurnStarted(notification))
+                .await;
+        }
+        EventMsg::ThreadAttention(notice) => {
+            outgoing
+                .send_server_notification(ServerNotification::ThreadAttention(notice))
+                .await;
+        }
         EventMsg::TurnStarted(payload) => {
             // While not technically necessary as it was already done on TurnComplete, be extra cautios and abort any pending server requests.
             outgoing.abort_pending_server_requests().await;
@@ -1036,6 +1047,14 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &event_turn_id,
             );
             outgoing.send_server_notification(notification).await;
+        }
+        EventMsg::ContextCleared(..) => {
+            let notification = ContextClearedNotification {
+                thread_id: conversation_id.to_string(),
+            };
+            outgoing
+                .send_server_notification(ServerNotification::ContextCleared(notification))
+                .await;
         }
         EventMsg::ContextCompacted(..) => {
             // Core still fans out this deprecated event for raw-event and rollout compatibility

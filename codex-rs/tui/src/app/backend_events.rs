@@ -8,6 +8,7 @@ use crate::app_server_session::AppServerSession;
 use crate::app_server_session::AppServerSessionEvent;
 use crate::backend_id::BackendId;
 use codex_app_server_client::AppServerEvent;
+use codex_app_server_protocol::ServerNotification;
 
 impl App {
     pub(super) async fn handle_polled_backend_event(
@@ -24,6 +25,23 @@ impl App {
                     server_notification_thread_target(notification)
                 && self.voice_owner_thread_id() == Some(thread_id)
             {
+                // Backend switching retains the voice owner's existing channel
+                // and stamps its source. Never update a colliding foreign cache
+                // or feed this event into the displayed thread's active receiver.
+                let owned_channel = self.thread_event_channels.get(&thread_id)
+                    .filter(|channel| channel.backend_id == Some(event.backend_id));
+                if let Some(channel) = owned_channel {
+                    let mut store = channel.store.lock().await;
+                    if store.suppresses_attention_marker(notification) {
+                        return;
+                    }
+                    // Genuine input and every native horizon mutation must reach
+                    // the same owner even while another backend is displayed.
+                    store.push_notification_ref(notification);
+                } else if matches!(notification.as_ref(), ServerNotification::AttentionTurnStarted(_)) {
+                    tracing::warn!(%thread_id, "background voice attention provenance unavailable: source channel is not bound");
+                    return;
+                }
                 self.deliver_background_voice_notification(thread_id, notification);
             }
             return;

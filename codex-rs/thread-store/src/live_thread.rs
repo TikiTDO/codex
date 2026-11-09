@@ -322,6 +322,22 @@ impl LiveThread {
         self.thread_store.discard_thread(self.thread_id).await
     }
 
+    pub async fn load_canonical_attention_receipts(
+        &self,
+    ) -> ThreadStoreResult<crate::CanonicalAttentionReceipts> {
+        self.thread_store
+            .load_canonical_attention_receipts(self.thread_id)
+            .await
+    }
+
+    pub async fn load_canonical_attention_presentation(
+        &self,
+    ) -> ThreadStoreResult<crate::CanonicalAttentionPresentation> {
+        self.thread_store
+            .load_canonical_attention_presentation(self.thread_id)
+            .await
+    }
+
     pub async fn load_history(
         &self,
         include_archived: bool,

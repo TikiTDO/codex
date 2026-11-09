@@ -3877,3 +3877,300 @@ fn text_only_items_count_decoded_content() {
 
     assert_eq!(estimated, "Hello, \"world\"!\nこんにちは".len() as i64);
 }
+
+#[test]
+fn discard_inline_images_removes_bodies_and_adjacent_labels_from_working_copy() {
+    let image_url = "data:image/png;base64,abc";
+    let original = ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "before".to_string(),
+            },
+            ContentItem::InputText {
+                text: r#"<image name=[Image #1] path="/tmp/example.png">"#.to_string(),
+            },
+            ContentItem::InputImage {
+                image: ImageReference::Inline {
+                    image_url: image_url.to_string(),
+                },
+                detail: None,
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
+            content_item_kinds: Some(vec![ContentItemKind("hook_context".into()); 5]),
+            content_item_metadata: Some(
+                vec![codex_protocol::models::ContentItemMetadata::command_hook(); 5],
+            ),
+            ..Default::default()
+        }),
+    };
+    let source = create_history_with_items(vec![original.clone()]);
+    let mut working = source.clone();
+
+    let (count, bytes) = working.discard_inline_images();
+
+    assert_eq!((count, bytes), (1, image_url.len()));
+    assert_eq!(raw_items(&source), vec![original]);
+    let annotated_working_items = raw_items(&working);
+    let [
+        ResponseItem::Message {
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        },
+    ] = annotated_working_items.as_slice()
+    else {
+        panic!("retained annotation metadata missing")
+    };
+    assert_eq!(
+        metadata.content_item_kinds,
+        Some(vec![ContentItemKind("hook_context".into()); 2])
+    );
+    assert_eq!(
+        metadata.content_item_metadata,
+        Some(vec![codex_protocol::models::ContentItemMetadata::command_hook(); 2])
+    );
+    let working_items = raw_items(&working);
+    let [ResponseItem::Message { content, .. }] = working_items.as_slice() else {
+        panic!("expected one retained user message");
+    };
+    assert_eq!(
+        content,
+        &[
+            ContentItem::InputText {
+                text: "before".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ]
+    );
+}
+
+#[test_case::test_case("developer"; "hook developer context")]
+#[test_case::test_case("user"; "user text")]
+#[test_case::test_case("assistant"; "assistant text")]
+fn discard_inline_images_preserves_no_image_envelopes_exactly(role: &str) {
+    let item = codex_context_fragments::message_from_parts(
+        role,
+        vec![codex_context_fragments::AnnotatedContent::text(
+            "PRESERVE_NO_IMAGE_TEXT",
+            ContentItemKind("hook_context".into()),
+            codex_protocol::models::ContentItemMetadata::command_hook(),
+        )],
+    );
+    let source = create_history_with_items(vec![item]);
+    let before = source.annotated_items().to_vec();
+    let mut working = source.clone();
+    assert_eq!(working.discard_inline_images(), (0, 0));
+    assert_eq!(working.annotated_items(), before);
+    assert_eq!(source.annotated_items(), before);
+}
+
+// These custom-output fixtures exercise the protocol owner, not a custom-tool runtime.
+#[test_case(false, false; "function mixed")]
+#[test_case(true, false; "custom mixed")]
+#[test_case(false, true; "function image only")]
+#[test_case(true, true; "custom image only")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discard_inline_images_covers_tool_output_parts_and_preserves_positions(
+    custom: bool,
+    image_only: bool,
+) {
+    let inline = "data:image/png;base64,TYPED_IMAGE";
+    let mut parts = vec![
+        FunctionCallOutputContentItem::InputImage {
+            image: ImageReference::Inline {
+                image_url: inline.into(),
+            },
+            detail: Some(ImageDetail::Original),
+        },
+        FunctionCallOutputContentItem::InputImage {
+            image: ImageReference::File {
+                file_id: "must-not-resolve-file".into(),
+            },
+            detail: None,
+        },
+    ];
+    if !image_only {
+        parts.insert(
+            0,
+            FunctionCallOutputContentItem::InputText {
+                text: "PRESERVE_TEXT data:image/png;base64,OPAQUE_TEXT".into(),
+            },
+        );
+        parts.push(FunctionCallOutputContentItem::InputAudio {
+            audio_url: "data:audio/wav;base64,KEEP_AUDIO".into(),
+        });
+        parts.push(FunctionCallOutputContentItem::EncryptedContent {
+            encrypted_content: "KEEP_ENCRYPTED".into(),
+        });
+    }
+    let metadata = Some(InternalChatMessageMetadataPassthrough {
+        content_item_kinds: Some(vec![ContentItemKind("tool".into()); parts.len()]),
+        content_item_metadata: Some(
+            vec![codex_protocol::models::ContentItemMetadata::command_hook(); parts.len()],
+        ),
+        ..Default::default()
+    });
+    let output = FunctionCallOutputPayload {
+        body: FunctionCallOutputBody::ContentItems(parts.clone()),
+        success: Some(true),
+    };
+    let call = if custom {
+        ResponseItem::CustomToolCall {
+            id: Some(ResponseItemId::with_suffix("ct", "call")),
+            encrypted_content: None,
+            status: None,
+            call_id: "paired-image-call".into(),
+            name: "fixture".into(),
+            namespace: None,
+            input: "fixture image".into(),
+            internal_chat_message_metadata_passthrough: None,
+        }
+    } else {
+        ResponseItem::FunctionCall {
+            id: Some(ResponseItemId::with_suffix("fc", "call")),
+            encrypted_content: None,
+            status: None,
+            call_id: "paired-image-call".into(),
+            name: "view_image".into(),
+            namespace: Some("functions".into()),
+            arguments: "{}".into(),
+            encrypted_function_args: None,
+            internal_chat_message_metadata_passthrough: None,
+        }
+    };
+    let item = if custom {
+        ResponseItem::CustomToolCallOutput {
+            id: Some(ResponseItemId::with_suffix("cto", "output")),
+            call_id: "paired-image-call".into(),
+            name: Some("fixture".into()),
+            output,
+            internal_chat_message_metadata_passthrough: metadata,
+        }
+    } else {
+        ResponseItem::FunctionCallOutput {
+            id: Some(ResponseItemId::with_suffix("fco", "output")),
+            call_id: Some("paired-image-call".into()),
+            name: Some("view_image".into()),
+            namespace: Some("functions".into()),
+            output,
+            internal_chat_message_metadata_passthrough: metadata,
+        }
+    };
+    let source = create_history_with_items(vec![call, item]);
+    let before = source.annotated_items().to_vec();
+    let mut expected = before.clone();
+    let output = match &mut expected[1].item {
+        ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. } => output,
+        _ => panic!("output fixture"),
+    };
+    for part in output.content_items_mut().unwrap() {
+        if matches!(part, FunctionCallOutputContentItem::InputImage { .. }) {
+            *part = FunctionCallOutputContentItem::InputText {
+                text: "image omitted for compaction".into(),
+            };
+        }
+    }
+    let mut working = source.clone();
+    assert_eq!(working.discard_inline_images(), (2, inline.len()));
+    assert_eq!(working.annotated_items(), expected);
+    assert_eq!(source.annotated_items(), before);
+    // Image/Audio capability deliberately enabled: unsupported-media stripping cannot mask a gap.
+    let prepared = working
+        .for_prompt(
+            &[
+                InputModality::Text,
+                InputModality::Image,
+                InputModality::Audio,
+            ],
+            &InlineAttachmentStore,
+        )
+        .await;
+    assert_eq!(
+        prepared,
+        expected.into_iter().map(|e| e.item).collect::<Vec<_>>()
+    );
+}
+
+#[test_case(false; "function")]
+#[test_case(true; "custom")]
+fn discard_inline_images_preserves_no_image_tool_bodies_exactly(custom: bool) {
+    for output in [
+        FunctionCallOutputPayload::from_text("data:image/png;base64,NOT_A_TYPED_IMAGE".into()),
+        FunctionCallOutputPayload::from_content_items(vec![
+            FunctionCallOutputContentItem::InputText {
+                text: "KEEP_TEXT".into(),
+            },
+            FunctionCallOutputContentItem::EncryptedContent {
+                encrypted_content: "KEEP_ENCRYPTED".into(),
+            },
+        ]),
+    ] {
+        let item = if custom {
+            ResponseItem::CustomToolCallOutput {
+                id: None,
+                call_id: "identity".into(),
+                name: Some("fixture".into()),
+                output,
+                internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
+            }
+        } else {
+            ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: Some("identity".into()),
+                name: Some("fixture".into()),
+                namespace: Some("functions".into()),
+                output,
+                internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
+            }
+        };
+        let source = create_history_with_items(vec![item]);
+        let before = source.annotated_items().to_vec();
+        let mut working = source.clone();
+        assert_eq!(working.discard_inline_images(), (0, 0));
+        assert_eq!(working.annotated_items(), before);
+        assert_eq!(source.annotated_items(), before);
+    }
+}
+
+#[test]
+fn discard_inline_images_clears_generated_result_but_preserves_its_envelope() {
+    for result in ["GENERATED_IMAGE_BODY", ""] {
+        let item = ResponseItem::ImageGenerationCall {
+            id: Some(ResponseItemId::with_suffix("ig", "discard")),
+            status: "completed".into(),
+            revised_prompt: Some("KEEP_PROMPT".into()),
+            result: result.into(),
+            encrypted_content: Some("KEEP_OPAQUE".into()),
+            internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
+        };
+        let source = create_history_with_items(vec![item]);
+        let before = source.annotated_items().to_vec();
+        let mut expected = before.clone();
+        let ResponseItem::ImageGenerationCall { result, .. } = &mut expected[0].item else {
+            panic!("generation fixture")
+        };
+        let bytes = result.len();
+        result.clear();
+        let mut working = source.clone();
+        assert_eq!(
+            working.discard_inline_images(),
+            (usize::from(bytes > 0), bytes)
+        );
+        assert_eq!(working.annotated_items(), expected);
+        assert_eq!(source.annotated_items(), before);
+    }
+}

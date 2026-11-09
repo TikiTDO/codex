@@ -6305,3 +6305,456 @@ async fn remote_v2_compaction_refreshes_instructions_and_preserves_them_on_cold_
 
 #[path = "compact_program_tests.rs"]
 mod program_tests;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_status_reports_model_turn_and_distinct_token_windows() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "context-status-call";
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("status-seed", "seeded"),
+            ev_completed_with_tokens("status-seed-response", /*total_tokens*/ 2_500),
+        ]),
+    )
+    .await;
+    let first_turn_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_function_call(call_id, "context_status", "{}"),
+            ev_completed_with_tokens("status-response", /*total_tokens*/ 100),
+        ]),
+    )
+    .await;
+    let follow_up_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("status-done", FINAL_REPLY),
+            ev_completed_with_tokens("status-final", /*total_tokens*/ 50),
+        ]),
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_context_window = Some(10_000);
+            config.model_auto_compact_token_limit = Some(8_000);
+        })
+        .build(&server)
+        .await?;
+    test.submit_turn("seed context usage").await?;
+    test.submit_turn("report your context status").await?;
+
+    assert!(
+        first_turn_mock
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains("context_status"),
+        "context_status should be advertised to the model"
+    );
+    let (output, success) = follow_up_mock
+        .single_request()
+        .function_call_output_content_and_success(call_id)
+        .expect("context_status function output should be present");
+    assert_eq!(success, None);
+    let output: Value = serde_json::from_str(output.as_deref().expect("text output"))?;
+    assert_eq!(output["turn_active"], true);
+    assert_eq!(output["turn_kind"], "regular");
+    assert_eq!(output["context_window_tokens"], 9_500);
+    assert_eq!(output["auto_compact_limit"], 8_000);
+    assert!(output["model"].is_string());
+    assert!(output["reasoning_effort"].is_string());
+    assert!(output["context_tokens_used"].is_number());
+    assert!(output["context_tokens_remaining"].is_number());
+    assert!(output["session_total_usage"].is_object());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_summarizes_at_safe_mid_turn_boundary() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "compact-context-call";
+    let first_turn_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_function_call(call_id, "compact_context", "{}"),
+            ev_completed_with_tokens("compact-tool-response", /*total_tokens*/ 100),
+        ]),
+    )
+    .await;
+    let summary = "MODEL_REQUESTED_COMPACTION_SUMMARY";
+    let compact_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("compact-summary", &auto_summary(summary)),
+            ev_completed_with_tokens("compact-response", /*total_tokens*/ 50),
+        ]),
+    )
+    .await;
+    let follow_up_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("compact-done", FINAL_REPLY),
+            ev_completed_with_tokens("compact-final", /*total_tokens*/ 25),
+        ]),
+    )
+    .await;
+
+    let model_provider = non_openai_model_provider(&server);
+    let test = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+            set_test_compact_prompt(config);
+            config.model_context_window = Some(10_000);
+            config.model_auto_compact_token_limit = Some(9_000);
+        })
+        .build(&server)
+        .await?;
+    test.submit_turn("compact when you judge it useful").await?;
+
+    assert!(
+        first_turn_mock
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains("compact_context"),
+        "compact_context should be advertised to the model"
+    );
+    let compact_request = compact_mock.single_request();
+    let (output, success) = compact_request
+        .function_call_output_content_and_success(call_id)
+        .expect("compact_context function output should precede compaction");
+    assert_eq!(success, None);
+    assert!(
+        output
+            .as_deref()
+            .is_some_and(|output| output.contains("scheduled"))
+    );
+    assert!(
+        body_contains_text(
+            &compact_request.body_json().to_string(),
+            SUMMARIZATION_PROMPT
+        ),
+        "model-requested compaction should use the normal summarization prompt"
+    );
+    assert!(
+        follow_up_mock
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains(summary),
+        "the same turn should continue from compacted context"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_applies_guidance_and_discards_inline_images() -> Result<()> {
+    compact_context_controls_case(false, false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_token_budget_controls_still_run_local_summarizer() -> Result<()> {
+    compact_context_controls_case(true, false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_remote_guidance_and_discard_reach_actual_compactor() -> Result<()> {
+    compact_context_controls_case(false, true).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_token_budget_controls_still_run_remote_summarizer() -> Result<()> {
+    compact_context_controls_case(true, true).await
+}
+
+async fn compact_context_controls_case(token_budget: bool, remote: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "compact-context-controls-call";
+    let guidance = "PRESERVE_THIS_CALLER_GUIDANCE";
+    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    let first_turn_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_function_call(
+                call_id,
+                "compact_context",
+                &json!({
+                    "instructions": guidance,
+                    "discard_images": true,
+                    "retry_websocket": false,
+                })
+                .to_string(),
+            ),
+            ev_completed_with_tokens("compact-controls-tool-response", /*total_tokens*/ 100),
+        ]),
+    )
+    .await;
+    let compact_mock = mount_sse_once(
+        &server,
+        if remote {
+            remote_v2_compaction_response()
+        } else {
+            sse(vec![
+                ev_assistant_message("compact-controls-summary", "CONTROLLED_COMPACTION_SUMMARY"),
+                ev_completed_with_tokens("compact-controls-response", /*total_tokens*/ 50),
+            ])
+        },
+    )
+    .await;
+    let follow_up_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("compact-controls-done", FINAL_REPLY),
+            ev_completed_with_tokens("compact-controls-final", /*total_tokens*/ 25),
+        ]),
+    )
+    .await;
+
+    let model_provider = non_openai_model_provider(&server);
+    let test = test_codex()
+        .with_config(move |config| {
+            if !remote {
+                config.model_provider = model_provider;
+            }
+            if token_budget {
+                config.features.enable(Feature::TokenBudget).unwrap();
+            }
+            set_test_compact_prompt(config);
+            config.model_context_window = Some(10_000);
+            config.model_auto_compact_token_limit = Some(9_000);
+        })
+        .build(&server)
+        .await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![
+            UserInput::Image {
+                image: ImageReference::Inline {
+                    image_url: image_url.to_string(),
+                },
+                detail: None,
+            },
+            UserInput::Text {
+                text: "compact this image-bearing turn".to_string(),
+                text_elements: Vec::new(),
+            },
+        ]))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    assert!(
+        first_turn_mock
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains(image_url),
+        "the original request should contain the source image"
+    );
+    let compact_body = compact_mock.single_request().body_json().to_string();
+    assert!(
+        compact_body.contains(guidance),
+        "caller guidance should reach the compactor"
+    );
+    assert!(
+        !compact_body.contains(image_url),
+        "discarded image bytes should not reach the compactor"
+    );
+    let follow_up_body = follow_up_mock.single_request().body_json().to_string();
+    assert!(
+        !follow_up_body.contains(guidance),
+        "one-shot compactor guidance must not become session instructions"
+    );
+    assert!(
+        !follow_up_body.contains(image_url),
+        "discarded image bytes should not return in installed compacted history"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_discards_actual_view_image_in_local_compactor() -> Result<()> {
+    compact_context_view_image_case(false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_context_discards_actual_view_image_in_remote_compactor() -> Result<()> {
+    compact_context_view_image_case(true).await
+}
+
+async fn compact_context_view_image_case(remote: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let view_call = "discard-view-image-call";
+    let guidance = "KEEP_TOOL_IMAGE_COMPACTION_GUIDANCE";
+    let message_image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    let provider = non_openai_model_provider(&server);
+    let test = test_codex()
+        .with_model_info_override("gpt-5.5", |model| {
+            model.input_modalities = vec![
+                codex_protocol::openai_models::InputModality::Text,
+                codex_protocol::openai_models::InputModality::Image,
+            ];
+        })
+        .with_config(move |config| {
+            config.model = Some("gpt-5.5".into());
+            if !remote {
+                config.model_provider = provider;
+            }
+            set_test_compact_prompt(config);
+            config.model_context_window = Some(10_000);
+            config.model_auto_compact_token_limit = Some(9_000);
+        })
+        .build(&server)
+        .await?;
+    let path = test.cwd.path().join("discard-test.png");
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([24u8, 56, 90, 255])).save(&path)?;
+    let first = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_function_call(view_call, "view_image", &json!({"path": path}).to_string()),
+            ev_completed_with_tokens("view-image-response", 100),
+        ]),
+    )
+    .await;
+    let viewed = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_function_call(
+                "discard-controls-call",
+                "compact_context",
+                &json!({
+                    "instructions": guidance, "discard_images": true,
+                })
+                .to_string(),
+            ),
+            ev_completed_with_tokens("discard-controls-response", 150),
+        ]),
+    )
+    .await;
+    let compact = mount_sse_once(
+        &server,
+        if remote {
+            remote_v2_compaction_response()
+        } else {
+            sse(vec![
+                ev_assistant_message("view-summary", "TOOL_IMAGE_FREE_SUMMARY"),
+                ev_completed_with_tokens("view-summary-response", 50),
+            ])
+        },
+    )
+    .await;
+    let continuation = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("view-final", FINAL_REPLY),
+            ev_completed_with_tokens("view-final-response", 25),
+        ]),
+    )
+    .await;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![
+            UserInput::Image {
+                image: ImageReference::Inline {
+                    image_url: message_image.into(),
+                },
+                detail: None,
+            },
+            UserInput::Text {
+                text: "View the disposable image, then compact without images".into(),
+                text_elements: vec![],
+            },
+        ]))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert!(
+        first
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains(message_image)
+    );
+    let viewed_request = viewed.single_request();
+    let output = viewed_request.function_call_output(view_call);
+    let actual_image = output["output"]
+        .as_array()
+        .expect("actual view_image structured output")
+        .iter()
+        .find(|part| part["type"] == "input_image")
+        .and_then(|part| part["image_url"].as_str())
+        .expect("actual native image producer")
+        .to_string();
+    assert!(actual_image.starts_with("data:image/png;base64,"));
+    let compact_body = compact.single_request().body_json();
+    let serialized = compact_body.to_string();
+    assert!(serialized.contains(guidance));
+    assert!(!serialized.contains(&actual_image));
+    assert!(!serialized.contains(message_image));
+    // Real compactor input retains both sides of the native call and a nonempty output.
+    let input = compact_body["input"].as_array().expect("compactor input");
+    assert!(
+        input
+            .iter()
+            .any(|item| item["type"] == "function_call" && item["call_id"] == view_call)
+    );
+    let projected_output = input
+        .iter()
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == view_call)
+        .expect("paired projected output");
+    assert!(
+        projected_output
+            .to_string()
+            .contains("image omitted for compaction")
+    );
+    let installed = continuation.single_request().body_json().to_string();
+    assert!(!installed.contains(&actual_image));
+    assert!(!installed.contains(message_image));
+    assert!(!installed.contains(guidance));
+    // Compaction projects a copy; original typed native output survives in the source rollout.
+    let rollout = fs::read_to_string(test.codex.rollout_path().expect("rollout path"))?;
+    let original_outputs = rollout
+        .lines()
+        .map(|line| {
+            codex_rollout::parse_rollout_line(line)
+                .expect("rollout item")
+                .item
+        })
+        .filter_map(|item| match item {
+            RolloutItem::ResponseItem(envelope) => match envelope.item {
+                ResponseItem::FunctionCallOutput {
+                    call_id, output, ..
+                } if call_id.as_deref() == Some(view_call) => Some(output),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(original_outputs.len(), 1);
+    assert!(
+        original_outputs[0]
+            .content_items()
+            .expect("original structured output")
+            .iter()
+            .any(|part| matches!(part,
+                codex_protocol::models::FunctionCallOutputContentItem::InputImage {
+                    image: ImageReference::Inline { image_url }, ..
+                } if image_url == &actual_image
+            ))
+    );
+    Ok(())
+}

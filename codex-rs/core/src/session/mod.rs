@@ -246,6 +246,7 @@ use codex_protocol::exec_output::StreamOutput;
 pub(crate) mod async_compaction;
 mod code_mode_warning;
 mod config_refresh;
+mod context_clear;
 pub(crate) mod context_window;
 mod daemon_recovery;
 mod environment;
@@ -281,7 +282,7 @@ pub(crate) mod time_reminder;
 mod token_budget;
 pub(crate) mod turn;
 pub(crate) mod turn_context;
-mod turn_input;
+pub(crate) mod turn_input;
 mod turn_suspension;
 mod world_state;
 use self::code_mode_warning::unsupported_code_mode_warning;
@@ -2543,6 +2544,18 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
+        self.send_event_with_before_delivery(turn_context, msg, || {})
+            .await;
+    }
+
+    // Private completion releases its existing admission guard after persistence,
+    // before parent delivery. The callback never acquires locks or awaits.
+    pub(crate) async fn send_event_with_before_delivery(
+        &self,
+        turn_context: &TurnContext,
+        msg: EventMsg,
+        before_delivery: impl FnOnce() + Send,
+    ) {
         if let Some((item_id, started_at_ms)) = msg.command_approval_start() {
             // The client can see the command before execution. Keep its first start
             // for the canonical lifecycle events that will be saved in history.
@@ -2592,7 +2605,8 @@ impl Session {
                 .analytics_events_client
                 .track_guardian_session_event(self.thread_id, &event);
         }
-        self.send_event_raw(event).await;
+        self.send_event_raw_with_before_delivery(event, true, before_delivery)
+            .await;
         self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
             .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
@@ -2763,6 +2777,16 @@ impl Session {
     }
 
     async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {
+        self.send_event_raw_with_before_delivery(event, persist, || {})
+            .await;
+    }
+
+    async fn send_event_raw_with_before_delivery(
+        &self,
+        event: Event,
+        persist: bool,
+        before_delivery: impl FnOnce() + Send,
+    ) {
         let flush_guardian_completion = persist
             && matches!(event.msg, EventMsg::TurnComplete(_))
             && self.is_private_guardian_reviewer().await;
@@ -2810,7 +2834,20 @@ impl Session {
         if flush_guardian_completion && let Err(err) = self.flush_rollout().await {
             warn!("failed to flush completed Guardian review: {err}");
         }
+        before_delivery();
         self.deliver_event_raw(event).await;
+    }
+
+    /// A notice already persisted by the thread host must not be appended twice.
+    pub(crate) async fn deliver_attention_notice(
+        &self,
+        notice: codex_protocol::attention::ThreadAttentionNotification,
+    ) {
+        self.deliver_event_raw(Event {
+            id: notice.batch_id.clone(),
+            msg: EventMsg::ThreadAttention(notice),
+        })
+        .await;
     }
 
     async fn deliver_event_raw(&self, event: Event) {
@@ -5458,6 +5495,55 @@ impl Session {
             budget_result?;
         }
         Ok(())
+    }
+
+    // Active-turn identity and pending intent are one admission decision. Never transfer a
+    // request to a replacement task, or report a request accepted after its turn disappeared.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "bind deferred intent under active then turn state"
+    )]
+    pub(crate) async fn request_context_compaction(
+        &self,
+        sub_id: &str,
+        input: codex_protocol::protocol::CompactionInput,
+    ) -> bool {
+        let active = self.active_turn.lock().await;
+        let Some(active) = active.as_ref().filter(|active| {
+            active.task.as_ref().is_some_and(|task| {
+                task.turn_context.sub_id == sub_id && !task.cancellation_token.is_cancelled()
+            })
+        }) else {
+            return false;
+        };
+        active
+            .turn_state
+            .lock()
+            .await
+            .request_context_compaction(input);
+        true
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "take only the invoking turn's pending intent"
+    )]
+    pub(crate) async fn take_context_compaction_request(
+        &self,
+        sub_id: &str,
+    ) -> Option<codex_protocol::protocol::CompactionInput> {
+        let active = self.active_turn.lock().await;
+        let active = active.as_ref().filter(|active| {
+            active.task.as_ref().is_some_and(|task| {
+                task.turn_context.sub_id == sub_id && !task.cancellation_token.is_cancelled()
+            })
+        })?;
+        let request = active
+            .turn_state
+            .lock()
+            .await
+            .take_context_compaction_request();
+        request
     }
 
     pub(crate) async fn recompute_token_usage(&self, turn_context: &TurnContext) {

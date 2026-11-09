@@ -1,6 +1,7 @@
 mod artifact;
 mod backend;
 mod extension;
+mod metadata;
 mod tool;
 
 pub use extension::install;

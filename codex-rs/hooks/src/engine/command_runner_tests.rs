@@ -625,6 +625,67 @@ print(os.environ["CODEX_HOOK_CAPTURED_ENV"])
 }
 
 #[tokio::test]
+async fn async_hook_completion_marker_is_not_a_published_result() {
+    let temp = TempDir::new().expect("async test directory");
+    let (runtime, results) = runtime();
+    let marker_path = temp.path().join("finished");
+    let release_path = temp.path().join("release");
+    // The handler's existing timeout bounds the child even if this test fails before release.
+    let handler = write_handler(
+        &temp,
+        &format!(
+            r#"import json
+from pathlib import Path
+import sys
+import time
+
+json.load(sys.stdin)
+print(json.dumps({{
+    "hookSpecificOutput": {{
+        "hookEventName": "UserPromptSubmit",
+        "additionalContext": "published hook context"
+    }}
+}}), flush=True)
+Path(r"{}").write_text("finished", encoding="utf-8")
+while not Path(r"{}").exists():
+    time.sleep(0.01)
+"#,
+            marker_path.display(),
+            release_path.display()
+        ),
+    );
+    schedule(&runtime, handler, temp.path()).await;
+
+    let marker_seen = timeout(ASYNC_HOOK_TEST_TIMEOUT, async {
+        while !marker_path.exists() {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let result_was_unpublished = results.is_empty();
+    std::fs::write(release_path, "ready").expect("release async hook");
+    let published = timeout(ASYNC_HOOK_TEST_TIMEOUT, results.recv()).await;
+    runtime.shutdown().await;
+
+    marker_seen.expect("hook should write its completion marker");
+    assert!(
+        result_was_unpublished,
+        "a flushed stdout/finished marker must not certify parsed result publication"
+    );
+    let published = published
+        .expect("released hook should publish its parsed result")
+        .expect("result receiver should remain open");
+    assert_eq!(published.run.status, HookRunStatus::Completed);
+    assert_eq!(
+        published.run.entries,
+        vec![HookOutputEntry {
+            kind: HookOutputEntryKind::Context,
+            text: "published hook context".to_string(),
+        }]
+    );
+}
+
+#[tokio::test]
 async fn async_hooks_limit_concurrent_processes_without_dropping_waiting_jobs() {
     let temp = TempDir::new().expect("async test directory");
     let (runtime, results) = runtime();

@@ -55,6 +55,7 @@ async fn initialize_uses_client_info_name_as_originator() -> Result<()> {
         anyhow::bail!("expected initialize response, got {message:?}");
     };
     let InitializeResponse {
+        attention: _,
         user_agent,
         codex_home: response_codex_home,
         platform_family,
@@ -167,6 +168,7 @@ async fn initialize_respects_originator_override_env_var() -> Result<()> {
         anyhow::bail!("expected initialize response, got {message:?}");
     };
     let InitializeResponse {
+        attention: _,
         user_agent,
         codex_home: response_codex_home,
         platform_family,

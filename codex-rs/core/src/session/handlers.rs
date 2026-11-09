@@ -264,13 +264,46 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
 }
 
 pub async fn compact(sess: &Arc<Session>, sub_id: String) {
+    compact_with_input(sess, sub_id, None).await;
+}
+
+pub async fn compact_with_input(
+    sess: &Arc<Session>,
+    sub_id: String,
+    input: Option<codex_protocol::protocol::CompactionInput>,
+) {
     // Stop the old turn before the compact task picks up the next turn's environments.
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
 
-    sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
+    sess.spawn_task(turn_context, Vec::new(), CompactTask::new(input))
+        .await;
+}
+
+pub(crate) const CONTEXT_CLEARED_MARKER: &str = "Context was cleared by request. The earlier conversation remains in the transcript, but is no longer part of effective context.";
+
+pub async fn clear_context(sess: &Arc<Session>, sub_id: String) {
+    let msg = match sess.clear_effective_context().await {
+        Ok(count) => {
+            if let Some(count) = count {
+                sess.send_event_raw(Event {
+                    id: sub_id.clone(),
+                    msg: EventMsg::TokenCount(count),
+                })
+                .await;
+            }
+            EventMsg::ContextCleared(codex_protocol::protocol::ContextClearedEvent)
+        }
+        Err(error) => EventMsg::Error(ErrorEvent {
+            misalignment: None,
+            message: error.to_string(),
+            codex_error_info: Some(CodexErrorInfo::ContextClearFailed),
+        }),
+    };
+    // Neither notification nor scheduling runs under admission/persistence guards.
+    sess.send_event_raw(Event { id: sub_id, msg }).await;
 }
 
 pub(super) async fn persist_thread_memory_mode_update(
@@ -307,6 +340,9 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
 }
 
 pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
+    // The submission loop finishes its current attention handler before teardown.
+    // Snapshot callers share this owner and cannot initialize it after closing.
+    sess.services.attention_ledger.close().await;
     let startup_prewarm = {
         let mut state = sess.state.lock().await;
         // Stop admission and take the current warmup together so resume cannot replace it.
@@ -592,6 +628,28 @@ pub(super) async fn submission_loop(
                     let _ = reply.send(result);
                     false
                 }
+                Op::InjectAttention { item, reply } => {
+                    let result = sess.inject_attention_if_running(*item).await;
+                    let _ = reply.send(result);
+                    false
+                }
+                Op::Attention {
+                    notice,
+                    request,
+                    blocking_request,
+                    reply,
+                } => {
+                    let result = crate::attention::handle(
+                        &sess,
+                        notice,
+                        *request,
+                        blocking_request,
+                        sub.id.clone(),
+                    )
+                    .await;
+                    let _ = reply.send(result);
+                    false
+                }
                 Op::RecoverTurn {
                     thread_settings,
                     start_options,
@@ -719,6 +777,14 @@ pub(super) async fn submission_loop(
                     compact(&sess, sub.id.clone()).await;
                     false
                 }
+                Op::CompactWithInput { input } => {
+                    compact_with_input(&sess, sub.id.clone(), Some(input)).await;
+                    false
+                }
+                Op::ClearContext => {
+                    clear_context(&sess, sub.id.clone()).await;
+                    false
+                }
                 Op::SetThreadMemoryMode { mode } => {
                     set_thread_memory_mode(&sess, sub.id.clone(), mode).await;
                     false
@@ -781,6 +847,20 @@ pub(super) async fn submission_loop(
         sess.services
             .rollout_thread_trace
             .record_ended(codex_rollout_trace::RolloutStatus::Aborted);
+    }
+    rx_sub.close();
+    while let Ok(sub) = rx_sub.try_recv() {
+        match sub.op {
+            Op::Attention { reply, .. } => {
+                let _ = reply.send(Err(codex_protocol::attention::AttentionError::Stopped));
+            }
+            Op::InjectAttention { reply, .. } => {
+                let _ = reply.send(Err(
+                    codex_protocol::attention::ThreadAttentionHeldReason::ServerDraining,
+                ));
+            }
+            _ => {}
+        }
     }
     debug!("Agent loop exited");
 }

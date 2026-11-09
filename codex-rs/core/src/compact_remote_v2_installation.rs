@@ -25,6 +25,7 @@ pub(super) async fn run_compaction(
     mut started_item: Option<&TurnItem>,
     candidate: Option<BackgroundCompactionCandidate>,
     fallback: CompactionFallback,
+    compaction_input: Option<&CompactionInput>,
 ) -> CodexResult<bool> {
     if let Some(candidate) = candidate {
         let installed = build_and_install_compaction(
@@ -37,6 +38,7 @@ pub(super) async fn run_compaction(
             analytics_details,
             started_item,
             Some(candidate),
+            compaction_input,
         )
         .await?;
         if installed {
@@ -65,6 +67,7 @@ pub(super) async fn run_compaction(
         analytics_details,
         started_item,
         /*candidate*/ None,
+        compaction_input,
     )
     .await
 }
@@ -80,6 +83,7 @@ async fn build_and_install_compaction(
     analytics_details: &mut CompactionAnalyticsDetails,
     started_item: Option<&TurnItem>,
     candidate: Option<BackgroundCompactionCandidate>,
+    compaction_input: Option<&CompactionInput>,
 ) -> CodexResult<bool> {
     let turn_context = &step_context.turn;
     if let Some(candidate) = &candidate
@@ -129,7 +133,10 @@ async fn build_and_install_compaction(
             &compaction_trace,
             compaction_metadata,
             analytics_details,
-            RemoteCompactV2AttemptInput::Foreground(client_session.as_deref_mut()),
+            RemoteCompactV2AttemptInput::Foreground(
+                client_session.as_deref_mut(),
+                compaction_input,
+            ),
         )
         .await;
         let (attempt, compaction_turn_context) = match attempt {
@@ -154,7 +161,7 @@ async fn build_and_install_compaction(
                     &fallback_compaction_trace,
                     compaction_metadata,
                     analytics_details,
-                    RemoteCompactV2AttemptInput::Foreground(client_session),
+                    RemoteCompactV2AttemptInput::Foreground(client_session, compaction_input),
                 )
                 .await;
                 record_model_fallback(

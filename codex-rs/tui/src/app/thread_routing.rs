@@ -1051,11 +1051,34 @@ impl App {
         }
     }
 
+    pub(super) async fn suppresses_thread_attention_marker(
+        &self,
+        thread_id: ThreadId,
+        notification: &ServerNotification,
+    ) -> bool {
+        let ServerNotification::AttentionTurnStarted(marker) = notification else {
+            return false;
+        };
+        if marker.thread_id != thread_id.to_string() {
+            return true;
+        }
+        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+            return false;
+        };
+        channel.store.lock().await.suppresses_attention_marker(notification)
+    }
+
     pub(super) async fn enqueue_thread_notification(
         &mut self,
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        // A historical marker must not overwrite known genuine input in either
+        // the active recipient or the parked voice widget. App owns this enqueue
+        // path exclusively; use the same store verdict as snapshot reconstruction.
+        if self.suppresses_thread_attention_marker(thread_id, &notification).await {
+            return Ok(());
+        }
         self.deliver_background_voice_notification(thread_id, &notification);
         if self.abandoned_side_threads.contains(&thread_id) {
             return Ok(());
@@ -1659,6 +1682,11 @@ impl App {
             let mut store = channel.store.lock().await;
             store.set_session(session.clone(), turns.clone());
             store.rebase_buffer_after_session_refresh();
+            // This snapshot may predate a genuine input whose raw event has
+            // since left the buffer. The retained native-horizon verdict wins.
+            snapshot.events.retain(|event| !matches!(event,
+                ThreadBufferedEvent::Notification(notification)
+                    if store.suppresses_attention_marker(notification)));
             snapshot.active_reasoning_item = store.active_reasoning_item.clone();
         }
         snapshot.session = Some(session);
@@ -1666,6 +1694,7 @@ impl App {
         snapshot
             .events
             .retain_mut(ThreadEventStore::event_survives_session_refresh);
+        snapshot.reconcile_attention_provenance();
     }
 
     /// Opens the `/subagents` picker after refreshing cached labels for known threads.
@@ -1750,6 +1779,7 @@ impl App {
         mut snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
     ) {
+        snapshot.reconcile_attention_provenance();
         let mut reasoning_replay = reasoning_replay::ReasoningReplay::new(&mut snapshot);
         let replayed_final_items = realtime_delivery::completed_agent_items(&snapshot);
         let replayed_voice_texts = realtime_delivery::replayed_voice_texts(&snapshot);
@@ -1846,6 +1876,18 @@ impl App {
                 preserve_in_flight_turn: true,
             },
         );
+        // Native turns replay before buffered events. Restore trusted provenance
+        // first, after input restoration, without reordering ordinary history.
+        for event in &snapshot.events {
+            if let ThreadBufferedEvent::Notification(notification) = event
+                && let ServerNotification::AttentionTurnStarted(marker) = notification.as_ref()
+            {
+                self.chat_widget.handle_server_notification(
+                    ServerNotification::AttentionTurnStarted(marker.clone()),
+                    Some(ReplayKind::ThreadSnapshot),
+                );
+            }
+        }
         if !snapshot.turns.is_empty() {
             self.chat_widget
                 .replay_thread_turns(snapshot.turns, ReplayKind::ThreadSnapshot);

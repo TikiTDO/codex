@@ -758,6 +758,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadCompactStartResponse,
     },
+    ThreadContextClear => "thread/context/clear" {
+        params: v2::ThreadContextClearParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadContextClearResponse,
+    },
     ThreadShellCommand => "thread/shellCommand" {
         params: v2::ThreadShellCommandParams,
         serialization: thread_id(params.thread_id),
@@ -919,6 +924,18 @@ client_request_definitions! {
         params: v2::ThreadInjectItemsParams,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadInjectItemsResponse,
+    },
+    /// Admit bounded runtime source references without submitting user input.
+    ThreadAttention => "thread/attention" {
+        params: v2::ThreadAttentionParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadAttentionResponse,
+    },
+    /// Reconnect/cold-resume snapshot, independent of user-message history.
+    ThreadAttentionList => "thread/attention/list" {
+        params: v2::ThreadAttentionListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadAttentionListResponse,
     },
     SkillsList => "skills/list" {
         params: v2::SkillsListParams,
@@ -2007,6 +2024,8 @@ server_notification_definitions! {
     /// NEW NOTIFICATIONS
     Error => "error" (v2::ErrorNotification),
     ThreadStarted => "thread/started" (v2::ThreadStartedNotification),
+    ThreadAttention => "thread/attention" (v2::ThreadAttentionNotification),
+    AttentionTurnStarted => "attention/turn/started" (v2::AttentionTurnStartedNotification),
     ThreadStatusChanged => "thread/status/changed" (v2::ThreadStatusChangedNotification),
     #[experimental("thread/readState/changed")]
     ThreadReadStateChanged => "thread/readState/changed" (v2::ThreadReadStateChangedNotification),
@@ -2087,6 +2106,7 @@ server_notification_definitions! {
     ReasoningTextDelta => "item/reasoning/textDelta" (v2::ReasoningTextDeltaNotification),
     /// Deprecated: Use `ContextCompaction` item type instead.
     ContextCompacted => "thread/compacted" (v2::ContextCompactedNotification),
+    ContextCleared => "thread/context/cleared" (v2::ContextClearedNotification),
     ModelRerouted => "model/rerouted" (v2::ModelReroutedNotification),
     ModelVerification => "model/verification" (v2::ModelVerificationNotification),
     AuthRecoveryStarted => "modelProvider/authRecoveryStarted" (v2::AuthRecoveryNotification),

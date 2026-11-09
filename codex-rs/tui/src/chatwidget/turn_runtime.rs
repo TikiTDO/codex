@@ -536,6 +536,7 @@ impl ChatWidget {
         &mut self,
         message: String,
         codex_error_info: Option<AppServerCodexErrorInfo>,
+        background_attention: bool,
     ) {
         if codex_error_info
             .as_ref()
@@ -543,7 +544,8 @@ impl ChatWidget {
         {
             return;
         }
-        let question_drafts = if self.thread_usage.replaying_turn_completion {
+        let question_drafts = if self.thread_usage.replaying_turn_completion || background_attention
+        {
             None
         } else {
             self.take_question_drafts()
