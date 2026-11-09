@@ -1121,6 +1121,18 @@ impl CodexThread {
             .await
     }
 
+    pub async fn attention_presentation(
+        &self,
+    ) -> ThreadStoreResult<codex_thread_store::CanonicalAttentionPresentation> {
+        let live_thread = self
+            .session
+            .live_thread_for_persistence("load attention presentation")
+            .map_err(|err| ThreadStoreError::Internal {
+                message: err.to_string(),
+            })?;
+        live_thread.load_canonical_attention_presentation().await
+    }
+
     pub async fn load_history(
         &self,
         include_archived: bool,

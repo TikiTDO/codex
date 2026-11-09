@@ -4,6 +4,28 @@ use codex_protocol::attention::{
     AttentionError, ThreadAttentionHeldReason, ThreadAttentionNotification, ThreadAttentionResponse,
 };
 use std::collections::HashMap;
+use std::collections::HashSet;
+
+/// Strict native presentation provenance. This is not receipt-ledger readiness.
+#[derive(Debug)]
+pub struct CanonicalAttentionPresentation {
+    pub thread_id: ThreadId,
+    pub markers: Vec<codex_protocol::attention::AttentionTurnStartedNotification>,
+    pub foreground_turn_ids: HashSet<String>,
+    pub retained_turn_ids: HashSet<String>,
+    pub coverage: Vec<AttentionReceiptCoverage>,
+    pub scope: Vec<AttentionPresentationScope>,
+}
+
+#[derive(Debug)]
+pub struct AttentionPresentationScope {
+    pub rollout_id: ThreadId,
+    pub owner_thread_id: ThreadId,
+    pub history_mode: codex_protocol::protocol::ThreadHistoryMode,
+    pub start_ordinal: u64,
+    pub end_ordinal_exclusive: u64,
+    pub end_byte_offset: u64,
+}
 
 #[derive(Debug)]
 pub struct CanonicalAttentionReceipts {
@@ -12,7 +34,7 @@ pub struct CanonicalAttentionReceipts {
     pub coverage: Vec<AttentionReceiptCoverage>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct AttentionReceiptCoverage {
     pub rollout_id: ThreadId,
     pub owner_thread_id: ThreadId,

@@ -876,7 +876,9 @@ impl App {
                 if let Some(mut rx) = self.active_thread_rx.take() {
                     while let Ok(event) = rx.try_recv() {
                         if let ThreadBufferedEvent::Notification(notification) = event {
-                            self.chat_widget.handle_server_notification(*notification, Some(ReplayKind::ThreadSnapshot));
+                            if !self.suppresses_thread_attention_marker(thread_id, &notification).await {
+                                self.chat_widget.handle_server_notification(*notification, Some(ReplayKind::ThreadSnapshot));
+                            }
                         }
                     }
                 }

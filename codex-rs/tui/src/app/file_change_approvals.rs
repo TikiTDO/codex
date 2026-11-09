@@ -22,6 +22,12 @@ impl App {
         &mut self,
         event: ThreadBufferedEvent,
     ) {
+        if let (Some(thread_id), ThreadBufferedEvent::Notification(notification)) =
+            (self.active_thread_id, &event)
+            && self.suppresses_thread_attention_marker(thread_id, notification).await
+        {
+            return;
+        }
         let changes = match (&event, self.active_thread_id) {
             (ThreadBufferedEvent::Request(request), Some(thread_id)) => match request.as_ref() {
                 ServerRequest::FileChangeRequestApproval { params, .. } => {

@@ -4544,6 +4544,12 @@ impl ThreadRequestProcessor {
                     })
                     .filter(|turn_id| !turn_id.is_empty())
                     .filter(|_| !paginated_resume || thread.forked_from_id.is_none());
+                // Keep typed evidence before the client's redaction/view policy.
+                let attention_foreground = thread.turns.iter()
+                    .chain(initial_turns_page.iter().flat_map(|page| page.data.iter()))
+                    .filter(|turn| turn.items.iter().any(|item|
+                        matches!(item.payload, ThreadItemPayload::UserMessage { .. })))
+                    .map(|turn| turn.id.clone()).collect::<HashSet<_>>();
                 if redact_resume_payloads {
                     redact_thread_resume_payloads(&mut thread.turns);
                     if let Some(initial_turns_page) = initial_turns_page.as_mut() {
@@ -4595,6 +4601,10 @@ impl ThreadRequestProcessor {
                 self.thread_goal_processor
                     .emit_resume_goal_snapshot(thread_id)
                     .await;
+                super::thread_lifecycle::restore_attention_after_resume(
+                    thread_id, codex_thread.as_ref(), connection_id,
+                    &self.thread_state_manager, &self.outgoing, attention_foreground,
+                ).await;
                 codex_thread
                     .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
                     .await;
