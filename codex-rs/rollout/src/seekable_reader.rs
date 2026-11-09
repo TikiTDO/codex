@@ -71,10 +71,21 @@ pub fn read_rollout_prefix(path: &Path, max_bytes: usize) -> io::Result<Option<V
 /// preserving read-only access to the Codex home. Plain files retain their existing seek fast path.
 /// `is_cancelled` must observe the lifetime of the calling task. Cancellation returns an error,
 /// never EOF, so callers cannot mistake a partial read for a complete history.
-pub fn open_rollout_seekable_reader(
+pub fn open_rollout_seekable_reader<F: Fn() -> bool>(
     path: &Path,
-    is_cancelled: impl Fn() -> bool,
-) -> io::Result<impl Read + Seek> {
+    is_cancelled: F,
+) -> io::Result<impl Read + Seek + use<F>> {
+    open_rollout_seekable_prefix_reader(path, None, is_cancelled)
+}
+
+/// The same cancellable representation owner with bounded compressed materialization.
+/// Invalid compressed suffixes beyond the selected prefix are not decoded. Plain
+/// files retain the native seek fast path; callers enforce their captured read frontier.
+pub fn open_rollout_seekable_prefix_reader<F: Fn() -> bool>(
+    path: &Path,
+    max_decoded_bytes: Option<u64>,
+    is_cancelled: F,
+) -> io::Result<impl Read + Seek + use<F>> {
     if is_cancelled() {
         return Err(io::Error::other("rollout read cancelled"));
     }
@@ -91,7 +102,14 @@ pub fn open_rollout_seekable_reader(
                 inner: zstd::stream::read::Decoder::new(file)?,
                 is_cancelled: &is_cancelled,
             };
-            io::copy(&mut reader, &mut decoded)?;
+            match max_decoded_bytes {
+                Some(limit) => {
+                    io::copy(&mut reader.take(limit), &mut decoded)?;
+                }
+                None => {
+                    io::copy(&mut reader, &mut decoded)?;
+                }
+            }
             decoded.rewind()?;
             decoded
         }

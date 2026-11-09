@@ -1791,6 +1791,7 @@ impl Session {
                 Err(err) => (ThreadTraceContext::disabled(), Some(err)),
             };
             let services = SessionServices {
+                attention_ledger: Arc::new(crate::attention::AttentionLedger::default()),
                 // Start with an empty connection set. The initialized set is
                 // published after SessionConfigured so MCP events follow it.
                 mcp_runtime,

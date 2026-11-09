@@ -1,6 +1,51 @@
 //! Real buffered notifications must use finalized rendering without losing live stream tails.
 
 use super::*;
+
+#[test]
+fn quiet_attention_provenance_survives_buffer_eviction_but_not_foreground_input() {
+    use codex_app_server_protocol::{
+        AttentionTurnStartedNotification, TurnItemsView, TurnStartedNotification,
+    };
+    let mut store = ThreadEventStore::new(1);
+    store.push_notification(ServerNotification::AttentionTurnStarted(
+        AttentionTurnStartedNotification {
+            thread_id: "thread".into(),
+            turn_id: "background".into(),
+        },
+    ));
+    store.push_notification(ServerNotification::TurnStarted(TurnStartedNotification {
+        thread_id: "thread".into(),
+        turn: Turn {
+            id: "background".into(),
+            root_turn_id: None,
+            items: Vec::new(),
+            items_view: TurnItemsView::Full,
+            status: TurnStatus::InProgress,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        },
+    }));
+    assert!(store.snapshot().events.iter().any(|event| matches!(event,
+        ThreadBufferedEvent::Notification(n)
+            if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(marker)
+                if marker.turn_id == "background"))));
+    store.push_notification(ServerNotification::ItemStarted(ItemStartedNotification {
+        thread_id: "thread".into(),
+        turn_id: "background".into(),
+        started_at_ms: 0,
+        item: ThreadItem::untimed(codex_app_server_protocol::ThreadItemPayload::UserMessage {
+            id: "operator".into(),
+            content: Vec::new(),
+            client_id: None,
+        }),
+    }));
+    assert!(!store.snapshot().events.iter().any(|event| matches!(event,
+        ThreadBufferedEvent::Notification(n)
+            if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(_)))));
+}
 use crate::chatwidget::tests::helpers::normalize_snapshot_paths;
 use crate::chatwidget::tests::helpers::render_bottom_popup;
 use codex_app_server_protocol::ItemCompletedNotification;
@@ -825,5 +870,324 @@ async fn misalignment_replay_blocks_when_turn_start_was_evicted() {
             assert!(app.chat_widget.has_misalignment_policy_violation());
             assert!(render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("Chat stopped"));
         }
+    }
+}
+
+fn attention_marker(thread_id: ThreadId, turn_id: &str) -> ServerNotification {
+    ServerNotification::AttentionTurnStarted(
+        codex_app_server_protocol::AttentionTurnStartedNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: turn_id.into(),
+        },
+    )
+}
+
+fn snapshot_has_attention_marker(snapshot: &ThreadEventSnapshot, turn_id: &str) -> bool {
+    snapshot.events.iter().any(|event| {
+        matches!(event,
+        ThreadBufferedEvent::Notification(n) if matches!(n.as_ref(),
+            ServerNotification::AttentionTurnStarted(marker) if marker.turn_id == turn_id))
+    })
+}
+
+#[test]
+fn quiet_attention_native_horizon_prunes_on_turn_refresh_and_request_eviction() {
+    let thread = ThreadId::new();
+    let mut store = ThreadEventStore::new(1);
+    store.push_notification(attention_marker(thread, "background"));
+    store.push_notification(ServerNotification::TurnStarted(
+        codex_app_server_protocol::TurnStartedNotification {
+            thread_id: thread.to_string(),
+            turn: test_turn("background", TurnStatus::InProgress, Vec::new()),
+        },
+    ));
+    // Active provenance outlives arbitrary unrelated bounded churn.
+    for _ in 0..10 {
+        store.push_notification(delta(&thread.to_string(), "other", "item"));
+        assert!(snapshot_has_attention_marker(
+            &store.snapshot(),
+            "background"
+        ));
+    }
+    store.push_notification(ServerNotification::TurnCompleted(
+        codex_app_server_protocol::TurnCompletedNotification {
+            thread_id: thread.to_string(),
+            turn: test_turn("background", TurnStatus::Completed, Vec::new()),
+        },
+    ));
+    assert!(snapshot_has_attention_marker(
+        &store.snapshot(),
+        "background"
+    ));
+    store.set_turns(vec![test_turn(
+        "background",
+        TurnStatus::Completed,
+        Vec::new(),
+    )]);
+    store.push_request(ServerRequest::ToolRequestUserInput {
+        request_id: codex_app_server_protocol::RequestId::Integer(1),
+        params: codex_app_server_protocol::ToolRequestUserInputParams {
+            thread_id: thread.to_string(),
+            turn_id: "other".into(),
+            item_id: "question".into(),
+            questions: Vec::new(),
+            is_blocking: true,
+            auto_resolution_ms: None,
+        },
+    });
+    assert!(
+        snapshot_has_attention_marker(&store.snapshot(), "background"),
+        "native turns still retain it"
+    );
+    store.set_turns(Vec::new());
+    assert!(
+        !snapshot_has_attention_marker(&store.snapshot(), "background"),
+        "request eviction and turn replacement removed every reference"
+    );
+}
+
+#[tokio::test]
+async fn quiet_attention_refresh_genuine_user_dominates_retained_raw_markers() {
+    let (mut app, _events, _ops) = make_test_app_with_channels().await;
+    let thread = ThreadId::new();
+    let session = test_thread_session(thread, app.config.cwd.to_path_buf());
+    app.chat_widget.handle_thread_session_quiet(session.clone());
+    app.chat_widget
+        .handle_server_notification(attention_marker(thread, "foreground"), None);
+    assert!(
+        app.chat_widget
+            .is_background_attention_turn_for_test("foreground")
+    );
+    let channel = ThreadEventChannel::new_with_session(8, session.clone(), Vec::new());
+    let mut snapshot = {
+        let mut store = channel.store.lock().await;
+        store.push_notification(attention_marker(thread, "foreground"));
+        store.snapshot()
+    };
+    app.thread_event_channels.insert(thread, channel);
+    let user = ThreadItemPayload::UserMessage {
+        id: "operator".into(),
+        content: Vec::new(),
+        client_id: None,
+    };
+    app.apply_refreshed_snapshot_thread(
+        thread,
+        AppServerStartedThread {
+            session,
+            turns: vec![test_turn("foreground", TurnStatus::Completed, vec![user])],
+            blocks_direct_input: false,
+            task_tools_available: false,
+        },
+        &mut snapshot,
+    )
+    .await;
+    assert!(!snapshot_has_attention_marker(&snapshot, "foreground"));
+    assert!(!snapshot_has_attention_marker(
+        &app.thread_event_channels[&thread]
+            .store
+            .lock()
+            .await
+            .snapshot(),
+        "foreground"
+    ));
+    app.replay_thread_snapshot(snapshot, false);
+    assert!(
+        !app.chat_widget
+            .is_background_attention_turn_for_test("foreground")
+    );
+}
+
+#[tokio::test]
+async fn quiet_attention_rebuilt_widget_retains_provenance_questions_and_later_live_completion() {
+    use codex_app_server_protocol::{
+        ErrorNotification, TurnCompletedNotification, TurnError, TurnStartedNotification,
+    };
+    for replay_terminal in [false, true] {
+        for status in [
+            TurnStatus::Completed,
+            TurnStatus::Interrupted,
+            TurnStatus::Failed,
+        ] {
+            let (mut original, _events, _ops) = make_test_app_with_channels().await;
+            let thread = ThreadId::new();
+            let session = test_thread_session(thread, original.config.cwd.to_path_buf());
+            original
+                .chat_widget
+                .handle_thread_session_quiet(session.clone());
+            original.chat_widget.handle_paste("main draft".into());
+            original.chat_widget.handle_server_notification(
+                ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+                    thread.to_string(),
+                    "original".into(),
+                    ThreadItemPayload::AgentMessage {
+                        id: "original-question".into(),
+                        text: "Question".into(),
+                        phase: None,
+                        memory_citation: None,
+                        delivery: None,
+                        questions: Some(vec![codex_protocol::items::AsyncUserInputQuestion {
+                            title: "Which way?".into(),
+                            options: None,
+                        }]),
+                    },
+                    None,
+                    0,
+                )),
+                None,
+            );
+            original
+                .chat_widget
+                .handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+            original
+                .chat_widget
+                .handle_key_event(KeyEvent::from(KeyCode::Enter));
+            original.chat_widget.handle_paste("retained answer".into());
+            let input = original.chat_widget.capture_thread_input_state().unwrap();
+            let questions = input.questions.clone();
+            assert!(questions.is_some());
+            let mut turn = test_turn("background", TurnStatus::InProgress, Vec::new());
+            let mut store = ThreadEventStore::new_with_session(1, session, Vec::new());
+            store.input_state = Some(input);
+            store.push_notification(attention_marker(thread, &turn.id));
+            store.push_notification(attention_marker(thread, &turn.id)); // duplicate is idempotent
+            store.push_notification(ServerNotification::TurnStarted(TurnStartedNotification {
+                thread_id: thread.to_string(),
+                turn: turn.clone(),
+            }));
+            store.push_notification(delta(&thread.to_string(), &turn.id, "tail"));
+            if replay_terminal {
+                turn.status = status.clone();
+                store.push_notification(ServerNotification::TurnCompleted(
+                    TurnCompletedNotification {
+                        thread_id: thread.to_string(),
+                        turn: turn.clone(),
+                    },
+                ));
+            }
+            store.set_turns(vec![turn.clone()]);
+            let snapshot = store.snapshot();
+            assert!(
+                matches!(&snapshot.events[0], ThreadBufferedEvent::Notification(n) if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(_))),
+                "trusted marker must precede replay events independently of question suppression"
+            );
+            let (mut rebuilt, _events, _ops) = make_test_app_with_channels().await;
+            rebuilt.replay_thread_snapshot(snapshot, false);
+            assert!(
+                rebuilt
+                    .chat_widget
+                    .is_background_attention_turn_for_test(&turn.id)
+            );
+            assert_eq!(
+                rebuilt
+                    .chat_widget
+                    .capture_thread_input_state()
+                    .unwrap()
+                    .questions,
+                questions
+            );
+            if !replay_terminal {
+                turn.status = status;
+                if turn.status == TurnStatus::Failed {
+                    rebuilt.chat_widget.handle_server_notification(
+                        ServerNotification::Error(ErrorNotification {
+                            thread_id: thread.to_string(),
+                            turn_id: turn.id.clone(),
+                            will_retry: false,
+                            error: TurnError {
+                                message: "fixture failure".into(),
+                                codex_error_info: None,
+                                additional_details: None,
+                                misalignment: None,
+                            },
+                        }),
+                        None,
+                    );
+                    assert_eq!(
+                        rebuilt
+                            .chat_widget
+                            .capture_thread_input_state()
+                            .unwrap()
+                            .questions,
+                        questions
+                    );
+                }
+                rebuilt.chat_widget.handle_server_notification(
+                    ServerNotification::TurnCompleted(TurnCompletedNotification {
+                        thread_id: thread.to_string(),
+                        turn: turn.clone(),
+                    }),
+                    None,
+                );
+            }
+            assert_eq!(
+                rebuilt
+                    .chat_widget
+                    .capture_thread_input_state()
+                    .unwrap()
+                    .questions,
+                questions
+            );
+            assert_eq!(
+                rebuilt.chat_widget.composer_text_with_pending(),
+                "main draft"
+            );
+            rebuilt.chat_widget.handle_server_notification(
+                attention_marker(ThreadId::new(), "wrong-thread"),
+                None,
+            );
+            assert!(
+                !rebuilt
+                    .chat_widget
+                    .is_background_attention_turn_for_test("wrong-thread")
+            );
+        }
+    }
+}
+
+#[test]
+fn quiet_attention_rebase_error_reachability_and_multiple_native_turns_are_not_capacity_capped() {
+    let thread = ThreadId::new();
+    let mut store = ThreadEventStore::new(1);
+    store.push_notification(attention_marker(thread, "a"));
+    store.push_notification(ServerNotification::TurnStarted(
+        codex_app_server_protocol::TurnStartedNotification {
+            thread_id: thread.to_string(),
+            turn: test_turn("a", TurnStatus::InProgress, Vec::new()),
+        },
+    ));
+    store.clear_active_turn_id();
+    store.push_notification(ServerNotification::Error(
+        codex_app_server_protocol::ErrorNotification {
+            thread_id: thread.to_string(),
+            turn_id: "a".into(),
+            will_retry: false,
+            error: codex_app_server_protocol::TurnError {
+                message: "fixture terminal error".into(),
+                codex_error_info: None,
+                additional_details: None,
+                misalignment: None,
+            },
+        },
+    ));
+    assert!(
+        snapshot_has_attention_marker(&store.snapshot(), "a"),
+        "nonretry error is native replay reachability even without active identity"
+    );
+    store.rebase_buffer_after_session_refresh();
+    assert!(
+        !snapshot_has_attention_marker(&store.snapshot(), "a"),
+        "rebase removed the last native reference"
+    );
+    let mut turns = Vec::new();
+    for turn_id in ["a", "b", "c"] {
+        store.push_notification(attention_marker(thread, turn_id));
+        turns.push(test_turn(turn_id, TurnStatus::Completed, Vec::new()));
+        store.set_turns(turns.clone());
+    }
+    for turn_id in ["a", "b", "c"] {
+        assert!(
+            snapshot_has_attention_marker(&store.snapshot(), turn_id),
+            "native turns, not buffer capacity, bound retained provenance"
+        );
     }
 }

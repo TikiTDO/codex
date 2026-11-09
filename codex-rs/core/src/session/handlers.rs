@@ -340,6 +340,9 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
 }
 
 pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
+    // The submission loop finishes its current attention handler before teardown.
+    // Snapshot callers share this owner and cannot initialize it after closing.
+    sess.services.attention_ledger.close().await;
     let startup_prewarm = {
         let mut state = sess.state.lock().await;
         // Stop admission and take the current warmup together so resume cannot replace it.
@@ -625,6 +628,28 @@ pub(super) async fn submission_loop(
                     let _ = reply.send(result);
                     false
                 }
+                Op::InjectAttention { item, reply } => {
+                    let result = sess.inject_attention_if_running(*item).await;
+                    let _ = reply.send(result);
+                    false
+                }
+                Op::Attention {
+                    notice,
+                    request,
+                    blocking_request,
+                    reply,
+                } => {
+                    let result = crate::attention::handle(
+                        &sess,
+                        notice,
+                        *request,
+                        blocking_request,
+                        sub.id.clone(),
+                    )
+                    .await;
+                    let _ = reply.send(result);
+                    false
+                }
                 Op::RecoverTurn {
                     thread_settings,
                     start_options,
@@ -822,6 +847,20 @@ pub(super) async fn submission_loop(
         sess.services
             .rollout_thread_trace
             .record_ended(codex_rollout_trace::RolloutStatus::Aborted);
+    }
+    rx_sub.close();
+    while let Ok(sub) = rx_sub.try_recv() {
+        match sub.op {
+            Op::Attention { reply, .. } => {
+                let _ = reply.send(Err(codex_protocol::attention::AttentionError::Stopped));
+            }
+            Op::InjectAttention { reply, .. } => {
+                let _ = reply.send(Err(
+                    codex_protocol::attention::ThreadAttentionHeldReason::ServerDraining,
+                ));
+            }
+            _ => {}
+        }
     }
     debug!("Agent loop exited");
 }

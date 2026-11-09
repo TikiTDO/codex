@@ -161,7 +161,9 @@ impl RollbackPlanner {
         self.pending_delivery_boundary = None;
 
         match &line.item {
-            RolloutItem::DynamicToolsUpdated { .. } | RolloutItem::SessionMeta(_) => {
+            RolloutItem::DynamicToolsUpdated { .. }
+            | RolloutItem::SessionMeta(_)
+            | RolloutItem::EventMsg(EventMsg::ThreadAttention(_)) => {
                 self.record_boundaries[index] = None
             }
             RolloutItem::ResponseItem(response) => {

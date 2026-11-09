@@ -2807,7 +2807,10 @@ fn cancelled_compression_workers_hold_migration_locks() {
                 _writer: store
                     .acquire_writer_lock(thread_id)
                     .expect("acquire writer lock"),
-                _live_writer: store.live_writer_locks.lock(thread_id).await,
+                _replacement: Arc::new(super::super::attention::ReplacementGuards::target_only(
+                    store.live_writer_locks.lock_lifecycle(thread_id).await,
+                    store.live_writer_locks.lock(thread_id).await,
+                )),
             });
             let coordination = store.live_writer_locks.coordination(thread_id).await;
 
