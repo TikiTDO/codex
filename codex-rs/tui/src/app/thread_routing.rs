@@ -1666,6 +1666,7 @@ impl App {
         snapshot
             .events
             .retain_mut(ThreadEventStore::event_survives_session_refresh);
+        snapshot.reconcile_attention_provenance();
     }
 
     /// Opens the `/subagents` picker after refreshing cached labels for known threads.
@@ -1750,6 +1751,7 @@ impl App {
         mut snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
     ) {
+        snapshot.reconcile_attention_provenance();
         let mut reasoning_replay = reasoning_replay::ReasoningReplay::new(&mut snapshot);
         let replayed_final_items = realtime_delivery::completed_agent_items(&snapshot);
         let replayed_voice_texts = realtime_delivery::replayed_voice_texts(&snapshot);
@@ -1846,6 +1848,18 @@ impl App {
                 preserve_in_flight_turn: true,
             },
         );
+        // Native turns replay before buffered events. Restore trusted provenance
+        // first, after input restoration, without reordering ordinary history.
+        for event in &snapshot.events {
+            if let ThreadBufferedEvent::Notification(notification) = event
+                && let ServerNotification::AttentionTurnStarted(marker) = notification.as_ref()
+            {
+                self.chat_widget.handle_server_notification(
+                    ServerNotification::AttentionTurnStarted(marker.clone()),
+                    Some(ReplayKind::ThreadSnapshot),
+                );
+            }
+        }
         if !snapshot.turns.is_empty() {
             self.chat_widget
                 .replay_thread_turns(snapshot.turns, ReplayKind::ThreadSnapshot);

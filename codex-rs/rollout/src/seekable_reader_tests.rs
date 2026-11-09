@@ -161,3 +161,53 @@ fn prefix_bounds_support_sized_unsized_and_concatenated_frames() -> io::Result<(
     }
     Ok(())
 }
+
+#[test]
+fn finite_receipt_materialization_excludes_invalid_compressed_suffix() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let path = home.path().join("rollout.jsonl.zst");
+    let prefix = b"{\"selected\":true}\n";
+    let mut bytes = zstd::stream::encode_all(prefix.as_slice(), 3)?;
+    bytes.extend_from_slice(b"this is not another zstd frame");
+    fs::write(&path, &bytes)?;
+    let mut selected =
+        open_rollout_seekable_prefix_reader(&path, Some(prefix.len() as u64), || false)?;
+    assert_eq!(selected.seek(SeekFrom::End(0))?, prefix.len() as u64);
+    selected.rewind()?;
+    let mut actual = Vec::new();
+    selected.read_to_end(&mut actual)?;
+    assert_eq!(actual, prefix);
+    assert!(
+        open_rollout_seekable_prefix_reader(&path, Some(prefix.len() as u64 + 1), || false)
+            .is_err()
+    );
+    assert!(open_rollout_seekable_reader(&path, || false).is_err());
+    assert_eq!(fs::read(&path)?, bytes);
+    assert!(!path.with_extension("").exists());
+    Ok(())
+}
+
+#[test]
+fn finite_receipt_reader_keeps_native_cancellation_errors() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let path = home.path().join("rollout.jsonl.zst");
+    let bytes = vec![b'x'; 1024 * 1024];
+    fs::write(&path, zstd::stream::encode_all(bytes.as_slice(), 3)?)?;
+    assert!(open_rollout_seekable_prefix_reader(&path, Some(128), || true).is_err());
+    let checks = Cell::new(0);
+    assert!(
+        open_rollout_seekable_prefix_reader(&path, Some(bytes.len() as u64), || {
+            checks.replace(checks.get() + 1) >= 10
+        })
+        .is_err()
+    );
+    let cancelled = Cell::new(false);
+    let mut reader = open_rollout_seekable_prefix_reader(&path, Some(128), || cancelled.get())?;
+    cancelled.set(true);
+    assert_eq!(reader.rewind().unwrap_err().kind(), io::ErrorKind::Other);
+    assert_eq!(
+        reader.read(&mut [0_u8; 1]).unwrap_err().kind(),
+        io::ErrorKind::Other
+    );
+    Ok(())
+}

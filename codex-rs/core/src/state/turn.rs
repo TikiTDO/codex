@@ -177,6 +177,19 @@ impl Drop for NetworkApprovalPrompt<'_> {
 }
 
 impl TurnState {
+    /// Called with TurnState held under ActiveTurn, like waiter registration.
+    pub(crate) fn has_pending_interactive_request(&self) -> bool {
+        !self
+            .pending_approvals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+            || !self.pending_request_permissions.is_empty()
+            || !self.pending_user_input.is_empty()
+            || !self.pending_elicitations.is_empty()
+            || !self.pending_dynamic_tools.is_empty()
+    }
+
     pub(crate) fn request_context_compaction(&mut self, input: CompactionInput) {
         match &mut self.context_compaction_request {
             Some(current) => current.merge(input),
@@ -350,5 +363,47 @@ mod compaction_request_tests {
         assert_eq!(input.instructions.as_deref(), Some("first\n\nsecond"));
         assert!(input.discard_images && input.retry_websocket);
         assert!(first.take_context_compaction_request().is_none());
+    }
+}
+
+#[cfg(test)]
+mod attention_waiter_tests {
+    use super::*;
+
+    #[test]
+    fn quiet_attention_reads_actual_shared_approval_owner_even_after_poison() {
+        let mut state = TurnState::default();
+        let (answer, mut received) = oneshot::channel();
+        state.insert_pending_approval(
+            "network-prompt".into(),
+            answer,
+            codex_protocol::approvals::ExecApprovalKind::HumanCommand,
+            "foreground".into(),
+        );
+        let (events, resolutions) = async_channel::unbounded();
+        let prompt = state.track_network_prompt(&events, "foreground", "network-prompt");
+        assert!(state.has_pending_interactive_request());
+        let shared = Arc::clone(&state.pending_approvals);
+        let poisoned = std::panic::catch_unwind(move || {
+            let _guard = shared.lock().unwrap();
+            panic!("fixture poisons the existing approval mutex");
+        });
+        assert!(poisoned.is_err());
+        assert!(
+            state.has_pending_interactive_request(),
+            "poison is not empty approval state"
+        );
+        assert!(matches!(
+            received.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        drop(prompt);
+        assert!(!state.has_pending_interactive_request());
+        assert!(matches!(
+            received.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(matches!(resolutions.try_recv().unwrap().msg,
+            EventMsg::NetworkApprovalResolved { approval_id } if approval_id == "network-prompt"));
     }
 }

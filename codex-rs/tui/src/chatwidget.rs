@@ -599,6 +599,11 @@ pub(crate) struct ChatWidget {
     // Remember the account's Reserve entry notice across chats and transient banner refreshes.
     luna_reserve_notice_account_id: Option<String>,
     pub(crate) warning_display_state: WarningDisplayState,
+    attention_notices: HashMap<
+        String,
+        Arc<std::sync::Mutex<codex_app_server_protocol::ThreadAttentionNotification>>,
+    >,
+    background_attention_turns: HashSet<String>,
     pub(crate) composer_images: Option<crate::transcript_image::composer::ComposerImages>,
     pub(crate) rendered_selection: std::cell::RefCell<crate::rendered_selection::RenderedSelection>,
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
@@ -1772,6 +1777,11 @@ impl ChatWidget {
     #[cfg(test)]
     pub(crate) fn is_task_running_for_test(&self) -> bool {
         self.bottom_pane.is_task_running()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_background_attention_turn_for_test(&self, turn_id: &str) -> bool {
+        self.background_attention_turns.contains(turn_id)
     }
 
     pub(crate) fn toggle_vim_mode_and_notify(&mut self) {

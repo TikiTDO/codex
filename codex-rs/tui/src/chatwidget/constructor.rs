@@ -178,6 +178,8 @@ impl ChatWidget {
             backend_banner_notice_model: None,
             luna_reserve_notice_account_id: None,
             warning_display_state: WarningDisplayState::default(),
+            attention_notices: HashMap::new(),
+            background_attention_turns: HashSet::new(),
             composer_images: None,
             rendered_selection: Default::default(),
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),

@@ -73,6 +73,8 @@ impl ThreadEventStore {
                 | ThreadBufferedEvent::FeedbackSubmission(_) => {}
             }
         }
+        // Requests and coalesced notifications can both change replay reachability.
+        self.reconcile_attention_turns();
     }
 }
 

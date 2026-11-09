@@ -7,6 +7,118 @@
 
 use super::*;
 use std::borrow::Cow;
+use std::collections::HashSet;
+
+fn genuine_user_turn_ids<'a>(
+    turns: &[Turn],
+    events: impl Iterator<Item = &'a ThreadBufferedEvent> + Clone,
+) -> HashSet<String> {
+    let buffered_turns = events.clone().filter_map(|event| match event {
+        ThreadBufferedEvent::Notification(n) => match n.as_ref() {
+            ServerNotification::TurnStarted(n) => Some(&n.turn),
+            ServerNotification::TurnCompleted(n) => Some(&n.turn),
+            _ => None,
+        },
+        _ => None,
+    });
+    let mut foreground = turns
+        .iter()
+        .chain(buffered_turns)
+        .filter(|turn| {
+            turn.items
+                .iter()
+                .any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. }))
+        })
+        .map(|turn| turn.id.clone())
+        .collect::<HashSet<_>>();
+    for event in events {
+        let ThreadBufferedEvent::Notification(n) = event else {
+            continue;
+        };
+        let item = match n.as_ref() {
+            ServerNotification::ItemStarted(n) => Some((&n.turn_id, &n.item.payload)),
+            ServerNotification::ItemCompleted(n) => Some((&n.turn_id, &n.item.payload)),
+            _ => None,
+        };
+        if let Some((id, ThreadItemPayload::UserMessage { .. })) = item {
+            foreground.insert(id.clone());
+        }
+    }
+    foreground
+}
+
+fn is_contradictory_attention_marker(
+    event: &ThreadBufferedEvent,
+    foreground: &HashSet<String>,
+) -> bool {
+    matches!(event, ThreadBufferedEvent::Notification(n)
+        if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(marker)
+            if foreground.contains(&marker.turn_id)))
+}
+
+/// The native replay horizon, not a second classification or receipt cache.
+fn buffered_event_turn_id(event: &ThreadBufferedEvent) -> Option<&str> {
+    match event {
+        ThreadBufferedEvent::Notification(n) => match n.as_ref() {
+            ServerNotification::TurnStarted(n) => Some(&n.turn.id),
+            ServerNotification::TurnCompleted(n) => Some(&n.turn.id),
+            ServerNotification::AttentionTurnStarted(n) => Some(&n.turn_id),
+            ServerNotification::ThreadAttention(n) => match &n.admission {
+                codex_app_server_protocol::ThreadAttentionResponse::Accepted {
+                    turn_id, ..
+                } => turn_id.as_deref(),
+                _ => None,
+            },
+            ServerNotification::Error(n) => Some(&n.turn_id),
+            ServerNotification::ItemStarted(n) => Some(&n.turn_id),
+            ServerNotification::ItemCompleted(n) => Some(&n.turn_id),
+            ServerNotification::ItemGuardianApprovalReviewStarted(n) => Some(&n.turn_id),
+            ServerNotification::ItemGuardianApprovalReviewCompleted(n) => Some(&n.turn_id),
+            ServerNotification::StrictReviewRequired(n) => Some(&n.turn_id),
+            ServerNotification::AuthRecoveryStarted(n)
+            | ServerNotification::AuthRecoveryCompleted(n) => Some(&n.turn_id),
+            ServerNotification::AgentMessageDelta(n) => Some(&n.turn_id),
+            ServerNotification::PlanDelta(n) => Some(&n.turn_id),
+            ServerNotification::ReasoningTextDelta(n) => Some(&n.turn_id),
+            ServerNotification::ReasoningSummaryTextDelta(n) => Some(&n.turn_id),
+            ServerNotification::ReasoningSummaryPartAdded(n) => Some(&n.turn_id),
+            ServerNotification::TurnDiffUpdated(n) => Some(&n.turn_id),
+            ServerNotification::TurnPlanUpdated(n) => Some(&n.turn_id),
+            ServerNotification::CommandExecutionOutputDelta(n) => Some(&n.turn_id),
+            ServerNotification::TerminalInteraction(n) => Some(&n.turn_id),
+            ServerNotification::FileChangeOutputDelta(n) => Some(&n.turn_id),
+            ServerNotification::ThreadTokenUsageUpdated(n) => Some(&n.turn_id),
+            ServerNotification::RawResponseCompleted(n) => Some(&n.turn_id),
+            ServerNotification::ContextCompacted(n) => Some(&n.turn_id),
+            ServerNotification::ModelRerouted(n) => Some(&n.turn_id),
+            ServerNotification::ModelVerification(n) => Some(&n.turn_id),
+            ServerNotification::ModelSafetyBufferingUpdated(n) => Some(&n.turn_id),
+            ServerNotification::TurnModerationMetadata(n) => Some(&n.turn_id),
+            ServerNotification::HookStarted(n) => n.turn_id.as_deref(),
+            ServerNotification::HookCompleted(n) => n.turn_id.as_deref(),
+            ServerNotification::ThreadGoalUpdated(n) => n.turn_id.as_deref(),
+            _ => None,
+        },
+        ThreadBufferedEvent::Request(request) => match request.as_ref() {
+            ServerRequest::CommandExecutionRequestApproval { params, .. } => Some(&params.turn_id),
+            ServerRequest::FileChangeRequestApproval { params, .. } => Some(&params.turn_id),
+            ServerRequest::ToolRequestUserInput { params, .. } => Some(&params.turn_id),
+            ServerRequest::DynamicToolCall { params, .. } => Some(&params.turn_id),
+            ServerRequest::PermissionsRequestApproval { params, .. } => Some(&params.turn_id),
+            ServerRequest::McpServerElicitationRequest { params, .. } => params.turn_id.as_deref(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+impl ThreadEventSnapshot {
+    pub(super) fn reconcile_attention_provenance(&mut self) {
+        let foreground = genuine_user_turn_ids(&self.turns, self.events.iter());
+        self.events
+            .retain(|event| !is_contradictory_attention_marker(event, &foreground));
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct ThreadEventSnapshot {
@@ -82,6 +194,8 @@ pub(super) struct ThreadEventStore {
     pub(super) active: bool,
     pub(super) buffered_agent_message_delta_bytes: usize,
     delegated_turns: VecDeque<String>,
+    // Provenance survives while active OR reachable in native replay material.
+    attention_turns: HashMap<String, codex_app_server_protocol::AttentionTurnStartedNotification>,
     recap_progress: recap::RecapProgress,
 }
 
@@ -104,6 +218,8 @@ impl ThreadEventStore {
             ThreadBufferedEvent::Notification(notification) => matches!(
                 notification.as_ref(),
                 ServerNotification::HookStarted(_)
+                    | ServerNotification::ThreadAttention(_)
+                    | ServerNotification::AttentionTurnStarted(_)
                     | ServerNotification::HookCompleted(_)
                     | ServerNotification::McpServerStatusUpdated(_)
                     | ServerNotification::McpServerOauthLoginCompleted(_)
@@ -127,6 +243,7 @@ impl ThreadEventStore {
             active: false,
             buffered_agent_message_delta_bytes: 0,
             delegated_turns: VecDeque::new(),
+            attention_turns: HashMap::new(),
             recap_progress: recap::RecapProgress::default(),
         }
     }
@@ -151,6 +268,7 @@ impl ThreadEventStore {
     pub(super) fn rebase_buffer_after_session_refresh(&mut self) {
         self.buffer.retain_mut(Self::event_survives_session_refresh);
         self.buffered_agent_message_delta_bytes = 0;
+        self.reconcile_attention_turns();
     }
 
     pub(super) fn set_turns(&mut self, turns: Vec<Turn>) {
@@ -171,6 +289,7 @@ impl ThreadEventStore {
             .map(|turn| turn.id.clone());
         self.latest_turn_id = turns.last().map(|turn| turn.id.clone());
         self.turns = turns;
+        self.reconcile_attention_turns();
     }
 
     pub(super) fn set_active_turn_id(&mut self, turn_id: String) {
@@ -192,6 +311,14 @@ impl ThreadEventStore {
             ServerNotification::ItemCompleted(n) => Some((&n.turn_id, &n.item.payload)),
             _ => None,
         };
+        if let Some((turn_id, ThreadItemPayload::UserMessage { .. })) = user_item {
+            self.attention_turns.remove(turn_id);
+            self.buffer.retain(|event| {
+                !matches!(event, ThreadBufferedEvent::Notification(n)
+                if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(marker)
+                    if &marker.turn_id == turn_id))
+            });
+        }
         if let Some((turn_id, ThreadItemPayload::UserMessage { content, .. })) = user_item
             && turn_id.len() <= 512
             && crate::chatwidget::realtime_delegation_input(content).is_some()
@@ -202,6 +329,10 @@ impl ThreadEventStore {
         self.pending_interactive_replay
             .note_server_notification(notification.as_ref());
         match notification.as_ref() {
+            ServerNotification::AttentionTurnStarted(marker) => {
+                self.attention_turns
+                    .insert(marker.turn_id.clone(), marker.clone());
+            }
             ServerNotification::TurnStarted(turn) => {
                 self.set_active_turn_id(turn.turn.id.clone());
                 if self
@@ -314,6 +445,23 @@ impl ThreadEventStore {
         self.trim_delegated_turns();
     }
 
+    pub(super) fn reconcile_attention_turns(&mut self) {
+        let foreground = genuine_user_turn_ids(&self.turns, self.buffer.iter());
+        // Remove stale raw markers too: refresh/replay must never resurrect a
+        // classification invalidated by genuine input in either native source.
+        self.buffer
+            .retain(|event| !is_contradictory_attention_marker(event, &foreground));
+        let reachable = self
+            .turns
+            .iter()
+            .map(|turn| turn.id.as_str())
+            .chain(self.active_turn_id.as_deref())
+            .chain(self.buffer.iter().filter_map(buffered_event_turn_id))
+            .collect::<HashSet<_>>();
+        self.attention_turns
+            .retain(|id, _| !foreground.contains(id) && reachable.contains(id.as_str()));
+    }
+
     fn trim_delegated_turns(&mut self) {
         while self.delegated_turns.len() > self.capacity {
             // Keep an evicted user marker while this turn still has buffered output.
@@ -390,6 +538,18 @@ impl ThreadEventStore {
             active_reasoning_item: self.active_reasoning_item.clone(),
             input_state: self.input_state.clone(),
         };
+        // Prepend lifecycle provenance even if its original notice was evicted.
+        // Replayed duplicates are idempotent in ChatWidget.
+        let mut markers = self.attention_turns.values().cloned().collect::<Vec<_>>();
+        markers.sort_by(|left, right| left.turn_id.cmp(&right.turn_id));
+        snapshot.events.splice(
+            0..0,
+            markers.into_iter().map(|marker| {
+                ThreadBufferedEvent::Notification(Box::new(
+                    ServerNotification::AttentionTurnStarted(marker),
+                ))
+            }),
+        );
         if let Some(latest_turn_id) = &self.latest_turn_id {
             replay_filter::omit_resolved_misalignment_errors(&mut snapshot, latest_turn_id);
         }
@@ -546,6 +706,7 @@ impl ThreadEventStore {
 
     pub(super) fn clear_active_turn_id(&mut self) {
         self.active_turn_id = None;
+        self.reconcile_attention_turns();
     }
 }
 

@@ -276,6 +276,11 @@ impl ChatWidget {
         turn_id: String,
         render_source: ThreadItemRenderSource,
     ) {
+        // Native turn-item replay bypasses ItemStarted/Completed notification
+        // handlers. Genuine input still overrides prior trusted provenance.
+        if matches!(&item, ThreadItemPayload::UserMessage { .. }) {
+            self.background_attention_turns.remove(&turn_id);
+        }
         let from_replay = render_source.is_replay();
         let replay_kind = render_source.replay_kind();
         match item {
