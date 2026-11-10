@@ -17,7 +17,11 @@ pub(crate) struct AttentionHistoryCell {
 
 impl AttentionHistoryCell {
     fn lines(&self, details: bool) -> Vec<Line<'static>> {
-        let notice = self.notice.lock().expect("attention notice lock");
+        // The only writer replaces the whole notice, never a partial receipt.
+        let notice = self
+            .notice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = match &notice.admission {
             ThreadAttentionResponse::Accepted { delivery, .. } => match delivery {
                 ThreadAttentionDelivery::Started => "background turn started",

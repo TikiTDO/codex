@@ -49,8 +49,13 @@ impl ChatWidget {
             _ => None,
         };
         if let Some((thread_id, turn)) = native_turn
-            && self.thread_id().is_some_and(|id| id.to_string() == *thread_id)
-            && turn.items.iter().any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. }))
+            && self
+                .thread_id()
+                .is_some_and(|id| id.to_string() == *thread_id)
+            && turn
+                .items
+                .iter()
+                .any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. }))
         {
             self.background_attention_turns.remove(&turn.id);
         }
@@ -72,7 +77,10 @@ impl ChatWidget {
                 }
                 let batch_id = notification.batch_id.clone();
                 if let Some(current) = self.attention_notices.get(&batch_id) {
-                    let mut current = current.lock().expect("attention notice lock");
+                    // This cache is replaced only as one complete typed notice.
+                    let mut current = current
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if *current == notification {
                         return;
                     }

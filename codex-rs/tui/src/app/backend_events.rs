@@ -28,7 +28,9 @@ impl App {
                 // Backend switching retains the voice owner's existing channel
                 // and stamps its source. Never update a colliding foreign cache
                 // or feed this event into the displayed thread's active receiver.
-                let owned_channel = self.thread_event_channels.get(&thread_id)
+                let owned_channel = self
+                    .thread_event_channels
+                    .get(&thread_id)
                     .filter(|channel| channel.backend_id == Some(event.backend_id));
                 if let Some(channel) = owned_channel {
                     let mut store = channel.store.lock().await;
@@ -38,7 +40,10 @@ impl App {
                     // Genuine input and every native horizon mutation must reach
                     // the same owner even while another backend is displayed.
                     store.push_notification_ref(notification);
-                } else if matches!(notification.as_ref(), ServerNotification::AttentionTurnStarted(_)) {
+                } else if matches!(
+                    notification.as_ref(),
+                    ServerNotification::AttentionTurnStarted(_)
+                ) {
                     tracing::warn!(%thread_id, "background voice attention provenance unavailable: source channel is not bound");
                     return;
                 }

@@ -3,21 +3,25 @@ use crate::WithTurnExtensionData;
 use crate::session::session::Session;
 use crate::session::turn_input;
 use codex_protocol::ThreadId;
-use codex_protocol::attention::{
-    AttentionError, ThreadAttentionDelivery, ThreadAttentionHeldReason,
-    ThreadAttentionNotification, ThreadAttentionResponse,
-};
+use codex_protocol::attention::AttentionError;
+use codex_protocol::attention::ThreadAttentionDelivery;
+use codex_protocol::attention::ThreadAttentionHeldReason;
+use codex_protocol::attention::ThreadAttentionNotification;
+use codex_protocol::attention::ThreadAttentionResponse;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::turn_input::{
-    NotSubmittedReason, TurnInput, TurnInputMode, TurnInputRequest, TurnInputSubmission,
-};
+use codex_protocol::turn_input::NotSubmittedReason;
+use codex_protocol::turn_input::TurnInput;
+use codex_protocol::turn_input::TurnInputMode;
+use codex_protocol::turn_input::TurnInputRequest;
+use codex_protocol::turn_input::TurnInputSubmission;
 use codex_rollout::RolloutItem;
 use codex_thread_store::LiveThread;
 use codex_thread_store::attention_receipt_is_quarantined as quarantined;
 use codex_thread_store::reduce_attention_receipts as reduce;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::Mutex;
+use tokio::sync::MutexGuard;
 
 #[derive(Default)]
 pub(crate) struct AttentionLedger {
@@ -303,7 +307,8 @@ fn accepted(delivery: ThreadAttentionDelivery, turn_id: String) -> ThreadAttenti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_protocol::attention::{ThreadAttentionOrigin, ThreadAttentionOriginKind};
+    use codex_protocol::attention::ThreadAttentionOrigin;
+    use codex_protocol::attention::ThreadAttentionOriginKind;
     fn notice(id: ThreadId, batch: &str, source: &str) -> ThreadAttentionNotification {
         ThreadAttentionNotification {
             thread_id: id.to_string(),

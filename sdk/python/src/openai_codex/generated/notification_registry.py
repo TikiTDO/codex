@@ -12,10 +12,12 @@ from .v2_all import AccountRateLimitsUpdatedNotification
 from .v2_all import AccountUpdatedNotification
 from .v2_all import AgentMessageDeltaNotification
 from .v2_all import AppListUpdatedNotification
+from .v2_all import AttentionTurnStartedNotification
 from .v2_all import AuthRecoveryNotification
 from .v2_all import CommandExecOutputDeltaNotification
 from .v2_all import CommandExecutionOutputDeltaNotification
 from .v2_all import ConfigWarningNotification
+from .v2_all import ContextClearedNotification
 from .v2_all import ContextCompactedNotification
 from .v2_all import DeprecationNoticeNotification
 from .v2_all import EnvironmentConnectionNotification
@@ -56,6 +58,7 @@ from .v2_all import StrictReviewRequiredNotification
 from .v2_all import TerminalInteractionNotification
 from .v2_all import ThreadArchivedNotification
 from .v2_all import ThreadAttachmentUpdatedNotification
+from .v2_all import ThreadAttentionNotification
 from .v2_all import ThreadClosedNotification
 from .v2_all import ThreadDeletedNotification
 from .v2_all import ThreadGoalClearedNotification
@@ -98,10 +101,12 @@ KnownNotificationPayload: TypeAlias = (
     | AccountUpdatedNotification
     | AgentMessageDeltaNotification
     | AppListUpdatedNotification
+    | AttentionTurnStartedNotification
     | AuthRecoveryNotification
     | CommandExecOutputDeltaNotification
     | CommandExecutionOutputDeltaNotification
     | ConfigWarningNotification
+    | ContextClearedNotification
     | ContextCompactedNotification
     | DeprecationNoticeNotification
     | EnvironmentConnectionNotification
@@ -142,6 +147,7 @@ KnownNotificationPayload: TypeAlias = (
     | TerminalInteractionNotification
     | ThreadArchivedNotification
     | ThreadAttachmentUpdatedNotification
+    | ThreadAttentionNotification
     | ThreadClosedNotification
     | ThreadDeletedNotification
     | ThreadGoalClearedNotification
@@ -185,6 +191,7 @@ NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
     "account/rateLimits/updated": AccountRateLimitsUpdatedNotification,
     "account/updated": AccountUpdatedNotification,
     "app/list/updated": AppListUpdatedNotification,
+    "attention/turn/started": AttentionTurnStartedNotification,
     "autoApprovalReview/strictReviewRequired": StrictReviewRequiredNotification,
     "command/exec/outputDelta": CommandExecOutputDeltaNotification,
     "configWarning": ConfigWarningNotification,
@@ -228,8 +235,10 @@ NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
     "skills/changed": SkillsChangedNotification,
     "thread/archived": ThreadArchivedNotification,
     "thread/attachment/updated": ThreadAttachmentUpdatedNotification,
+    "thread/attention": ThreadAttentionNotification,
     "thread/closed": ThreadClosedNotification,
     "thread/compacted": ContextCompactedNotification,
+    "thread/context/cleared": ContextClearedNotification,
     "thread/deleted": ThreadDeletedNotification,
     "thread/environment/connected": EnvironmentConnectionNotification,
     "thread/environment/disconnected": EnvironmentConnectionNotification,
@@ -270,6 +279,7 @@ NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
 
 DIRECT_TURN_ID_NOTIFICATION_TYPES: tuple[type[BaseModel], ...] = (
     AgentMessageDeltaNotification,
+    AttentionTurnStartedNotification,
     AuthRecoveryNotification,
     CommandExecutionOutputDeltaNotification,
     ContextCompactedNotification,

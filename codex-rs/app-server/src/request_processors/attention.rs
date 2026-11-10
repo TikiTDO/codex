@@ -1,10 +1,13 @@
 //! Transport authorization and projections; Core owns receipt admission/settlement.
 use super::*;
-use codex_app_server_protocol::{
-    ThreadAttentionHeldReason, ThreadAttentionListParams, ThreadAttentionListResponse,
-    ThreadAttentionNotification, ThreadAttentionParams, ThreadAttentionResponse,
-};
-use codex_core::context::{InternalContextSource, InternalModelContextFragment};
+use codex_app_server_protocol::ThreadAttentionHeldReason;
+use codex_app_server_protocol::ThreadAttentionListParams;
+use codex_app_server_protocol::ThreadAttentionListResponse;
+use codex_app_server_protocol::ThreadAttentionNotification;
+use codex_app_server_protocol::ThreadAttentionParams;
+use codex_app_server_protocol::ThreadAttentionResponse;
+use codex_core::context::InternalContextSource;
+use codex_core::context::InternalModelContextFragment;
 use codex_protocol::attention::AttentionError;
 
 impl TurnRequestProcessor {

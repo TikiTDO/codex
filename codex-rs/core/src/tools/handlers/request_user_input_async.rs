@@ -6,6 +6,7 @@ use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_prompts::with_repository_question_routing;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageDelivery;
 use codex_protocol::items::AgentMessageItem;
@@ -78,7 +79,7 @@ impl ToolExecutor<ToolInvocation> for RequestUserInputAsyncHandler {
 
         ToolSpec::Function(ResponsesApiTool {
             name: TOOL_NAME.to_string(),
-            description: self.description.clone(),
+            description: with_repository_question_routing(&self.description),
             strict: false,
             defer_loading: None,
             parameters,
@@ -152,5 +153,56 @@ impl ToolExecutor<ToolInvocation> for RequestUserInputAsyncHandler {
 impl CoreToolRuntime for RequestUserInputAsyncHandler {
     fn is_builtin_control_tool(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_prompts::REPOSITORY_QUESTION_ROUTING;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn request_user_input_async_final_description_retains_routing_and_parameters() {
+        let bundled = serde_json::to_value(
+            RequestUserInputAsyncHandler {
+                description: String::new(),
+                parameters: None,
+            }
+            .spec(),
+        )
+        .expect("serializable bundled tool");
+        let custom_parameters = r#"{"type":"object","properties":{"questions":{"type":"array","items":{"type":"string"}}},"required":["questions"],"additionalProperties":false}"#;
+        for description in ["", "  Catalog description.  ", "Catalog description.\n"] {
+            for parameters in [None, Some(custom_parameters), Some("invalid schema")] {
+                let tool = RequestUserInputAsyncHandler {
+                    description: description.to_string(),
+                    parameters: parameters.map(str::to_string),
+                }
+                .spec();
+                let serialized = serde_json::to_value(&tool).expect("serializable final tool");
+                assert_eq!(
+                    serialized["description"],
+                    format!("{description}\n\n{REPOSITORY_QUESTION_ROUTING}")
+                );
+                assert_eq!(serialized["name"], TOOL_NAME);
+                assert_eq!(serialized["type"], "function");
+                assert_eq!(serialized["strict"], false);
+                assert!(serialized.get("defer_loading").is_none());
+                assert!(serialized.get("output_schema").is_none());
+                let expected_parameters = if parameters == Some(custom_parameters) {
+                    serde_json::from_str::<serde_json::Value>(custom_parameters)
+                        .expect("valid catalog schema")
+                } else {
+                    bundled["parameters"].clone()
+                };
+                assert_eq!(serialized["parameters"], expected_parameters);
+                let ToolSpec::Function(function) = tool else {
+                    panic!("expected function")
+                };
+                assert_eq!(function.defer_loading, None);
+                assert_eq!(function.output_schema, None);
+            }
+        }
     }
 }

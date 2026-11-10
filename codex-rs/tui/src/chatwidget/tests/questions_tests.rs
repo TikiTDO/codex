@@ -13,14 +13,113 @@ fn questions() -> Vec<AsyncUserInputQuestion> {
 }
 
 #[tokio::test]
-async fn quiet_attention_completion_and_error_keep_original_question_answerable_once() {
-    use codex_app_server_protocol::{
-        AttentionTurnStartedNotification, ErrorNotification, ThreadAttentionDelivery,
-        ThreadAttentionNotification, ThreadAttentionOrigin, ThreadAttentionOriginKind,
-        ThreadAttentionResponse, Turn, TurnCompletedNotification, TurnError, TurnItemsView,
-        TurnStartedNotification, TurnStatus,
+async fn quiet_attention_poisoned_cache_retains_whole_notice_and_same_cell_updates() {
+    use codex_app_server_protocol::ThreadAttentionDelivery;
+    use codex_app_server_protocol::ThreadAttentionHeldReason;
+    use codex_app_server_protocol::ThreadAttentionNotification;
+    use codex_app_server_protocol::ThreadAttentionOrigin;
+    use codex_app_server_protocol::ThreadAttentionOriginKind;
+    use codex_app_server_protocol::ThreadAttentionResponse;
+
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.bottom_pane
+        .set_composer_text("main draft".into(), Vec::new(), Vec::new());
+    chat.add_async_questions("original-message", &questions());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    chat.bottom_pane.handle_paste("retained answer".into());
+    let before = chat.bottom_pane.question_editor().capture();
+    let _ = drain_insert_history(&mut rx);
+    let mut notice = ThreadAttentionNotification {
+        thread_id: thread_id.to_string(),
+        batch_id: "cue:poison-fixture".into(),
+        origins: vec![ThreadAttentionOrigin {
+            kind: ThreadAttentionOriginKind::Peer,
+            source_ref: "cue:poison-fixture".into(),
+            sender: Some("fixture".into()),
+        }],
+        admission: ThreadAttentionResponse::Held {
+            reason: ThreadAttentionHeldReason::Busy,
+        },
     };
-    use codex_context_fragments::{AnsweredQuestion, ContextualUserFragment};
+    chat.handle_server_notification(ServerNotification::ThreadAttention(notice.clone()), None);
+    let mut emitted = None;
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            assert!(
+                emitted.replace(cell).is_none(),
+                "only one native notice cell"
+            );
+        }
+    }
+    let cell = emitted.expect("actual emitted native notice cell");
+    let shared = Arc::clone(chat.attention_notices.get(&notice.batch_id).unwrap());
+    let poison_fixture = Arc::clone(&shared);
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poison_fixture.lock().unwrap();
+            // A controlled unwind without mutating the complete cached payload.
+            panic!("controlled notice-lock poison fixture");
+        })
+        .join()
+        .is_err()
+    );
+    assert!(shared.is_poisoned());
+    let original = lines_to_single_string(&cell.raw_lines());
+    assert!(original.contains("held while the task is unavailable"));
+    assert!(original.contains("Batch: cue:poison-fixture"));
+    assert_eq!(
+        *shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        notice
+    );
+    notice.admission = ThreadAttentionResponse::Accepted {
+        delivery: ThreadAttentionDelivery::Buffered,
+        turn_id: None,
+    };
+    chat.handle_server_notification(ServerNotification::ThreadAttention(notice.clone()), None);
+    let updated = lines_to_single_string(&cell.raw_lines());
+    assert!(updated.contains("context buffered"));
+    assert!(!updated.contains("held while the task is unavailable"));
+    assert!(updated.contains("Admission is not proof of model consumption"));
+    assert!(
+        shared.is_poisoned(),
+        "recovery must not announce lock repair"
+    );
+    assert_eq!(
+        *shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        notice
+    );
+    assert_eq!(chat.attention_notices.len(), 1);
+    assert!(drain_insert_history(&mut rx).is_empty());
+    assert_eq!(question_count(&chat), 2);
+    assert_eq!(chat.bottom_pane.question_editor().capture(), before);
+    assert_eq!(chat.bottom_pane.composer_text(), "main draft");
+    assert!(!chat.bottom_pane.is_task_running());
+}
+
+#[tokio::test]
+async fn quiet_attention_completion_and_error_keep_original_question_answerable_once() {
+    use codex_app_server_protocol::AttentionTurnStartedNotification;
+    use codex_app_server_protocol::ErrorNotification;
+    use codex_app_server_protocol::ThreadAttentionDelivery;
+    use codex_app_server_protocol::ThreadAttentionNotification;
+    use codex_app_server_protocol::ThreadAttentionOrigin;
+    use codex_app_server_protocol::ThreadAttentionOriginKind;
+    use codex_app_server_protocol::ThreadAttentionResponse;
+    use codex_app_server_protocol::Turn;
+    use codex_app_server_protocol::TurnCompletedNotification;
+    use codex_app_server_protocol::TurnError;
+    use codex_app_server_protocol::TurnItemsView;
+    use codex_app_server_protocol::TurnStartedNotification;
+    use codex_app_server_protocol::TurnStatus;
+    use codex_context_fragments::AnsweredQuestion;
+    use codex_context_fragments::ContextualUserFragment;
 
     for status in [
         TurnStatus::Completed,

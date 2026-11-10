@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ThreadAttentionOrigin": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/ThreadAttentionOriginKind"
+        },
+        "sender": {
+          "description": "A routing label, never authentication or operator authority.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "sourceRef"
+      ],
+      "type": "object"
+    },
+    "ThreadAttentionOriginKind": {
+      "enum": [
+        "peer",
+        "desk",
+        "deskComment",
+        "monitor",
+        "periodic"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "batchId": {
+      "description": "Stable id for this exact captured batch; retries retain it.",
+      "type": "string"
+    },
+    "origins": {
+      "items": {
+        "$ref": "#/definitions/ThreadAttentionOrigin"
+      },
+      "type": "array"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "batchId",
+    "origins",
+    "threadId"
+  ],
+  "title": "ThreadAttentionParams",
+  "type": "object"
+}

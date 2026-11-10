@@ -63,6 +63,95 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[test]
+fn compaction_controls_emitted_fields_match_typescript_declarations() {
+    use codex_protocol::protocol::CompactionInput;
+    use ts_rs::TS;
+
+    for input in [
+        json!({}),
+        json!({"instructions": null}),
+        json!({"discardImages": false, "retryWebsocket": false}),
+        json!({"instructions": null, "discard_images": false, "retry_websocket": false}),
+    ] {
+        let decoded: CompactionInput = serde_json::from_value(input).unwrap();
+        assert_eq!(decoded, CompactionInput::default());
+        assert_eq!(serde_json::to_value(decoded).unwrap(), json!({}));
+    }
+    let populated = CompactionInput {
+        instructions: Some("preserve evidence".into()),
+        discard_images: true,
+        retry_websocket: true,
+    };
+    let populated_wire = json!({
+        "instructions": "preserve evidence", "discardImages": true, "retryWebsocket": true,
+    });
+    assert_eq!(serde_json::to_value(&populated).unwrap(), populated_wire);
+    assert_eq!(
+        serde_json::from_value::<CompactionInput>(populated_wire.clone()).unwrap(),
+        populated
+    );
+    for (input, output) in [
+        (json!({"instructions": ""}), json!({"instructions": ""})),
+        (
+            json!({"discard_images": true}),
+            json!({"discardImages": true}),
+        ),
+        (
+            json!({"retry_websocket": true}),
+            json!({"retryWebsocket": true}),
+        ),
+    ] {
+        let decoded: CompactionInput = serde_json::from_value(input).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), output);
+    }
+    for input in [
+        json!({"discardImages": null}),
+        json!({"retryWebsocket": null}),
+    ] {
+        assert!(serde_json::from_value::<CompactionInput>(input).is_err());
+    }
+    let input_ts = CompactionInput::decl();
+    for field in [
+        "instructions?: string,",
+        "discardImages?: boolean,",
+        "retryWebsocket?: boolean,",
+    ] {
+        assert!(input_ts.contains(field), "{input_ts}");
+    }
+    for input in [
+        json!({"threadId": "thread-fixture"}),
+        json!({"threadId": "thread-fixture", "input": null}),
+    ] {
+        let decoded: ThreadCompactStartParams = serde_json::from_value(input).unwrap();
+        assert_eq!(decoded.input, None);
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            json!({"threadId": "thread-fixture", "input": null})
+        );
+    }
+    for (input, wire) in [
+        (CompactionInput::default(), json!({})),
+        (populated, populated_wire),
+    ] {
+        let params = ThreadCompactStartParams {
+            thread_id: "thread-fixture".into(),
+            input: Some(input),
+        };
+        let expected = json!({"threadId": "thread-fixture", "input": wire});
+        assert_eq!(serde_json::to_value(&params).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_value::<ThreadCompactStartParams>(expected).unwrap(),
+            params
+        );
+    }
+    let params_ts = ThreadCompactStartParams::decl();
+    assert!(
+        params_ts.contains("input?: CompactionInput | null,"),
+        "{params_ts}"
+    );
+}
+
 fn absolute_path_string(path: &str) -> String {
     let path = format!("/{}", path.trim_start_matches('/'));
     test_path_buf(&path).display().to_string()

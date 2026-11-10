@@ -327,7 +327,8 @@ impl ThreadEventStore {
             _ => None,
         };
         if let Some((turn_id, ThreadItemPayload::UserMessage { .. })) = user_item {
-            self.attention_turns.insert(turn_id.clone(), AttentionTurnProvenance::Foreground);
+            self.attention_turns
+                .insert(turn_id.clone(), AttentionTurnProvenance::Foreground);
             self.buffer.retain(|event| {
                 !matches!(event, ThreadBufferedEvent::Notification(n)
                 if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(marker)
@@ -347,16 +348,22 @@ impl ThreadEventStore {
             _ => None,
         };
         if let Some(turn) = native_turn
-            && turn.items.iter().any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. }))
+            && turn
+                .items
+                .iter()
+                .any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. }))
         {
-            self.attention_turns.insert(turn.id.clone(), AttentionTurnProvenance::Foreground);
+            self.attention_turns
+                .insert(turn.id.clone(), AttentionTurnProvenance::Foreground);
         }
         self.pending_interactive_replay
             .note_server_notification(notification.as_ref());
         match notification.as_ref() {
             ServerNotification::AttentionTurnStarted(marker) => {
-                self.attention_turns
-                    .insert(marker.turn_id.clone(), AttentionTurnProvenance::Background(marker.clone()));
+                self.attention_turns.insert(
+                    marker.turn_id.clone(),
+                    AttentionTurnProvenance::Background(marker.clone()),
+                );
             }
             ServerNotification::TurnStarted(turn) => {
                 self.set_active_turn_id(turn.turn.id.clone());
@@ -473,13 +480,12 @@ impl ThreadEventStore {
     pub(super) fn reconcile_attention_turns(&mut self) {
         let mut foreground = genuine_user_turn_ids(&self.turns, self.buffer.iter());
         for id in &foreground {
-            self.attention_turns.insert(id.clone(), AttentionTurnProvenance::Foreground);
+            self.attention_turns
+                .insert(id.clone(), AttentionTurnProvenance::Foreground);
         }
         // A user event can leave the bounded buffer while its turn remains
         // reachable. Retained foreground has the same native horizon as background.
-        foreground.extend(self.attention_turns.iter().filter_map(|(id, provenance)| {
-            matches!(provenance, AttentionTurnProvenance::Foreground).then(|| id.clone())
-        }));
+        foreground.extend(self.attention_turns.iter().filter(|&(_id, provenance)| matches!(provenance, AttentionTurnProvenance::Foreground)).map(|(id, _provenance)| id.clone()));
         // Remove stale raw markers too: refresh/replay must never resurrect a
         // classification invalidated by genuine input in either native source.
         self.buffer
@@ -573,14 +579,22 @@ impl ThreadEventStore {
         };
         // Prepend lifecycle provenance even if its original notice was evicted.
         // Replayed duplicates are idempotent in ChatWidget.
-        let foreground = self.attention_turns.iter().filter_map(|(id, provenance)| {
-            matches!(provenance, AttentionTurnProvenance::Foreground).then(|| id.clone())
-        }).collect::<HashSet<_>>();
-        snapshot.events.retain(|event| !is_contradictory_attention_marker(event, &foreground));
-        let mut markers = self.attention_turns.values().filter_map(|provenance| match provenance {
-            AttentionTurnProvenance::Background(marker) => Some(marker.clone()),
-            AttentionTurnProvenance::Foreground => None,
-        }).collect::<Vec<_>>();
+        let foreground = self
+            .attention_turns
+            .iter()
+            .filter(|&(_id, provenance)| matches!(provenance, AttentionTurnProvenance::Foreground)).map(|(id, _provenance)| id.clone())
+            .collect::<HashSet<_>>();
+        snapshot
+            .events
+            .retain(|event| !is_contradictory_attention_marker(event, &foreground));
+        let mut markers = self
+            .attention_turns
+            .values()
+            .filter_map(|provenance| match provenance {
+                AttentionTurnProvenance::Background(marker) => Some(marker.clone()),
+                AttentionTurnProvenance::Foreground => None,
+            })
+            .collect::<Vec<_>>();
         markers.sort_by(|left, right| left.turn_id.cmp(&right.turn_id));
         snapshot.events.splice(
             0..0,

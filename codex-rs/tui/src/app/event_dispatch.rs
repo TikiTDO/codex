@@ -875,11 +875,10 @@ impl App {
                 self.abort_thread_event_listener(thread_id);
                 if let Some(mut rx) = self.active_thread_rx.take() {
                     while let Ok(event) = rx.try_recv() {
-                        if let ThreadBufferedEvent::Notification(notification) = event {
-                            if !self.suppresses_thread_attention_marker(thread_id, &notification).await {
+                        if let ThreadBufferedEvent::Notification(notification) = event
+                            && !self.suppresses_thread_attention_marker(thread_id, &notification).await {
                                 self.chat_widget.handle_server_notification(*notification, Some(ReplayKind::ThreadSnapshot));
                             }
-                        }
                     }
                 }
                 let mut session = self.thread_event_channels.get(&thread_id)

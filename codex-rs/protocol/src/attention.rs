@@ -24,7 +24,7 @@ pub struct ThreadAttentionOrigin {
     pub source_ref: String,
     /// A routing label, never authentication or operator authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
+    #[ts(optional)]
     pub sender: Option<String>,
 }
 
@@ -57,7 +57,6 @@ pub enum ThreadAttentionResponse {
     #[serde(rename_all = "camelCase")]
     Accepted {
         delivery: ThreadAttentionDelivery,
-        #[ts(optional = nullable)]
         turn_id: Option<String>,
     },
     Held {
@@ -140,6 +139,60 @@ pub fn validate_attention_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attention_emitted_fields_match_typescript_declarations() {
+        use serde_json::json;
+
+        let accepted = |turn_id| ThreadAttentionResponse::Accepted {
+            delivery: ThreadAttentionDelivery::Buffered,
+            turn_id,
+        };
+        assert_eq!(
+            serde_json::to_value(accepted(None)).unwrap(),
+            json!({"status": "accepted", "delivery": "buffered", "turnId": null})
+        );
+        assert_eq!(
+            serde_json::to_value(accepted(Some("turn-fixture".into()))).unwrap(),
+            json!({"status": "accepted", "delivery": "buffered", "turnId": "turn-fixture"})
+        );
+        assert_eq!(
+            serde_json::to_value(ThreadAttentionResponse::Held {
+                reason: ThreadAttentionHeldReason::Busy,
+            })
+            .unwrap(),
+            json!({"status": "held", "reason": "busy"})
+        );
+        let origin = |sender| ThreadAttentionOrigin {
+            kind: ThreadAttentionOriginKind::Peer,
+            source_ref: "source-fixture".into(),
+            sender,
+        };
+        let omitted = json!({"kind": "peer", "sourceRef": "source-fixture"});
+        assert_eq!(serde_json::to_value(origin(None)).unwrap(), omitted);
+        assert_eq!(
+            serde_json::to_value(origin(Some("sender-fixture".into()))).unwrap(),
+            json!({"kind": "peer", "sourceRef": "source-fixture", "sender": "sender-fixture"})
+        );
+        for input in [
+            omitted.clone(),
+            json!({"kind": "peer", "sourceRef": "source-fixture", "sender": null}),
+        ] {
+            let decoded: ThreadAttentionOrigin = serde_json::from_value(input).unwrap();
+            assert_eq!(decoded.sender, None);
+            assert_eq!(serde_json::to_value(decoded).unwrap(), omitted);
+        }
+        let response_ts = ThreadAttentionResponse::decl();
+        assert!(
+            response_ts.contains("turnId: string | null"),
+            "{response_ts}"
+        );
+        assert!(!response_ts.contains("turnId?"), "{response_ts}");
+        let origin_ts = ThreadAttentionOrigin::decl();
+        assert!(origin_ts.contains("sender?: string,"), "{origin_ts}");
+        assert!(!origin_ts.contains("sender?: string | null"), "{origin_ts}");
+    }
+
     #[test]
     fn attention_debug_omits_context_and_notice_payloads() {
         use crate::protocol::Op;

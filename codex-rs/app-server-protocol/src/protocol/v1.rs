@@ -78,7 +78,7 @@ pub struct InitializeCapabilities {
 pub struct InitializeResponse {
     /// Supported native attention protocol, independent of client turn labels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
+    #[ts(optional)]
     pub attention: Option<crate::protocol::v2::ThreadAttentionCapabilities>,
     pub user_agent: String,
     /// Absolute path to the server's $CODEX_HOME directory.

@@ -4,9 +4,9 @@ use super::*;
 
 #[test]
 fn quiet_attention_provenance_survives_buffer_eviction_but_not_foreground_input() {
-    use codex_app_server_protocol::{
-        AttentionTurnStartedNotification, TurnItemsView, TurnStartedNotification,
-    };
+    use codex_app_server_protocol::AttentionTurnStartedNotification;
+    use codex_app_server_protocol::TurnItemsView;
+    use codex_app_server_protocol::TurnStartedNotification;
     let mut store = ThreadEventStore::new(1);
     store.push_notification(ServerNotification::AttentionTurnStarted(
         AttentionTurnStartedNotification {
@@ -999,9 +999,10 @@ async fn quiet_attention_refresh_genuine_user_dominates_retained_raw_markers() {
 
 #[tokio::test]
 async fn quiet_attention_rebuilt_widget_retains_provenance_questions_and_later_live_completion() {
-    use codex_app_server_protocol::{
-        ErrorNotification, TurnCompletedNotification, TurnError, TurnStartedNotification,
-    };
+    use codex_app_server_protocol::ErrorNotification;
+    use codex_app_server_protocol::TurnCompletedNotification;
+    use codex_app_server_protocol::TurnError;
+    use codex_app_server_protocol::TurnStartedNotification;
     for replay_terminal in [false, true] {
         for status in [
             TurnStatus::Completed,
@@ -1192,9 +1193,12 @@ fn quiet_attention_rebase_error_reachability_and_multiple_native_turns_are_not_c
     }
 }
 
-
 fn quiet_attention_native_user() -> ThreadItemPayload {
-    ThreadItemPayload::UserMessage { id: "genuine-user".into(), content: Vec::new(), client_id: None }
+    ThreadItemPayload::UserMessage {
+        id: "genuine-user".into(),
+        content: Vec::new(),
+        client_id: None,
+    }
 }
 
 #[test]
@@ -1202,13 +1206,24 @@ fn quiet_attention_late_marker_foreground_survives_raw_eviction_and_native_horiz
     for marker_first in [false, true] {
         let thread = ThreadId::new();
         let mut store = ThreadEventStore::new(1);
-        if marker_first { store.push_notification(attention_marker(thread, "turn")); }
-        store.push_notification(ServerNotification::TurnStarted(codex_app_server_protocol::TurnStartedNotification {
-            thread_id: thread.to_string(), turn: test_turn("turn", TurnStatus::InProgress, Vec::new()),
-        }));
-        store.push_notification(ServerNotification::ItemCompleted(ItemCompletedNotification::new(
-            thread.to_string(), "turn".into(), quiet_attention_native_user(), None, 0,
-        )));
+        if marker_first {
+            store.push_notification(attention_marker(thread, "turn"));
+        }
+        store.push_notification(ServerNotification::TurnStarted(
+            codex_app_server_protocol::TurnStartedNotification {
+                thread_id: thread.to_string(),
+                turn: test_turn("turn", TurnStatus::InProgress, Vec::new()),
+            },
+        ));
+        store.push_notification(ServerNotification::ItemCompleted(
+            ItemCompletedNotification::new(
+                thread.to_string(),
+                "turn".into(),
+                quiet_attention_native_user(),
+                None,
+                0,
+            ),
+        ));
         store.push_notification(delta(&thread.to_string(), "unrelated", "tail"));
         assert!(!store.buffer.iter().any(|event| matches!(event,
             ThreadBufferedEvent::Notification(n) if matches!(n.as_ref(), ServerNotification::ItemCompleted(_)))));
@@ -1221,13 +1236,23 @@ fn quiet_attention_late_marker_foreground_survives_raw_eviction_and_native_horiz
         store.push_request(ServerRequest::ToolRequestUserInput {
             request_id: codex_app_server_protocol::RequestId::Integer(42),
             params: codex_app_server_protocol::ToolRequestUserInputParams {
-                thread_id: thread.to_string(), turn_id: "other".into(), item_id: "question".into(),
-                questions: Vec::new(), is_blocking: true, auto_resolution_ms: None,
+                thread_id: thread.to_string(),
+                turn_id: "other".into(),
+                item_id: "question".into(),
+                questions: Vec::new(),
+                is_blocking: true,
+                auto_resolution_ms: None,
             },
         });
-        assert!(store.suppresses_attention_marker(&marker), "native turn remains reachable");
+        assert!(
+            store.suppresses_attention_marker(&marker),
+            "native turn remains reachable"
+        );
         store.set_turns(Vec::new());
-        assert!(!store.suppresses_attention_marker(&marker), "actual horizon loss must prune foreground");
+        assert!(
+            !store.suppresses_attention_marker(&marker),
+            "actual horizon loss must prune foreground"
+        );
         store.push_notification(marker);
         assert!(snapshot_has_attention_marker(&store.snapshot(), "turn"));
     }
@@ -1235,22 +1260,41 @@ fn quiet_attention_late_marker_foreground_survives_raw_eviction_and_native_horiz
 
 fn quiet_attention_edit_question(widget: &mut ChatWidget, thread: ThreadId) {
     widget.handle_paste("main draft".into());
-    widget.handle_server_notification(ServerNotification::ItemCompleted(ItemCompletedNotification::new(
-        thread.to_string(), "question-turn".into(), ThreadItemPayload::AgentMessage {
-            id: "original-question".into(), text: "Question".into(), phase: None, memory_citation: None,
-            delivery: None, questions: Some(vec![codex_protocol::items::AsyncUserInputQuestion {
-                title: "Which way?".into(), options: None,
-            }]),
-        }, None, 0,
-    )), None);
+    widget.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+            thread.to_string(),
+            "question-turn".into(),
+            ThreadItemPayload::AgentMessage {
+                id: "original-question".into(),
+                text: "Question".into(),
+                phase: None,
+                memory_citation: None,
+                delivery: None,
+                questions: Some(vec![codex_protocol::items::AsyncUserInputQuestion {
+                    title: "Which way?".into(),
+                    options: None,
+                }]),
+            },
+            None,
+            0,
+        )),
+        None,
+    );
     widget.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
     widget.handle_key_event(KeyEvent::from(KeyCode::Enter));
     widget.handle_paste("retained answer".into());
-    assert!(widget.capture_thread_input_state().unwrap().questions.is_some());
+    assert!(
+        widget
+            .capture_thread_input_state()
+            .unwrap()
+            .questions
+            .is_some()
+    );
 }
 
 #[tokio::test]
-async fn quiet_attention_actual_initial_replay_then_late_marker_keeps_foreground_cleanup() -> Result<()> {
+async fn quiet_attention_actual_initial_replay_then_late_marker_keeps_foreground_cleanup()
+-> Result<()> {
     for terminal in 0..4 {
         // Compare the actual late-marker route to ordinary foreground, not a
         // weakened expectation derived from replay-only draft suppression.
@@ -1258,47 +1302,103 @@ async fn quiet_attention_actual_initial_replay_then_late_marker_keeps_foreground
         for late_marker in [false, true] {
             let (mut app, _events, _ops) = make_test_app_with_channels().await;
             let thread = ThreadId::new();
-            let turn = test_turn("foreground", TurnStatus::InProgress, vec![quiet_attention_native_user()]);
+            let turn = test_turn(
+                "foreground",
+                TurnStatus::InProgress,
+                vec![quiet_attention_native_user()],
+            );
             let session = test_thread_session(thread, app.config.cwd.to_path_buf());
-            app.enqueue_primary_thread_session(session, vec![turn.clone()]).await?;
+            app.enqueue_primary_thread_session(session, vec![turn.clone()])
+                .await?;
             quiet_attention_edit_question(&mut app.chat_widget, thread);
-            let before_questions = app.chat_widget.capture_thread_input_state().unwrap().questions;
+            let before_questions = app
+                .chat_widget
+                .capture_thread_input_state()
+                .unwrap()
+                .questions;
             if late_marker {
-                app.enqueue_thread_notification(thread, attention_marker(thread, &turn.id)).await?;
-                assert!(!snapshot_has_attention_marker(&app.thread_event_channels[&thread].store.lock().await.snapshot(), &turn.id));
-                assert!(!app.chat_widget.is_background_attention_turn_for_test(&turn.id));
+                app.enqueue_thread_notification(thread, attention_marker(thread, &turn.id))
+                    .await?;
+                assert!(!snapshot_has_attention_marker(
+                    &app.thread_event_channels[&thread]
+                        .store
+                        .lock()
+                        .await
+                        .snapshot(),
+                    &turn.id
+                ));
+                assert!(
+                    !app.chat_widget
+                        .is_background_attention_turn_for_test(&turn.id)
+                );
             }
             let event = if terminal == 3 {
                 ServerNotification::Error(codex_app_server_protocol::ErrorNotification {
-                    thread_id: thread.to_string(), turn_id: turn.id.clone(), will_retry: false,
-                    error: codex_app_server_protocol::TurnError { message: "fixture failure".into(), codex_error_info: None, additional_details: None, misalignment: None },
+                    thread_id: thread.to_string(),
+                    turn_id: turn.id.clone(),
+                    will_retry: false,
+                    error: codex_app_server_protocol::TurnError {
+                        message: "fixture failure".into(),
+                        codex_error_info: None,
+                        additional_details: None,
+                        misalignment: None,
+                    },
                 })
             } else {
                 let mut turn = turn;
-                turn.status = [TurnStatus::Completed, TurnStatus::Interrupted, TurnStatus::Failed][terminal].clone();
-                ServerNotification::TurnCompleted(codex_app_server_protocol::TurnCompletedNotification { thread_id: thread.to_string(), turn })
+                turn.status = [
+                    TurnStatus::Completed,
+                    TurnStatus::Interrupted,
+                    TurnStatus::Failed,
+                ][terminal]
+                    .clone();
+                ServerNotification::TurnCompleted(
+                    codex_app_server_protocol::TurnCompletedNotification {
+                        thread_id: thread.to_string(),
+                        turn,
+                    },
+                )
             };
             app.enqueue_thread_notification(thread, event).await?;
             // FIFO delivery of the real following event proves a stale marker
             // was not placed before it on the active channel.
             let delivered = app.active_thread_rx.as_mut().unwrap().recv().await.unwrap();
-            assert!(!matches!(&delivered, ThreadBufferedEvent::Notification(n) if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(_))));
-            app.handle_thread_event_now_recovering_file_changes(delivered).await;
-            assert!(!app.chat_widget.is_background_attention_turn_for_test("foreground"));
-            let state = (app.chat_widget.capture_thread_input_state().unwrap().questions,
-                app.chat_widget.composer_text_with_pending());
+            assert!(
+                !matches!(&delivered, ThreadBufferedEvent::Notification(n) if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(_)))
+            );
+            app.handle_thread_event_now_recovering_file_changes(delivered)
+                .await;
+            assert!(
+                !app.chat_widget
+                    .is_background_attention_turn_for_test("foreground")
+            );
+            let state = (
+                app.chat_widget
+                    .capture_thread_input_state()
+                    .unwrap()
+                    .questions,
+                app.chat_widget.composer_text_with_pending(),
+            );
             // The native editor allocation remains Some. Pending question state
             // must change and its actual answer must reach the ordinary composer.
-            assert_ne!(state.0, before_questions, "ordinary live foreground must settle pending question drafts");
+            assert_ne!(
+                state.0, before_questions,
+                "ordinary live foreground must settle pending question drafts"
+            );
             assert!(state.1.contains("retained answer"));
-            if let Some(expected) = &ordinary { assert_eq!(&state, expected); } else { ordinary = Some(state); }
+            if let Some(expected) = &ordinary {
+                assert_eq!(&state, expected);
+            } else {
+                ordinary = Some(state);
+            }
         }
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn quiet_attention_common_gate_reaches_true_background_but_not_parked_foreground_voice() -> Result<()> {
+async fn quiet_attention_common_gate_reaches_true_background_but_not_parked_foreground_voice()
+-> Result<()> {
     for foreground in [false, true] {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
         let thread = ThreadId::new();
@@ -1306,77 +1406,184 @@ async fn quiet_attention_common_gate_reaches_true_background_but_not_parked_fore
         app.chat_widget.handle_thread_session_quiet(session.clone());
         crate::chatwidget::activate_voice_for_thread(&mut app.chat_widget, thread);
         app.chat_widget.park_voice();
-        let (visible, _, _, _) = crate::chatwidget::tests::make_chatwidget_manual_with_sender().await;
+        let (visible, _, _, _) =
+            crate::chatwidget::tests::make_chatwidget_manual_with_sender().await;
         app.background_voice = Some(Box::new(std::mem::replace(&mut app.chat_widget, visible)));
-        let turn = test_turn("voice-turn", TurnStatus::InProgress,
-            if foreground { vec![quiet_attention_native_user()] } else { Vec::new() });
-        app.thread_event_channels.insert(thread, ThreadEventChannel::new_with_session(1, session, vec![turn]));
-        app.enqueue_thread_notification(thread, attention_marker(thread, "voice-turn")).await?;
-        let owner = app.background_voice.as_ref().expect("parked voice remains live");
-        assert_eq!(owner.is_background_attention_turn_for_test("voice-turn"), !foreground);
-        assert_eq!(snapshot_has_attention_marker(&app.thread_event_channels[&thread].store.lock().await.snapshot(), "voice-turn"), !foreground);
-        app.enqueue_thread_notification(thread, attention_marker(ThreadId::new(), "wrong-thread")).await?;
-        assert!(!app.background_voice.as_ref().unwrap().is_background_attention_turn_for_test("wrong-thread"));
+        let turn = test_turn(
+            "voice-turn",
+            TurnStatus::InProgress,
+            if foreground {
+                vec![quiet_attention_native_user()]
+            } else {
+                Vec::new()
+            },
+        );
+        app.thread_event_channels.insert(
+            thread,
+            ThreadEventChannel::new_with_session(1, session, vec![turn]),
+        );
+        app.enqueue_thread_notification(thread, attention_marker(thread, "voice-turn"))
+            .await?;
+        let owner = app
+            .background_voice
+            .as_ref()
+            .expect("parked voice remains live");
+        assert_eq!(
+            owner.is_background_attention_turn_for_test("voice-turn"),
+            !foreground
+        );
+        assert_eq!(
+            snapshot_has_attention_marker(
+                &app.thread_event_channels[&thread]
+                    .store
+                    .lock()
+                    .await
+                    .snapshot(),
+                "voice-turn"
+            ),
+            !foreground
+        );
+        app.enqueue_thread_notification(thread, attention_marker(ThreadId::new(), "wrong-thread"))
+            .await?;
+        assert!(
+            !app.background_voice
+                .as_ref()
+                .unwrap()
+                .is_background_attention_turn_for_test("wrong-thread")
+        );
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn quiet_attention_actual_background_initial_resume_keeps_late_marker_and_live_drafts() -> Result<()> {
+async fn quiet_attention_actual_background_initial_resume_keeps_late_marker_and_live_drafts()
+-> Result<()> {
     for terminal in 0..4 {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
         let thread = ThreadId::new();
         let session = test_thread_session(thread, app.config.cwd.to_path_buf());
         let mut turn = test_turn("background", TurnStatus::InProgress, Vec::new());
-        app.enqueue_primary_thread_session(session, vec![turn.clone()]).await?;
+        app.enqueue_primary_thread_session(session, vec![turn.clone()])
+            .await?;
         quiet_attention_edit_question(&mut app.chat_widget, thread);
-        let questions = app.chat_widget.capture_thread_input_state().unwrap().questions;
-        app.enqueue_thread_notification(thread, attention_marker(thread, &turn.id)).await?;
+        let questions = app
+            .chat_widget
+            .capture_thread_input_state()
+            .unwrap()
+            .questions;
+        app.enqueue_thread_notification(thread, attention_marker(thread, &turn.id))
+            .await?;
         let marker = app.active_thread_rx.as_mut().unwrap().recv().await.unwrap();
-        assert!(matches!(&marker, ThreadBufferedEvent::Notification(n) if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(_))));
+        assert!(
+            matches!(&marker, ThreadBufferedEvent::Notification(n) if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(_)))
+        );
         app.handle_thread_event_now(marker);
-        assert!(app.chat_widget.is_background_attention_turn_for_test(&turn.id));
-        assert!(snapshot_has_attention_marker(&app.thread_event_channels[&thread].store.lock().await.snapshot(), &turn.id));
+        assert!(
+            app.chat_widget
+                .is_background_attention_turn_for_test(&turn.id)
+        );
+        assert!(snapshot_has_attention_marker(
+            &app.thread_event_channels[&thread]
+                .store
+                .lock()
+                .await
+                .snapshot(),
+            &turn.id
+        ));
         let event = if terminal == 3 {
             ServerNotification::Error(codex_app_server_protocol::ErrorNotification {
-                thread_id: thread.to_string(), turn_id: turn.id.clone(), will_retry: false,
-                error: codex_app_server_protocol::TurnError { message: "fixture failure".into(), codex_error_info: None, additional_details: None, misalignment: None },
+                thread_id: thread.to_string(),
+                turn_id: turn.id.clone(),
+                will_retry: false,
+                error: codex_app_server_protocol::TurnError {
+                    message: "fixture failure".into(),
+                    codex_error_info: None,
+                    additional_details: None,
+                    misalignment: None,
+                },
             })
         } else {
-            turn.status = [TurnStatus::Completed, TurnStatus::Interrupted, TurnStatus::Failed][terminal].clone();
-            ServerNotification::TurnCompleted(codex_app_server_protocol::TurnCompletedNotification { thread_id: thread.to_string(), turn })
+            turn.status = [
+                TurnStatus::Completed,
+                TurnStatus::Interrupted,
+                TurnStatus::Failed,
+            ][terminal]
+                .clone();
+            ServerNotification::TurnCompleted(
+                codex_app_server_protocol::TurnCompletedNotification {
+                    thread_id: thread.to_string(),
+                    turn,
+                },
+            )
         };
         app.enqueue_thread_notification(thread, event).await?;
         let delivered = app.active_thread_rx.as_mut().unwrap().recv().await.unwrap();
         app.handle_thread_event_now(delivered);
-        assert_eq!(app.chat_widget.capture_thread_input_state().unwrap().questions, questions);
+        assert_eq!(
+            app.chat_widget
+                .capture_thread_input_state()
+                .unwrap()
+                .questions,
+            questions
+        );
         assert_eq!(app.chat_widget.composer_text_with_pending(), "main draft");
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn quiet_attention_full_native_turn_user_clears_widget_and_store_before_terminal() -> Result<()> {
+async fn quiet_attention_full_native_turn_user_clears_widget_and_store_before_terminal()
+-> Result<()> {
     for completed in [false, true] {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
         let thread = ThreadId::new();
         let session = test_thread_session(thread, app.config.cwd.to_path_buf());
-        app.enqueue_primary_thread_session(session, Vec::new()).await?;
-        app.enqueue_thread_notification(thread, attention_marker(thread, "turn")).await?;
+        app.enqueue_primary_thread_session(session, Vec::new())
+            .await?;
+        app.enqueue_thread_notification(thread, attention_marker(thread, "turn"))
+            .await?;
         let marker = app.active_thread_rx.as_mut().unwrap().recv().await.unwrap();
         app.handle_thread_event_now(marker);
-        assert!(app.chat_widget.is_background_attention_turn_for_test("turn"));
-        let turn = test_turn("turn", if completed { TurnStatus::Completed } else { TurnStatus::InProgress }, vec![quiet_attention_native_user()]);
+        assert!(
+            app.chat_widget
+                .is_background_attention_turn_for_test("turn")
+        );
+        let turn = test_turn(
+            "turn",
+            if completed {
+                TurnStatus::Completed
+            } else {
+                TurnStatus::InProgress
+            },
+            vec![quiet_attention_native_user()],
+        );
         let event = if completed {
-            ServerNotification::TurnCompleted(codex_app_server_protocol::TurnCompletedNotification { thread_id: thread.to_string(), turn })
+            ServerNotification::TurnCompleted(
+                codex_app_server_protocol::TurnCompletedNotification {
+                    thread_id: thread.to_string(),
+                    turn,
+                },
+            )
         } else {
-            ServerNotification::TurnStarted(codex_app_server_protocol::TurnStartedNotification { thread_id: thread.to_string(), turn })
+            ServerNotification::TurnStarted(codex_app_server_protocol::TurnStartedNotification {
+                thread_id: thread.to_string(),
+                turn,
+            })
         };
         app.enqueue_thread_notification(thread, event).await?;
         let delivered = app.active_thread_rx.as_mut().unwrap().recv().await.unwrap();
         app.handle_thread_event_now(delivered);
-        assert!(!app.chat_widget.is_background_attention_turn_for_test("turn"));
-        assert!(app.thread_event_channels[&thread].store.lock().await.suppresses_attention_marker(&attention_marker(thread, "turn")));
+        assert!(
+            !app.chat_widget
+                .is_background_attention_turn_for_test("turn")
+        );
+        assert!(
+            app.thread_event_channels[&thread]
+                .store
+                .lock()
+                .await
+                .suppresses_attention_marker(&attention_marker(thread, "turn"))
+        );
     }
     Ok(())
 }
@@ -1386,21 +1593,47 @@ async fn quiet_attention_old_queued_marker_is_rechecked_after_native_refresh() -
     let (mut app, _events, _ops) = make_test_app_with_channels().await;
     let thread = ThreadId::new();
     let session = test_thread_session(thread, app.config.cwd.to_path_buf());
-    app.enqueue_primary_thread_session(session.clone(), Vec::new()).await?;
-    app.enqueue_thread_notification(thread, attention_marker(thread, "turn")).await?;
-    let mut snapshot = app.thread_event_channels[&thread].store.lock().await.snapshot();
+    app.enqueue_primary_thread_session(session.clone(), Vec::new())
+        .await?;
+    app.enqueue_thread_notification(thread, attention_marker(thread, "turn"))
+        .await?;
+    let mut snapshot = app.thread_event_channels[&thread]
+        .store
+        .lock()
+        .await
+        .snapshot();
     assert!(snapshot_has_attention_marker(&snapshot, "turn"));
-    app.apply_refreshed_snapshot_thread(thread, AppServerStartedThread {
-        session, turns: vec![test_turn("turn", TurnStatus::InProgress, vec![quiet_attention_native_user()])],
-        blocks_direct_input: false, task_tools_available: false,
-    }, &mut snapshot).await;
+    app.apply_refreshed_snapshot_thread(
+        thread,
+        AppServerStartedThread {
+            session,
+            turns: vec![test_turn(
+                "turn",
+                TurnStatus::InProgress,
+                vec![quiet_attention_native_user()],
+            )],
+            blocks_direct_input: false,
+            task_tools_available: false,
+        },
+        &mut snapshot,
+    )
+    .await;
     app.replay_thread_snapshot(snapshot, false);
-    assert!(!app.chat_widget.is_background_attention_turn_for_test("turn"));
+    assert!(
+        !app.chat_widget
+            .is_background_attention_turn_for_test("turn")
+    );
     // The cloned marker was already admitted to the native active channel.
     let old = app.active_thread_rx.as_mut().unwrap().recv().await.unwrap();
-    assert!(matches!(&old, ThreadBufferedEvent::Notification(n) if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(_))));
-    app.handle_thread_event_now_recovering_file_changes(old).await;
-    assert!(!app.chat_widget.is_background_attention_turn_for_test("turn"));
+    assert!(
+        matches!(&old, ThreadBufferedEvent::Notification(n) if matches!(n.as_ref(), ServerNotification::AttentionTurnStarted(_)))
+    );
+    app.handle_thread_event_now_recovering_file_changes(old)
+        .await;
+    assert!(
+        !app.chat_widget
+            .is_background_attention_turn_for_test("turn")
+    );
     Ok(())
 }
 
@@ -1409,14 +1642,24 @@ async fn quiet_attention_captured_snapshot_uses_retained_foreground_after_raw_us
     let (mut app, _events, _ops) = make_test_app_with_channels().await;
     let thread = ThreadId::new();
     let session = test_thread_session(thread, app.config.cwd.to_path_buf());
-    let channel = ThreadEventChannel::new_with_session(1, session.clone(), vec![test_turn("turn", TurnStatus::InProgress, Vec::new())]);
+    let channel = ThreadEventChannel::new_with_session(
+        1,
+        session.clone(),
+        vec![test_turn("turn", TurnStatus::InProgress, Vec::new())],
+    );
     let mut stale = {
         let mut store = channel.store.lock().await;
         store.push_notification(attention_marker(thread, "turn"));
         let stale = store.snapshot();
-        store.push_notification(ServerNotification::ItemCompleted(ItemCompletedNotification::new(
-            thread.to_string(), "turn".into(), quiet_attention_native_user(), None, 0,
-        )));
+        store.push_notification(ServerNotification::ItemCompleted(
+            ItemCompletedNotification::new(
+                thread.to_string(),
+                "turn".into(),
+                quiet_attention_native_user(),
+                None,
+                0,
+            ),
+        ));
         store.push_notification(delta(&thread.to_string(), "other", "eviction"));
         assert!(store.suppresses_attention_marker(&attention_marker(thread, "turn")));
         stale
@@ -1424,13 +1667,23 @@ async fn quiet_attention_captured_snapshot_uses_retained_foreground_after_raw_us
     assert!(snapshot_has_attention_marker(&stale, "turn"));
     channel.store.lock().await.active = true;
     app.thread_event_channels.insert(thread, channel);
-    app.apply_refreshed_snapshot_thread(thread, AppServerStartedThread {
-        session, turns: vec![test_turn("turn", TurnStatus::InProgress, Vec::new())],
-        blocks_direct_input: false, task_tools_available: false,
-    }, &mut stale).await;
+    app.apply_refreshed_snapshot_thread(
+        thread,
+        AppServerStartedThread {
+            session,
+            turns: vec![test_turn("turn", TurnStatus::InProgress, Vec::new())],
+            blocks_direct_input: false,
+            task_tools_available: false,
+        },
+        &mut stale,
+    )
+    .await;
     assert!(!snapshot_has_attention_marker(&stale, "turn"));
     app.replay_thread_snapshot(stale, false);
-    assert!(!app.chat_widget.is_background_attention_turn_for_test("turn"));
+    assert!(
+        !app.chat_widget
+            .is_background_attention_turn_for_test("turn")
+    );
 }
 
 async fn quiet_attention_polled_voice(
@@ -1439,14 +1692,22 @@ async fn quiet_attention_polled_voice(
     displayed: crate::backend_id::BackendId,
     notification: ServerNotification,
 ) {
-    app.handle_polled_backend_event(source, displayed, crate::app_server_session::AppServerSessionEvent {
-        backend_id: source.backend_id(),
-        event: codex_app_server_client::AppServerEvent::ServerNotification(Box::new(notification)),
-    }).await;
+    app.handle_polled_backend_event(
+        source,
+        displayed,
+        crate::app_server_session::AppServerSessionEvent {
+            backend_id: source.backend_id(),
+            event: codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
+                notification,
+            )),
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
-async fn quiet_attention_cross_backend_voice_uses_owned_store_in_both_orders_and_live_terminals() -> Result<()> {
+async fn quiet_attention_cross_backend_voice_uses_owned_store_in_both_orders_and_live_terminals()
+-> Result<()> {
     for marker_first in [false, true] {
         for terminal in 0..4 {
             for foreground in [false, true] {
@@ -1456,52 +1717,132 @@ async fn quiet_attention_cross_backend_voice_uses_owned_store_in_both_orders_and
                 app.chat_widget.handle_thread_session_quiet(session.clone());
                 crate::chatwidget::activate_voice_for_thread(&mut app.chat_widget, thread);
                 app.chat_widget.park_voice();
-                let (visible, _, _, _) = crate::chatwidget::tests::make_chatwidget_manual_with_sender().await;
-                app.background_voice = Some(Box::new(std::mem::replace(&mut app.chat_widget, visible)));
+                let (visible, _, _, _) =
+                    crate::chatwidget::tests::make_chatwidget_manual_with_sender().await;
+                app.background_voice =
+                    Some(Box::new(std::mem::replace(&mut app.chat_widget, visible)));
                 let source = crate::start_embedded_app_server_for_picker(&app.config).await?;
                 let displayed = crate::backend_id::BackendId::new();
-                let mut channel = ThreadEventChannel::new_with_session(1, session, vec![test_turn("turn", TurnStatus::InProgress, Vec::new())]);
+                let mut channel = ThreadEventChannel::new_with_session(
+                    1,
+                    session,
+                    vec![test_turn("turn", TurnStatus::InProgress, Vec::new())],
+                );
                 channel.backend_id = Some(source.backend_id());
                 app.thread_event_channels.insert(thread, channel);
                 if marker_first {
-                    quiet_attention_polled_voice(&mut app, &source, displayed, attention_marker(thread, "turn")).await;
+                    quiet_attention_polled_voice(
+                        &mut app,
+                        &source,
+                        displayed,
+                        attention_marker(thread, "turn"),
+                    )
+                    .await;
                 }
                 if foreground {
-                    quiet_attention_polled_voice(&mut app, &source, displayed,
+                    quiet_attention_polled_voice(
+                        &mut app,
+                        &source,
+                        displayed,
                         ServerNotification::ItemCompleted(ItemCompletedNotification::new(
-                            thread.to_string(), "turn".into(), quiet_attention_native_user(), None, 0,
-                        ))).await;
-                    quiet_attention_polled_voice(&mut app, &source, displayed,
-                        delta(&thread.to_string(), "other", "raw-user-eviction")).await;
+                            thread.to_string(),
+                            "turn".into(),
+                            quiet_attention_native_user(),
+                            None,
+                            0,
+                        )),
+                    )
+                    .await;
+                    quiet_attention_polled_voice(
+                        &mut app,
+                        &source,
+                        displayed,
+                        delta(&thread.to_string(), "other", "raw-user-eviction"),
+                    )
+                    .await;
                 }
                 // Establish pending questions after genuine user handling so
                 // terminal classification, not input admission, is the variable.
                 quiet_attention_edit_question(app.background_voice.as_mut().unwrap(), thread);
-                let before = app.background_voice.as_mut().unwrap().capture_thread_input_state().unwrap().questions;
-                quiet_attention_polled_voice(&mut app, &source, displayed, attention_marker(thread, "turn")).await;
-                assert_eq!(app.background_voice.as_ref().unwrap().is_background_attention_turn_for_test("turn"), !foreground);
-                assert_eq!(snapshot_has_attention_marker(&app.thread_event_channels[&thread].store.lock().await.snapshot(), "turn"), !foreground);
+                let before = app
+                    .background_voice
+                    .as_mut()
+                    .unwrap()
+                    .capture_thread_input_state()
+                    .unwrap()
+                    .questions;
+                quiet_attention_polled_voice(
+                    &mut app,
+                    &source,
+                    displayed,
+                    attention_marker(thread, "turn"),
+                )
+                .await;
+                assert_eq!(
+                    app.background_voice
+                        .as_ref()
+                        .unwrap()
+                        .is_background_attention_turn_for_test("turn"),
+                    !foreground
+                );
+                assert_eq!(
+                    snapshot_has_attention_marker(
+                        &app.thread_event_channels[&thread]
+                            .store
+                            .lock()
+                            .await
+                            .snapshot(),
+                        "turn"
+                    ),
+                    !foreground
+                );
                 let event = if terminal == 3 {
                     ServerNotification::Error(codex_app_server_protocol::ErrorNotification {
-                        thread_id: thread.to_string(), turn_id: "turn".into(), will_retry: false,
-                        error: codex_app_server_protocol::TurnError { message: "fixture failure".into(), codex_error_info: None, additional_details: None, misalignment: None },
+                        thread_id: thread.to_string(),
+                        turn_id: "turn".into(),
+                        will_retry: false,
+                        error: codex_app_server_protocol::TurnError {
+                            message: "fixture failure".into(),
+                            codex_error_info: None,
+                            additional_details: None,
+                            misalignment: None,
+                        },
                     })
                 } else {
-                    ServerNotification::TurnCompleted(codex_app_server_protocol::TurnCompletedNotification {
-                        thread_id: thread.to_string(), turn: test_turn("turn", [TurnStatus::Completed, TurnStatus::Interrupted, TurnStatus::Failed][terminal].clone(), Vec::new()),
-                    })
+                    ServerNotification::TurnCompleted(
+                        codex_app_server_protocol::TurnCompletedNotification {
+                            thread_id: thread.to_string(),
+                            turn: test_turn(
+                                "turn",
+                                [
+                                    TurnStatus::Completed,
+                                    TurnStatus::Interrupted,
+                                    TurnStatus::Failed,
+                                ][terminal]
+                                    .clone(),
+                                Vec::new(),
+                            ),
+                        },
+                    )
                 };
                 quiet_attention_polled_voice(&mut app, &source, displayed, event).await;
                 let owner = app.background_voice.as_mut().expect("voice owner retained");
                 let after = owner.capture_thread_input_state().unwrap().questions;
                 if foreground {
                     assert_ne!(after, before);
-                    assert!(owner.composer_text_with_pending().contains("retained answer"));
+                    assert!(
+                        owner
+                            .composer_text_with_pending()
+                            .contains("retained answer")
+                    );
                 } else {
                     assert_eq!(after, before);
                     assert_eq!(owner.composer_text_with_pending(), "main draft");
                 }
-                assert!(app.active_thread_rx.is_none(), "background source must not create active delivery");
+                assert!(
+                    app.active_thread_rx.is_none(),
+                    "background source must not create active delivery"
+                );
                 source.shutdown().await?;
             }
         }
@@ -1510,14 +1851,16 @@ async fn quiet_attention_cross_backend_voice_uses_owned_store_in_both_orders_and
 }
 
 #[tokio::test]
-async fn quiet_attention_cross_backend_missing_or_wrong_channel_never_trusts_marker_or_mutates_visible() -> Result<()> {
+async fn quiet_attention_cross_backend_missing_or_wrong_channel_never_trusts_marker_or_mutates_visible()
+-> Result<()> {
     for missing in [false, true] {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
         let thread = ThreadId::new();
         let session = test_thread_session(thread, app.config.cwd.to_path_buf());
         crate::chatwidget::activate_voice_for_thread(&mut app.chat_widget, thread);
         app.chat_widget.park_voice();
-        let (visible, _, _, _) = crate::chatwidget::tests::make_chatwidget_manual_with_sender().await;
+        let (visible, _, _, _) =
+            crate::chatwidget::tests::make_chatwidget_manual_with_sender().await;
         app.background_voice = Some(Box::new(std::mem::replace(&mut app.chat_widget, visible)));
         app.chat_widget.handle_thread_session_quiet(session.clone()); // colliding visible native ID
         app.chat_widget.handle_paste("visible draft".into());
@@ -1529,8 +1872,19 @@ async fn quiet_attention_cross_backend_missing_or_wrong_channel_never_trusts_mar
             channel.backend_id = Some(displayed);
             app.thread_event_channels.insert(thread, channel);
         }
-        quiet_attention_polled_voice(&mut app, &source, displayed, attention_marker(thread, "turn")).await;
-        assert!(!app.background_voice.as_ref().unwrap().is_background_attention_turn_for_test("turn"));
+        quiet_attention_polled_voice(
+            &mut app,
+            &source,
+            displayed,
+            attention_marker(thread, "turn"),
+        )
+        .await;
+        assert!(
+            !app.background_voice
+                .as_ref()
+                .unwrap()
+                .is_background_attention_turn_for_test("turn")
+        );
         assert_eq!(app.chat_widget.capture_thread_input_state(), visible_before);
         if !missing {
             let store = app.thread_event_channels[&thread].store.lock().await;
@@ -1540,10 +1894,15 @@ async fn quiet_attention_cross_backend_missing_or_wrong_channel_never_trusts_mar
         }
         assert!(!app.reconnect.offline);
         // Existing degraded nonmarker lifecycle remains admitted without a channel.
-        quiet_attention_polled_voice(&mut app, &source, displayed,
+        quiet_attention_polled_voice(
+            &mut app,
+            &source,
+            displayed,
             ServerNotification::ThreadClosed(codex_app_server_protocol::ThreadClosedNotification {
                 thread_id: thread.to_string(),
-            })).await;
+            }),
+        )
+        .await;
         assert!(app.voice_owner_thread_id().is_none());
         source.shutdown().await?;
     }

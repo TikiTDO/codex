@@ -1339,6 +1339,25 @@ fn insert_definition(
             return Ok(());
         }
 
+        // Schemars adds root-only metadata when the same native type is exported
+        // independently and nested in another response. Keep one canonical
+        // definition, including its SDK-visible title, without relaxing any
+        // structural or nested-metadata collision check.
+        if let (Some(existing_body), Some(new_body)) = (
+            schema_definition_body_without_root_metadata(&name, existing),
+            schema_definition_body_without_root_metadata(&name, &schema),
+        ) && existing_body == new_body
+        {
+            let mut canonical = existing.clone();
+            for key in ["$schema", "title"] {
+                if let Some(value) = schema.get(key) {
+                    canonical[key] = value.clone();
+                }
+            }
+            definitions.insert(name, canonical);
+            return Ok(());
+        }
+
         let existing_title = existing
             .get("title")
             .and_then(Value::as_str)
@@ -1354,6 +1373,22 @@ fn insert_definition(
 
     definitions.insert(name, schema);
     Ok(())
+}
+
+fn schema_definition_body_without_root_metadata(name: &str, schema: &Value) -> Option<Value> {
+    let mut body = schema.as_object()?.clone();
+    if body
+        .get("title")
+        .is_some_and(|title| title.as_str() != Some(name))
+        || body.get("$schema").is_some_and(|dialect| {
+            dialect.as_str() != Some("http://json-schema.org/draft-07/schema#")
+        })
+    {
+        return None;
+    }
+    body.remove("title");
+    body.remove("$schema");
+    Some(Value::Object(body))
 }
 
 fn write_json_schema_with_return<T>(out_dir: &Path, name: &str) -> Result<GeneratedSchema>
@@ -2171,6 +2206,132 @@ fn index_ts_entries(paths: &[&Path], has_v2_ts: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_attention_root_and_nested_definitions_compose_in_either_order() -> Result<()> {
+        let list = serde_json::to_value(schema_for!(crate::ThreadAttentionListResponse))?;
+        for (name, mut root) in [
+            (
+                "ThreadAttentionResponse",
+                serde_json::to_value(schema_for!(crate::ThreadAttentionResponse))?,
+            ),
+            (
+                "ThreadAttentionNotification",
+                serde_json::to_value(schema_for!(crate::ThreadAttentionNotification))?,
+            ),
+        ] {
+            // This is the same extraction performed by build_schema_bundle.
+            root.as_object_mut()
+                .context("root schema object")?
+                .remove("definitions");
+            let nested = list["definitions"][name].clone();
+            assert!(
+                nested.is_object(),
+                "actual shared native definition missing: {name}"
+            );
+            assert_eq!(root["title"], name);
+            assert!(nested.get("title").is_none());
+            for (first, second) in [(root.clone(), nested.clone()), (nested, root.clone())] {
+                let mut definitions = Map::new();
+                insert_into_namespace(&mut definitions, "v2", name.to_string(), first)?;
+                insert_into_namespace(&mut definitions, "v2", name.to_string(), second)?;
+                assert_eq!(definitions["v2"][name], root);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn root_metadata_composition_preserves_structural_collision_rejection() -> Result<()> {
+        let root = serde_json::json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "title": "Example",
+            "description": "Original definition.",
+            "type": "object",
+            "properties": {"value": {"type": "string", "title": "NestedValue"}},
+            "required": ["value"],
+            "additionalProperties": false
+        });
+        let mut nested = root.clone();
+        nested.as_object_mut().context("object")?.remove("title");
+        nested.as_object_mut().context("object")?.remove("$schema");
+        for (first, second) in [
+            (root.clone(), nested.clone()),
+            (nested.clone(), root.clone()),
+        ] {
+            let mut definitions = Map::new();
+            insert_definition(&mut definitions, "Example".to_string(), first, "fixture")?;
+            insert_definition(&mut definitions, "Example".to_string(), second, "fixture")?;
+            assert_eq!(definitions["Example"], root);
+        }
+        let mut mismatches = Vec::new();
+        for (pointer, value) in [
+            ("/properties/value/type", serde_json::json!("integer")),
+            (
+                "/properties/value/title",
+                serde_json::json!("DifferentNestedTitle"),
+            ),
+            ("/required", serde_json::json!([])),
+            ("/additionalProperties", serde_json::json!(true)),
+            ("/description", serde_json::json!("Different definition.")),
+        ] {
+            let mut different = nested.clone();
+            *different
+                .pointer_mut(pointer)
+                .context("existing fixture field")? = value;
+            mismatches.push(different);
+        }
+        for (key, value) in [
+            ("title", serde_json::json!("OtherSdkName")),
+            ("title", serde_json::json!(false)),
+            (
+                "$schema",
+                serde_json::json!("https://json-schema.org/draft/2020-12/schema"),
+            ),
+            ("$schema", serde_json::json!(false)),
+            ("$ref", serde_json::json!("#/definitions/Other")),
+            ("$id", serde_json::json!("different-identity")),
+            (
+                "oneOf",
+                serde_json::json!([{"type": "string"}, {"type": "number"}]),
+            ),
+        ] {
+            let mut different = nested.clone();
+            different
+                .as_object_mut()
+                .context("object")?
+                .insert(key.to_string(), value);
+            mismatches.push(different);
+        }
+        mismatches.extend([serde_json::json!(false), serde_json::json!([])]);
+        for different in mismatches {
+            for (first, second) in [(root.clone(), different.clone()), (different, root.clone())] {
+                let mut definitions = Map::new();
+                insert_definition(&mut definitions, "Example".to_string(), first, "fixture")?;
+                let before = definitions.clone();
+                let err =
+                    insert_definition(&mut definitions, "Example".to_string(), second, "fixture")
+                        .expect_err(
+                            "unequal structure or noncanonical metadata must still collide",
+                        );
+                assert!(err.to_string().contains("schema definition collision"));
+                assert_eq!(
+                    definitions, before,
+                    "rejected collision must not mutate its owner"
+                );
+            }
+        }
+        let union =
+            serde_json::json!({"title":"Choice","oneOf":[{"type":"string"},{"type":"number"}]});
+        let reordered = serde_json::json!({"oneOf":[{"type":"number"},{"type":"string"}]});
+        let mut definitions = Map::new();
+        insert_definition(&mut definitions, "Choice".to_string(), union, "fixture")?;
+        assert!(
+            insert_definition(&mut definitions, "Choice".to_string(), reordered, "fixture")
+                .is_err()
+        );
+        Ok(())
+    }
     use crate::protocol::v2;
     use crate::schema_fixtures::read_schema_fixture_subtree;
     use anyhow::Context;

@@ -1059,14 +1059,22 @@ pub(super) async fn restore_attention_after_resume(
     let state = thread_state_manager.thread_state(conversation_id).await;
     let active_turn_id = {
         let state = state.lock().await;
-        foreground.extend(state.active_turn_snapshot_with_items_view(TurnItemsView::Summary)
-            .filter(|turn| turn.items.iter().any(|item|
-                matches!(item.payload, ThreadItemPayload::UserMessage { .. })))
-            .map(|turn| turn.id));
+        foreground.extend(
+            state
+                .active_turn_snapshot_with_items_view(TurnItemsView::Summary)
+                .filter(|turn| {
+                    turn.items
+                        .iter()
+                        .any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. }))
+                })
+                .map(|turn| turn.id),
+        );
         state.active_turn_id().map(str::to_owned)
     };
     let markers = match presentation {
-        Ok(presentation) => attention_resume_markers(conversation_id, presentation, foreground, active_turn_id),
+        Ok(presentation) => {
+            attention_resume_markers(conversation_id, presentation, foreground, active_turn_id)
+        }
         Err(error) => {
             tracing::warn!(%error, thread_id = %conversation_id, "native attention source/view unavailable");
             None
@@ -1074,21 +1082,33 @@ pub(super) async fn restore_attention_after_resume(
     };
     if let Some(markers) = markers {
         for marker in markers {
-            outgoing.send_server_notification_to_connections(
-                &[connection_id], ServerNotification::AttentionTurnStarted(marker),
-            ).await;
+            outgoing
+                .send_server_notification_to_connections(
+                    &[connection_id],
+                    ServerNotification::AttentionTurnStarted(marker),
+                )
+                .await;
         }
     } else {
         tracing::warn!(thread_id = %conversation_id, "attention resume native presentation unavailable");
-        send_thread_warning(outgoing, thread_state_manager, conversation_id,
-            "Runtime attention notice history could not be restored; coverage is incomplete.".to_owned()).await;
+        send_thread_warning(
+            outgoing,
+            thread_state_manager,
+            conversation_id,
+            "Runtime attention notice history could not be restored; coverage is incomplete."
+                .to_owned(),
+        )
+        .await;
     }
     match conversation.attention_snapshot().await {
         Ok(notices) => {
             for notice in notices {
-                outgoing.send_server_notification_to_connections(
-                    &[connection_id], ServerNotification::ThreadAttention(notice),
-                ).await;
+                outgoing
+                    .send_server_notification_to_connections(
+                        &[connection_id],
+                        ServerNotification::ThreadAttention(notice),
+                    )
+                    .await;
             }
         }
         Err(error) => {
@@ -1141,9 +1161,13 @@ pub(super) async fn handle_pending_thread_resume_request(
             state.active_turn_metadata_snapshot(),
             active_turn,
             active_page_params,
-            state.active_turn_snapshot_with_items_view(TurnItemsView::Summary)
-                .filter(|turn| turn.items.iter().any(|item|
-                    matches!(item.payload, ThreadItemPayload::UserMessage { .. })))
+            state
+                .active_turn_snapshot_with_items_view(TurnItemsView::Summary)
+                .filter(|turn| {
+                    turn.items
+                        .iter()
+                        .any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. }))
+                })
                 .map(|turn| turn.id),
         )
     };
@@ -1250,11 +1274,17 @@ pub(super) async fn handle_pending_thread_resume_request(
     }
     // Classification uses typed native evidence independently of the client's
     // requested history view/redaction. Summary retains the first UserMessage.
-    let mut attention_foreground = thread.turns.iter()
+    let mut attention_foreground = thread
+        .turns
+        .iter()
         .chain(initial_turns_page.iter().flat_map(|page| page.data.iter()))
-        .filter(|turn| turn.items.iter().any(|item|
-            matches!(item.payload, ThreadItemPayload::UserMessage { .. })))
-        .map(|turn| turn.id.clone()).collect::<HashSet<_>>();
+        .filter(|turn| {
+            turn.items
+                .iter()
+                .any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. }))
+        })
+        .map(|turn| turn.id.clone())
+        .collect::<HashSet<_>>();
     attention_foreground.extend(active_foreground);
     if pending.redact_resume_payloads {
         redact_thread_resume_payloads(&mut thread.turns);
@@ -1380,9 +1410,14 @@ pub(super) async fn handle_pending_thread_resume_request(
         .replay_requests_to_connection_for_thread(connection_id, conversation_id)
         .await;
     restore_attention_after_resume(
-        conversation_id, conversation.as_ref(), connection_id,
-        thread_state_manager, outgoing, attention_foreground,
-    ).await;
+        conversation_id,
+        conversation.as_ref(),
+        connection_id,
+        thread_state_manager,
+        outgoing,
+        attention_foreground,
+    )
+    .await;
     // App-server owns resume response and snapshot ordering, so wait until
     // replay completes before letting extensions react to the idle thread.
     conversation

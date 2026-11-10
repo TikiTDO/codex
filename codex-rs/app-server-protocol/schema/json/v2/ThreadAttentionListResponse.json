@@ -1,0 +1,153 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadAttentionDelivery": {
+      "enum": [
+        "started",
+        "buffered"
+      ],
+      "type": "string"
+    },
+    "ThreadAttentionHeldReason": {
+      "oneOf": [
+        {
+          "enum": [
+            "blockingRequest",
+            "busy",
+            "planMode",
+            "pendingTriggerTurn",
+            "serverDraining"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A durable intent exists but no final receipt survived. Never retry it blindly.",
+          "enum": [
+            "admissionUncertain"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ThreadAttentionNotification": {
+      "description": "A thread-scoped notice persists independently of model-visible messages.",
+      "properties": {
+        "admission": {
+          "$ref": "#/definitions/ThreadAttentionResponse"
+        },
+        "batchId": {
+          "type": "string"
+        },
+        "origins": {
+          "items": {
+            "$ref": "#/definitions/ThreadAttentionOrigin"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "admission",
+        "batchId",
+        "origins",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadAttentionOrigin": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/ThreadAttentionOriginKind"
+        },
+        "sender": {
+          "description": "A routing label, never authentication or operator authority.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "sourceRef"
+      ],
+      "type": "object"
+    },
+    "ThreadAttentionOriginKind": {
+      "enum": [
+        "peer",
+        "desk",
+        "deskComment",
+        "monitor",
+        "periodic"
+      ],
+      "type": "string"
+    },
+    "ThreadAttentionResponse": {
+      "oneOf": [
+        {
+          "description": "Context admission only, not model consumption or operator authorization.",
+          "properties": {
+            "delivery": {
+              "$ref": "#/definitions/ThreadAttentionDelivery"
+            },
+            "status": {
+              "enum": [
+                "accepted"
+              ],
+              "type": "string"
+            },
+            "turnId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "delivery",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "$ref": "#/definitions/ThreadAttentionHeldReason"
+            },
+            "status": {
+              "enum": [
+                "held"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "status"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "properties": {
+    "notices": {
+      "items": {
+        "$ref": "#/definitions/ThreadAttentionNotification"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "notices"
+  ],
+  "title": "ThreadAttentionListResponse",
+  "type": "object"
+}

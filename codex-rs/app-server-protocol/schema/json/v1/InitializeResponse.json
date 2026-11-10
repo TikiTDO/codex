@@ -4,9 +4,34 @@
     "AbsolutePathBuf": {
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
+    },
+    "ThreadAttentionCapabilities": {
+      "description": "Versioned native route. Absence in initialize means unsupported, never a license to substitute ordinary user input.",
+      "properties": {
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "type": "object"
     }
   },
   "properties": {
+    "attention": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadAttentionCapabilities"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Supported native attention protocol, independent of client turn labels."
+    },
     "codexHome": {
       "allOf": [
         {

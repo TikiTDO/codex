@@ -667,6 +667,30 @@
             },
             "method": {
               "enum": [
+                "thread/context/clear"
+              ],
+              "title": "Thread/context/clearRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadContextClearParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/context/clearRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/shellCommand"
               ],
               "title": "Thread/shellCommandRequestMethod",
@@ -971,6 +995,56 @@
             "params"
           ],
           "title": "Thread/injectItemsRequest",
+          "type": "object"
+        },
+        {
+          "description": "Admit bounded runtime source references without submitting user input.",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/attention"
+              ],
+              "title": "Thread/attentionRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadAttentionParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/attentionRequest",
+          "type": "object"
+        },
+        {
+          "description": "Reconnect/cold-resume snapshot, independent of user-message history.",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/attention/list"
+              ],
+              "title": "Thread/attention/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadAttentionListParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/attention/listRequest",
           "type": "object"
         },
         {
@@ -3482,6 +3556,17 @@
     "InitializeResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadAttentionCapabilities"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Supported native attention protocol, independent of client turn labels."
+        },
         "codexHome": {
           "allOf": [
             {
@@ -4706,6 +4791,46 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/attention"
+              ],
+              "title": "Thread/attentionNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadAttentionNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/attentionNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "attention/turn/started"
+              ],
+              "title": "Attention/turn/startedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AttentionTurnStartedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Attention/turn/startedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/status/changed"
               ],
               "title": "Thread/status/changedNotificationMethod",
@@ -5872,6 +5997,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/context/cleared"
+              ],
+              "title": "Thread/context/clearedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ContextClearedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/context/clearedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "model/rerouted"
               ],
               "title": "Model/reroutedNotificationMethod",
@@ -6654,6 +6799,20 @@
         }
       ],
       "title": "ServerRequest"
+    },
+    "ThreadAttentionCapabilities": {
+      "description": "Versioned native route. Absence in initialize means unsupported, never a license to substitute ordinary user input.",
+      "properties": {
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "type": "object"
     },
     "ToolRequestUserInputAnswer": {
       "description": "EXPERIMENTAL. Captures a user's answer to a request_user_input question.",
@@ -8263,6 +8422,24 @@
         ],
         "type": "object"
       },
+      "AttentionTurnStartedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Core emits this before spawning an idle attention task. It is provenance, not an admission receipt, and cannot be supplied through a turn-trigger label.",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId",
+          "turnId"
+        ],
+        "title": "AttentionTurnStartedNotification",
+        "type": "object"
+      },
       "AuthMode": {
         "description": "Authentication mode for OpenAI-backed providers.",
         "oneOf": [
@@ -8734,6 +8911,7 @@
               "unauthorized",
               "badRequest",
               "threadRollbackFailed",
+              "contextClearFailed",
               "sandboxError",
               "other"
             ],
@@ -9436,6 +9614,27 @@
         "required": [
           "name"
         ],
+        "type": "object"
+      },
+      "CompactionInput": {
+        "description": "Caller controls for one compaction; original rollout items remain append-only.",
+        "properties": {
+          "discardImages": {
+            "description": "Omit inline image bodies from the compactor input and installed compacted history. The original transcript remains unchanged.",
+            "type": "boolean"
+          },
+          "instructions": {
+            "description": "Additional instructions for what the compacted context should preserve, summarize, or otherwise emphasize.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retryWebsocket": {
+            "description": "After a successful compaction, allow the next model request to try the Responses WebSocket transport again. A failed attempt returns the session to sticky HTTP fallback; this does not enable automatic retries.",
+            "type": "boolean"
+          }
+        },
         "type": "object"
       },
       "ComputerUseConfig": {
@@ -11037,6 +11236,19 @@
             "type": "object"
           }
         ]
+      },
+      "ContextClearedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ContextClearedNotification",
+        "type": "object"
       },
       "ContextCompactedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -22264,6 +22476,201 @@
         "title": "ThreadAttachmentUpdatedNotification",
         "type": "object"
       },
+      "ThreadAttentionDelivery": {
+        "enum": [
+          "started",
+          "buffered"
+        ],
+        "type": "string"
+      },
+      "ThreadAttentionHeldReason": {
+        "oneOf": [
+          {
+            "enum": [
+              "blockingRequest",
+              "busy",
+              "planMode",
+              "pendingTriggerTurn",
+              "serverDraining"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A durable intent exists but no final receipt survived. Never retry it blindly.",
+            "enum": [
+              "admissionUncertain"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ThreadAttentionListParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadAttentionListParams",
+        "type": "object"
+      },
+      "ThreadAttentionListResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "notices": {
+            "items": {
+              "$ref": "#/definitions/v2/ThreadAttentionNotification"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "notices"
+        ],
+        "title": "ThreadAttentionListResponse",
+        "type": "object"
+      },
+      "ThreadAttentionNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "A thread-scoped notice persists independently of model-visible messages.",
+        "properties": {
+          "admission": {
+            "$ref": "#/definitions/v2/ThreadAttentionResponse"
+          },
+          "batchId": {
+            "type": "string"
+          },
+          "origins": {
+            "items": {
+              "$ref": "#/definitions/v2/ThreadAttentionOrigin"
+            },
+            "type": "array"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "admission",
+          "batchId",
+          "origins",
+          "threadId"
+        ],
+        "title": "ThreadAttentionNotification",
+        "type": "object"
+      },
+      "ThreadAttentionOrigin": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/definitions/v2/ThreadAttentionOriginKind"
+          },
+          "sender": {
+            "description": "A routing label, never authentication or operator authority.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sourceRef": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "sourceRef"
+        ],
+        "type": "object"
+      },
+      "ThreadAttentionOriginKind": {
+        "enum": [
+          "peer",
+          "desk",
+          "deskComment",
+          "monitor",
+          "periodic"
+        ],
+        "type": "string"
+      },
+      "ThreadAttentionParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "batchId": {
+            "description": "Stable id for this exact captured batch; retries retain it.",
+            "type": "string"
+          },
+          "origins": {
+            "items": {
+              "$ref": "#/definitions/v2/ThreadAttentionOrigin"
+            },
+            "type": "array"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "batchId",
+          "origins",
+          "threadId"
+        ],
+        "title": "ThreadAttentionParams",
+        "type": "object"
+      },
+      "ThreadAttentionResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "oneOf": [
+          {
+            "description": "Context admission only, not model consumption or operator authorization.",
+            "properties": {
+              "delivery": {
+                "$ref": "#/definitions/v2/ThreadAttentionDelivery"
+              },
+              "status": {
+                "enum": [
+                  "accepted"
+                ],
+                "type": "string"
+              },
+              "turnId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "delivery",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "reason": {
+                "$ref": "#/definitions/v2/ThreadAttentionHeldReason"
+              },
+              "status": {
+                "enum": [
+                  "held"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "status"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "ThreadAttentionResponse"
+      },
       "ThreadClosedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -22280,6 +22687,16 @@
       "ThreadCompactStartParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "input": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/CompactionInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "threadId": {
             "type": "string"
           }
@@ -22293,6 +22710,25 @@
       "ThreadCompactStartResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "ThreadCompactStartResponse",
+        "type": "object"
+      },
+      "ThreadContextClearParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Clear the thread's effective context back to fresh initial context. Accepted only while the thread is idle; the rollout keeps every earlier item. Success arrives as `thread/context/cleared`, refusal as an error notification with `contextClearFailed`.",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadContextClearParams",
+        "type": "object"
+      },
+      "ThreadContextClearResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ThreadContextClearResponse",
         "type": "object"
       },
       "ThreadDeleteParams": {

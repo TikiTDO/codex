@@ -393,7 +393,10 @@ async fn freeform_async_message_emits_an_item_without_ending_the_turn(
         .iter()
         .find(|tool| tool["name"] == "request_user_input_async")
         .expect("question tool is still directly available");
-    assert_eq!(question_tool["description"], "Questions only.");
+    assert_eq!(
+        question_tool["description"],
+        codex_prompts::with_repository_question_routing("Questions only.")
+    );
     assert_eq!(
         requests[1].function_call_output_text(CALL_ID),
         Some(r#"{"accepted":true}"#.to_string())
@@ -584,7 +587,10 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
             .iter()
             .find(|tool| tool["type"] == "function" && tool["name"] == "request_user_input_async")
             .expect("the async message tool should be directly visible to the model");
-        assert_eq!(tool["description"], expected_description);
+        assert_eq!(
+            tool["description"],
+            codex_prompts::with_repository_question_routing(&expected_description)
+        );
         assert_eq!(tool["strict"], false);
         if let Some(expected_parameters) = expected_parameters {
             assert_eq!(

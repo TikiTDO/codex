@@ -25,7 +25,7 @@ fn request_user_input_tool_includes_questions_schema() {
         create_request_user_input_tool("Ask the user to choose.".to_string()),
         ToolSpec::Function(ResponsesApiTool {
             name: "request_user_input".to_string(),
-            description: "Ask the user to choose.".to_string(),
+            description: with_repository_question_routing("Ask the user to choose."),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(BTreeMap::from([
@@ -106,6 +106,35 @@ fn request_user_input_tool_includes_questions_schema() {
             output_schema: None,
         })
     );
+}
+
+#[test]
+fn request_user_input_final_description_preserves_catalog_text_and_native_shape() {
+    for description in ["", "  Catalog description.  ", "Catalog description.\n"] {
+        let tool = create_request_user_input_tool(description.to_string());
+        let serialized = serde_json::to_value(&tool).expect("serializable final tool");
+        assert_eq!(
+            serialized["description"],
+            format!(
+                "{description}\n\n{}",
+                codex_prompts::REPOSITORY_QUESTION_ROUTING
+            )
+        );
+        assert_eq!(serialized["name"], REQUEST_USER_INPUT_TOOL_NAME);
+        assert_eq!(serialized["type"], "function");
+        assert_eq!(serialized["strict"], false);
+        assert_eq!(
+            serialized["parameters"]["required"],
+            serde_json::json!(["questions"])
+        );
+        assert_eq!(serialized["parameters"]["additionalProperties"], false);
+        assert!(serialized.get("defer_loading").is_none());
+        let ToolSpec::Function(function) = tool else {
+            panic!("expected function")
+        };
+        assert_eq!(function.defer_loading, None);
+        assert_eq!(function.output_schema, None);
+    }
 }
 
 #[test]

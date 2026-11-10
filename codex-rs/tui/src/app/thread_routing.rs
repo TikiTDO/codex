@@ -1065,7 +1065,11 @@ impl App {
         let Some(channel) = self.thread_event_channels.get(&thread_id) else {
             return false;
         };
-        channel.store.lock().await.suppresses_attention_marker(notification)
+        channel
+            .store
+            .lock()
+            .await
+            .suppresses_attention_marker(notification)
     }
 
     pub(super) async fn enqueue_thread_notification(
@@ -1076,7 +1080,10 @@ impl App {
         // A historical marker must not overwrite known genuine input in either
         // the active recipient or the parked voice widget. App owns this enqueue
         // path exclusively; use the same store verdict as snapshot reconstruction.
-        if self.suppresses_thread_attention_marker(thread_id, &notification).await {
+        if self
+            .suppresses_thread_attention_marker(thread_id, &notification)
+            .await
+        {
             return Ok(());
         }
         self.deliver_background_voice_notification(thread_id, &notification);
@@ -1684,9 +1691,11 @@ impl App {
             store.rebase_buffer_after_session_refresh();
             // This snapshot may predate a genuine input whose raw event has
             // since left the buffer. The retained native-horizon verdict wins.
-            snapshot.events.retain(|event| !matches!(event,
+            snapshot.events.retain(|event| {
+                !matches!(event,
                 ThreadBufferedEvent::Notification(notification)
-                    if store.suppresses_attention_marker(notification)));
+                    if store.suppresses_attention_marker(notification))
+            });
             snapshot.active_reasoning_item = store.active_reasoning_item.clone();
         }
         snapshot.session = Some(session);

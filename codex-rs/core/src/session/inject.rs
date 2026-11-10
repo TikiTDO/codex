@@ -47,11 +47,10 @@ impl Session {
             return Err(ThreadAttentionHeldReason::ServerDraining);
         };
         let mut active = self.active_turn.lock().await;
-        let Some(active_task) = active
-            .as_ref()
-            .filter(|turn| turn.finishing.is_none())
-            .and_then(|turn| turn.task.as_ref())
-        else {
+        let Some(active_turn) = active.as_mut().filter(|turn| turn.finishing.is_none()) else {
+            return Err(ThreadAttentionHeldReason::Busy);
+        };
+        let Some(active_task) = active_turn.task.as_ref() else {
             return Err(ThreadAttentionHeldReason::Busy);
         };
         if active_task.kind != crate::state::TaskKind::Regular
@@ -60,11 +59,7 @@ impl Session {
             return Err(ThreadAttentionHeldReason::Busy);
         }
         let turn_id = active_task.turn_context.sub_id.clone();
-        let turn_state = active
-            .as_mut()
-            .expect("checked active task")
-            .turn_state
-            .as_ref();
+        let turn_state = active_turn.turn_state.as_ref();
         // Quiet context waits for the next ordinary consumption boundary. It
         // neither signals Steer activity nor accepts another mailbox's delivery.
         self.input_queue

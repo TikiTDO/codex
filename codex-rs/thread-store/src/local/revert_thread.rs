@@ -202,8 +202,12 @@ impl UnpublishedReplacement {
         }))
     }
 
-    fn into_closed(mut self) -> RolloutRecorder {
-        self.recorder.take().expect("replacement still owned")
+    fn into_closed(mut self) -> ThreadStoreResult<RolloutRecorder> {
+        self.recorder
+            .take()
+            .ok_or_else(|| ThreadStoreError::Internal {
+                message: "unpublished replacement recorder unavailable".to_string(),
+            })
     }
 }
 
@@ -224,7 +228,9 @@ async fn prepare_replacement(
     let recorder = replacement
         .recorder
         .as_ref()
-        .expect("replacement still owned");
+        .ok_or_else(|| ThreadStoreError::Internal {
+            message: "unpublished replacement recorder unavailable".to_string(),
+        })?;
     let result = async {
         recorder.persist().await.map_err(thread_store_io_error)?;
         stage_replacement_receipts(recorder, preserved_receipts).await?;
@@ -253,7 +259,7 @@ async fn prepare_replacement(
     // Disarm BEFORE submitting CAS: a cancelled SQL await can still commit.
     // Canonical discovery now sees only the complete, synchronized receipt state.
     // Cleanup owns only the staging name, including a cancelled rename await.
-    Ok(replacement.into_closed())
+    replacement.into_closed()
 }
 
 /// Called only after the staged header has been materialized. Receipt write and

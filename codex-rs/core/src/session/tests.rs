@@ -13961,7 +13961,8 @@ async fn canonical_attention_retryable_hold_keeps_binding_and_context_clear_keep
 
 #[tokio::test]
 async fn canonical_attention_dispatch_settles_after_waiter_drop_and_stops_behind_shutdown() {
-    use codex_protocol::attention::{AttentionError, ThreadAttentionResponse};
+    use codex_protocol::attention::AttentionError;
+    use codex_protocol::attention::ThreadAttentionResponse;
     for shutdown_first in [false, true] {
         let (mut session, _, events) = make_session_and_context_with_rx().await;
         let path = open_thread_persistence(
@@ -14088,7 +14089,8 @@ async fn canonical_attention_intent_write_failure_never_starts_a_turn_or_frees_s
 
 #[tokio::test]
 async fn canonical_attention_concurrent_duplicate_and_overlap_admit_once() {
-    use codex_protocol::attention::{AttentionError, ThreadAttentionResponse};
+    use codex_protocol::attention::AttentionError;
+    use codex_protocol::attention::ThreadAttentionResponse;
     let (mut session, _, events) = make_session_and_context_with_rx().await;
     let path = open_thread_persistence(
         Arc::get_mut(&mut session).expect("unique attention fixture session"),
@@ -14137,7 +14139,8 @@ async fn canonical_attention_concurrent_duplicate_and_overlap_admit_once() {
 
 #[tokio::test]
 async fn canonical_attention_channel_close_closes_ledger_and_settles_prior_request() {
-    use codex_protocol::attention::{AttentionError, ThreadAttentionResponse};
+    use codex_protocol::attention::AttentionError;
+    use codex_protocol::attention::ThreadAttentionResponse;
     let (mut session, _, events) = make_session_and_context_with_rx().await;
     let path = open_thread_persistence(
         Arc::get_mut(&mut session).expect("unique attention fixture session"),

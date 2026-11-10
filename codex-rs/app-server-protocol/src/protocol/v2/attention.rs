@@ -62,7 +62,9 @@ mod tests {
 
     #[test]
     fn quiet_attention_routes_share_exact_thread_serialization() {
-        use crate::{ClientRequest, ClientRequestSerializationScope, RequestId};
+        use crate::ClientRequest;
+        use crate::ClientRequestSerializationScope;
+        use crate::RequestId;
         let params = request();
         let expected = Some(ClientRequestSerializationScope::Thread {
             thread_id: params.thread_id.clone(),
@@ -87,12 +89,28 @@ mod tests {
             "userAgent": "old-server", "codexHome": "/tmp/codex",
             "platformFamily": "unix", "platformOs": "linux",
         });
-        let mut response: crate::InitializeResponse = serde_json::from_value(old).unwrap();
-        assert_eq!(response.attention, None);
-        response.attention = Some(ThreadAttentionCapabilities { version: 1 });
-        let roundtrip: crate::InitializeResponse =
-            serde_json::from_value(serde_json::to_value(response.clone()).unwrap()).unwrap();
-        assert_eq!(roundtrip.attention, response.attention);
+        let mut explicit_null = old.clone();
+        explicit_null["attention"] = serde_json::Value::Null;
+        for input in [old.clone(), explicit_null] {
+            let mut response: crate::InitializeResponse = serde_json::from_value(input).unwrap();
+            assert_eq!(response.attention, None);
+            assert_eq!(serde_json::to_value(&response).unwrap(), old);
+            response.attention = Some(ThreadAttentionCapabilities { version: 1 });
+            let mut supported = old.clone();
+            supported["attention"] = serde_json::json!({"version": 1});
+            assert_eq!(serde_json::to_value(&response).unwrap(), supported);
+            let roundtrip: crate::InitializeResponse = serde_json::from_value(supported).unwrap();
+            assert_eq!(roundtrip, response);
+        }
+        let declaration = crate::InitializeResponse::decl();
+        assert!(
+            declaration.contains("attention?: ThreadAttentionCapabilities,"),
+            "{declaration}"
+        );
+        assert!(
+            !declaration.contains("attention?: ThreadAttentionCapabilities | null"),
+            "{declaration}"
+        );
     }
 
     fn request() -> ThreadAttentionParams {

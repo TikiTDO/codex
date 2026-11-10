@@ -120,7 +120,7 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
         ev_rate_limits(),
         ev_completed("resp-1"),
     ]);
-    responses::mount_sse_once(&server, first_response).await;
+    let first_mock = responses::mount_sse_once(&server, first_response).await;
 
     let second_response = sse(vec![
         ev_assistant_message("msg-1", "thanks"),
@@ -165,6 +165,23 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
     assert_eq!(request.is_blocking, expected_is_blocking);
     assert_eq!(request.auto_resolution_ms, None);
     assert_eq!(request.questions[0].is_other, true);
+    let body = first_mock.single_request().body_json();
+    let tool = body["tools"]
+        .as_array()
+        .expect("model tools")
+        .iter()
+        .find(|tool| tool["name"] == "request_user_input")
+        .expect("final question descriptor reaches model");
+    let description = tool["description"].as_str().expect("tool description");
+    assert!(description.ends_with(codex_prompts::REPOSITORY_QUESTION_ROUTING));
+    assert_eq!(
+        description
+            .matches(codex_prompts::REPOSITORY_QUESTION_ROUTING)
+            .count(),
+        1
+    );
+    assert_eq!(tool["strict"], false);
+    assert_eq!(tool["parameters"]["required"], json!(["questions"]));
     assert!(
         timeout(Duration::from_millis(200), async {
             loop {

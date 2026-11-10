@@ -520,6 +520,27 @@
       ],
       "type": "object"
     },
+    "CompactionInput": {
+      "description": "Caller controls for one compaction; original rollout items remain append-only.",
+      "properties": {
+        "discardImages": {
+          "description": "Omit inline image bodies from the compactor input and installed compacted history. The original transcript remains unchanged.",
+          "type": "boolean"
+        },
+        "instructions": {
+          "description": "Additional instructions for what the compacted context should preserve, summarize, or otherwise emphasize.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retryWebsocket": {
+          "description": "After a successful compaction, allow the next model request to try the Responses WebSocket transport again. A failed attempt returns the session to sticky HTTP fallback; this does not enable automatic retries.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "ConfigBatchWriteParams": {
       "properties": {
         "edits": {
@@ -4540,7 +4561,98 @@
       ],
       "type": "object"
     },
+    "ThreadAttentionListParams": {
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadAttentionOrigin": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/ThreadAttentionOriginKind"
+        },
+        "sender": {
+          "description": "A routing label, never authentication or operator authority.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "sourceRef"
+      ],
+      "type": "object"
+    },
+    "ThreadAttentionOriginKind": {
+      "enum": [
+        "peer",
+        "desk",
+        "deskComment",
+        "monitor",
+        "periodic"
+      ],
+      "type": "string"
+    },
+    "ThreadAttentionParams": {
+      "additionalProperties": false,
+      "properties": {
+        "batchId": {
+          "description": "Stable id for this exact captured batch; retries retain it.",
+          "type": "string"
+        },
+        "origins": {
+          "items": {
+            "$ref": "#/definitions/ThreadAttentionOrigin"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "batchId",
+        "origins",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadCompactStartParams": {
+      "properties": {
+        "input": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CompactionInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadContextClearParams": {
+      "description": "Clear the thread's effective context back to fresh initial context. Accepted only while the thread is idle; the rollout keeps every earlier item. Success arrives as `thread/context/cleared`, refusal as an error notification with `contextClearFailed`.",
       "properties": {
         "threadId": {
           "type": "string"
@@ -6822,6 +6934,30 @@
         },
         "method": {
           "enum": [
+            "thread/context/clear"
+          ],
+          "title": "Thread/context/clearRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadContextClearParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/context/clearRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
             "thread/shellCommand"
           ],
           "title": "Thread/shellCommandRequestMethod",
@@ -7126,6 +7262,56 @@
         "params"
       ],
       "title": "Thread/injectItemsRequest",
+      "type": "object"
+    },
+    {
+      "description": "Admit bounded runtime source references without submitting user input.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/attention"
+          ],
+          "title": "Thread/attentionRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadAttentionParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/attentionRequest",
+      "type": "object"
+    },
+    {
+      "description": "Reconnect/cold-resume snapshot, independent of user-message history.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/attention/list"
+          ],
+          "title": "Thread/attention/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadAttentionListParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/attention/listRequest",
       "type": "object"
     },
     {

@@ -1,21 +1,21 @@
 //! Strict receipt recovery through the canonical lineage and representation owners.
 use super::LocalThreadStore;
 use super::live_writer;
-use super::rollout_lineage::RolloutLineageSegment;
 use super::rollout_lineage::RolloutLineage;
-use codex_app_server_protocol::ThreadHistoryBuilder;
-use codex_app_server_protocol::ThreadItemPayload;
-use codex_app_server_protocol::project_rollout_line;
-use codex_protocol::protocol::HistoryPosition;
-use codex_protocol::protocol::ThreadHistoryMode;
-use crate::CanonicalAttentionPresentation;
+use super::rollout_lineage::RolloutLineageSegment;
 use crate::AttentionPresentationScope;
 use crate::AttentionReceiptCoverage;
+use crate::CanonicalAttentionPresentation;
 use crate::CanonicalAttentionReceipts;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
+use codex_app_server_protocol::ThreadHistoryBuilder;
+use codex_app_server_protocol::ThreadItemPayload;
+use codex_app_server_protocol::project_rollout_line;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::HistoryPosition;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::RolloutItem;
 #[cfg(test)]
 use std::fs::File;
@@ -44,17 +44,31 @@ pub(super) async fn load(
     store: &LocalThreadStore,
     thread_id: ThreadId,
 ) -> ThreadStoreResult<CanonicalAttentionReceipts> {
-    Ok(load_source(store, thread_id, false, #[cfg(test)] None).await?.receipts)
+    Ok(load_source(
+        store,
+        thread_id,
+        false,
+        #[cfg(test)]
+        None,
+    )
+    .await?
+    .receipts)
 }
 
 pub(super) async fn load_presentation(
     store: &LocalThreadStore,
     thread_id: ThreadId,
 ) -> ThreadStoreResult<CanonicalAttentionPresentation> {
-    load_source(store, thread_id, true, #[cfg(test)] None)
-        .await?
-        .presentation
-        .ok_or_else(|| unavailable("presentation purpose missing"))
+    load_source(
+        store,
+        thread_id,
+        true,
+        #[cfg(test)]
+        None,
+    )
+    .await?
+    .presentation
+    .ok_or_else(|| unavailable("presentation purpose missing"))
 }
 
 struct SourceScan {
@@ -67,7 +81,10 @@ async fn load_source(
     store: &LocalThreadStore,
     thread_id: ThreadId,
     presentation: bool,
-    #[cfg(test)] after_initial: Option<(tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>)>,
+    #[cfg(test)] after_initial: Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    )>,
 ) -> ThreadStoreResult<SourceScan> {
     // A live recorder proves completed store acquisition. Materialize its lazy
     // header, never infer known-empty state from an absent file or SQL row.
@@ -91,7 +108,11 @@ async fn load_source(
             .resolve_attention_lineage(thread_id, path.clone())
             .await?;
         let scope = if presentation {
-            Some(store.resolve_attention_presentation_lineage(thread_id, path.clone()).await?)
+            Some(
+                store
+                    .resolve_attention_presentation_lineage(thread_id, path.clone())
+                    .await?,
+            )
         } else {
             None
         };
@@ -115,7 +136,11 @@ async fn load_source(
         let mut native_owners = Vec::new();
         if presentation {
             for id in &ids {
-                let live = store.live_recorders.lock().await.get(id)
+                let live = store
+                    .live_recorders
+                    .lock()
+                    .await
+                    .get(id)
                     .map(|entry| Arc::clone(&entry.writer_lock));
                 native_owners.push(match live {
                     Some(guard) => guard,
@@ -147,7 +172,10 @@ async fn load_source(
             continue;
         }
         if let Some(scope) = scope.as_ref()
-            && *scope != store.resolve_attention_presentation_lineage(thread_id, path.clone()).await?
+            && *scope
+                != store
+                    .resolve_attention_presentation_lineage(thread_id, path.clone())
+                    .await?
         {
             continue;
         }
@@ -166,19 +194,37 @@ async fn load_source(
         .await
         .map_err(unavailable)??;
         let mut result = scan_captured_source(
-            thread_id, handles, false, scope.clone(), Arc::clone(&protection),
-        ).await?;
+            thread_id,
+            handles,
+            false,
+            scope.clone(),
+            Arc::clone(&protection),
+        )
+        .await?;
         if let Some(view) = result.presentation.as_mut() {
             let bound = bind_presentation_scope(
-                scope.clone().ok_or_else(|| unavailable("native scope missing"))?, view,
+                scope
+                    .clone()
+                    .ok_or_else(|| unavailable("native scope missing"))?,
+                view,
             )?;
             if result.paginated {
                 view.retained_turn_ids = positive_turn_ids(store, thread_id, &bound).await?;
             }
-            if verified != store.resolve_attention_lineage(thread_id, path.clone()).await?
-                || scope != Some(store.resolve_attention_presentation_lineage(thread_id, path.clone()).await?)
+            if verified
+                != store
+                    .resolve_attention_lineage(thread_id, path.clone())
+                    .await?
+                || scope
+                    != Some(
+                        store
+                            .resolve_attention_presentation_lineage(thread_id, path.clone())
+                            .await?,
+                    )
             {
-                return Err(unavailable("presentation lineage changed during bounded read"));
+                return Err(unavailable(
+                    "presentation lineage changed during bounded read",
+                ));
             }
         }
         drop(keep_running);
@@ -194,7 +240,10 @@ fn bind_presentation_scope(
     view: &CanonicalAttentionPresentation,
 ) -> ThreadStoreResult<RolloutLineage> {
     for segment in &mut scope.segments {
-        let range = view.scope.iter().find(|range| range.rollout_id == segment.rollout_id)
+        let range = view
+            .scope
+            .iter()
+            .find(|range| range.rollout_id == segment.rollout_id)
             .ok_or_else(|| unavailable("native scope outside physical coverage"))?;
         segment.start_ordinal = range.start_ordinal;
         segment.end = Some(HistoryPosition {
@@ -217,16 +266,23 @@ async fn positive_turn_ids(
     loop {
         // Positive IDs only. ASC keeps every initial member reachable when
         // append-only projection moves a same-ID row forward.
-        let page = super::thread_history::list_turns_on_lineage(store, crate::ListTurnsParams {
-            thread_id,
-            cursor,
-            page_size: 128,
-            sort_direction: crate::SortDirection::Asc,
-            items_view: crate::StoredTurnItemsView::NotLoaded,
-            include_archived: false,
-        }, bound).await?;
+        let page = super::thread_history::list_turns_on_lineage(
+            store,
+            crate::ListTurnsParams {
+                thread_id,
+                cursor,
+                page_size: 128,
+                sort_direction: crate::SortDirection::Asc,
+                items_view: crate::StoredTurnItemsView::NotLoaded,
+                include_archived: false,
+            },
+            bound,
+        )
+        .await?;
         result.extend(page.turns.into_iter().map(|turn| turn.turn_id));
-        let Some(next) = page.next_cursor else { break; };
+        let Some(next) = page.next_cursor else {
+            break;
+        };
         let ordinal = super::thread_history::turn_cursor_ordinal(&next, thread_id)?;
         if last_ordinal.is_some_and(|last| ordinal <= last) {
             return Err(unavailable("native presentation cursor did not advance"));
@@ -287,6 +343,7 @@ pub(super) async fn lock_replacement(
                 ancestors.push(store.live_writer_locks.reserve_lifecycle(*id).await);
             }
         }
+        let target = target.ok_or_else(|| unavailable("replacement target guard unavailable"))?;
         let mut writers = Vec::new();
         for id in &ids {
             writers.push(store.live_writer_locks.lock(*id).await);
@@ -299,7 +356,7 @@ pub(super) async fn lock_replacement(
         }
         return Ok((
             Arc::new(ReplacementGuards {
-                _target: target.expect("target is always in the owner set"),
+                _target: target,
                 _ancestors: ancestors,
                 _writers: writers,
             }),
@@ -353,8 +410,15 @@ async fn scan_captured<R: Read + Send + 'static, P: Send + 'static>(
     allow_append_only_legacy: bool,
     protection: P,
 ) -> ThreadStoreResult<CanonicalAttentionReceipts> {
-    Ok(scan_captured_source(thread_id, handles, allow_append_only_legacy, None, protection)
-        .await?.receipts)
+    Ok(scan_captured_source(
+        thread_id,
+        handles,
+        allow_append_only_legacy,
+        None,
+        protection,
+    )
+    .await?
+    .receipts)
 }
 
 async fn scan_captured_source<R: Read + Send + 'static, P: Send + 'static>(
@@ -445,9 +509,12 @@ fn scan_source<R: Read>(
         .checked_sub(1)
         .ok_or_else(|| unavailable("empty canonical coverage"))?;
     for (index, (segment, file, frontier)) in handles.into_iter().enumerate() {
-        let visible = scope.as_ref().and_then(|scope| scope.segments.iter().find(|visible| {
-            visible.rollout_id == segment.rollout_id
-        }));
+        let visible = scope.as_ref().and_then(|scope| {
+            scope
+                .segments
+                .iter()
+                .find(|visible| visible.rollout_id == segment.rollout_id)
+        });
         if let Some(visible) = visible
             && (visible.owner_thread_id != segment.owner_thread_id
                 || visible.rollout_path != segment.rollout_path
@@ -487,12 +554,13 @@ fn scan_source<R: Read>(
                 if let RolloutItem::SessionMeta(meta) = &line.item {
                     if index == target_segment
                         && (segment.owner_thread_id != thread_id
-                            || (presentation.is_none() && !(meta.meta.attention_receipt_lifetime_version == Some(1)
-                                || (allow_append_only_legacy
-                                    && meta.meta.attention_receipt_lifetime_version.is_none()
-                                    && meta.meta.history_mode
-                                        == codex_protocol::protocol::ThreadHistoryMode::Legacy
-                                    && meta.meta.history_base.is_none()))))
+                            || (presentation.is_none()
+                                && !(meta.meta.attention_receipt_lifetime_version == Some(1)
+                                    || (allow_append_only_legacy
+                                        && meta.meta.attention_receipt_lifetime_version.is_none()
+                                        && meta.meta.history_mode
+                                            == codex_protocol::protocol::ThreadHistoryMode::Legacy
+                                        && meta.meta.history_base.is_none()))))
                     {
                         return Err(unavailable("unknown or missing receipt lifetime version"));
                     }
@@ -536,9 +604,15 @@ fn scan_source<R: Read>(
                     view.markers.push(marker.clone());
                 }
                 if paginated {
-                    view.foreground_turn_ids.extend(project_rollout_line(&line).changed_items.into_iter()
-                        .filter(|change| matches!(change.item.payload, ThreadItemPayload::UserMessage { .. }))
-                        .map(|change| change.turn_id));
+                    view.foreground_turn_ids.extend(
+                        project_rollout_line(&line)
+                            .changed_items
+                            .into_iter()
+                            .filter(|change| {
+                                matches!(change.item.payload, ThreadItemPayload::UserMessage { .. })
+                            })
+                            .map(|change| change.turn_id),
+                    );
                 }
             }
             if let RolloutItem::EventMsg(EventMsg::ThreadAttention(notice)) = line.item {
@@ -569,7 +643,11 @@ fn scan_source<R: Read>(
             view.scope.push(AttentionPresentationScope {
                 rollout_id: segment.rollout_id,
                 owner_thread_id: segment.owner_thread_id,
-                history_mode: if paginated { ThreadHistoryMode::Paginated } else { ThreadHistoryMode::Legacy },
+                history_mode: if paginated {
+                    ThreadHistoryMode::Paginated
+                } else {
+                    ThreadHistoryMode::Legacy
+                },
                 start_ordinal,
                 end_ordinal_exclusive: ordinal,
                 end_byte_offset: frontier,
@@ -580,20 +658,31 @@ fn scan_source<R: Read>(
         return Err(unavailable("empty canonical coverage"));
     }
     if let Some(view) = presentation.as_mut() {
-        if scope.as_ref().is_none_or(|scope| scope.segments.len() != view.scope.len()) {
+        if scope
+            .as_ref()
+            .is_none_or(|scope| scope.segments.len() != view.scope.len())
+        {
             return Err(unavailable("native scope missing from physical coverage"));
         }
         view.coverage = result.coverage.clone();
         if !target_paginated {
             for turn in legacy_builder.finish() {
-                if turn.items.iter().any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. })) {
+                if turn
+                    .items
+                    .iter()
+                    .any(|item| matches!(item.payload, ThreadItemPayload::UserMessage { .. }))
+                {
                     view.foreground_turn_ids.insert(turn.id.clone());
                 }
                 view.retained_turn_ids.insert(turn.id);
             }
         }
     }
-    Ok(SourceScan { receipts: result, presentation, paginated: target_paginated })
+    Ok(SourceScan {
+        receipts: result,
+        presentation,
+        paginated: target_paginated,
+    })
 }
 
 #[cfg(test)]
@@ -603,7 +692,9 @@ mod presentation_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_protocol::protocol::{HistoryPosition, SessionMeta, SessionMetaLine};
+    use codex_protocol::protocol::HistoryPosition;
+    use codex_protocol::protocol::SessionMeta;
+    use codex_protocol::protocol::SessionMetaLine;
     use codex_rollout::RolloutLine;
     use std::io::Write;
     pub(super) fn bytes(id: ThreadId) -> Vec<u8> {
@@ -716,7 +807,8 @@ mod tests {
 mod cancellation_tests {
     use super::*;
     use std::io;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use tokio::sync::oneshot;
 
     struct Finished(Option<oneshot::Sender<()>>);
@@ -821,7 +913,8 @@ mod cancellation_tests {
         std::fs::write(&path, &original).unwrap();
         let lease = store.live_writer_locks.reserve_lifecycle(id).await;
         let native_owner = store.acquire_writer_lock(id).unwrap();
-        let other = LocalThreadStore::new(super::super::test_support::test_config(home.path()), None);
+        let other =
+            LocalThreadStore::new(super::super::test_support::test_config(home.path()), None);
         let coordination = store.live_writer_locks.coordination(id).await;
         let (entered, entry) = oneshot::channel();
         let (release, released) = std::sync::mpsc::channel::<()>();
@@ -859,8 +952,13 @@ mod cancellation_tests {
             coordination.lifecycle.try_write().is_err(),
             "archive/replacement cannot pass running IO"
         );
-        assert!(matches!(other.acquire_writer_lock(id), Err(ThreadStoreError::Conflict { .. })),
-            "another store cannot replace a source while the cancelled worker still reads");
+        assert!(
+            matches!(
+                other.acquire_writer_lock(id),
+                Err(ThreadStoreError::Conflict { .. })
+            ),
+            "another store cannot replace a source while the cancelled worker still reads"
+        );
         cancelled.store(true, Ordering::SeqCst);
         drop(release);
         tokio::time::timeout(std::time::Duration::from_secs(2), stopped)

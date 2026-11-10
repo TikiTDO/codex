@@ -24,7 +24,9 @@ impl App {
     ) {
         if let (Some(thread_id), ThreadBufferedEvent::Notification(notification)) =
             (self.active_thread_id, &event)
-            && self.suppresses_thread_attention_marker(thread_id, notification).await
+            && self
+                .suppresses_thread_attention_marker(thread_id, notification)
+                .await
         {
             return;
         }

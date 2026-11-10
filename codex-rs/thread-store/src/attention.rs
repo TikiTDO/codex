@@ -1,8 +1,9 @@
 //! Complete canonical receipt snapshots, independent of model-history tolerance.
 use codex_protocol::ThreadId;
-use codex_protocol::attention::{
-    AttentionError, ThreadAttentionHeldReason, ThreadAttentionNotification, ThreadAttentionResponse,
-};
+use codex_protocol::attention::AttentionError;
+use codex_protocol::attention::ThreadAttentionHeldReason;
+use codex_protocol::attention::ThreadAttentionNotification;
+use codex_protocol::attention::ThreadAttentionResponse;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -115,9 +116,9 @@ pub fn attention_receipts_for_preservation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_protocol::attention::{
-        ThreadAttentionDelivery, ThreadAttentionOrigin, ThreadAttentionOriginKind,
-    };
+    use codex_protocol::attention::ThreadAttentionDelivery;
+    use codex_protocol::attention::ThreadAttentionOrigin;
+    use codex_protocol::attention::ThreadAttentionOriginKind;
 
     fn notice(id: ThreadId, batch: &str, uncertain: bool) -> ThreadAttentionNotification {
         ThreadAttentionNotification {

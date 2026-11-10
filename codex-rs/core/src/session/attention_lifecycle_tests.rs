@@ -1,12 +1,17 @@
 //! Actual native suspension stages with disposable LocalThreadStore failure seams.
 use super::*;
 use crate::state::TaskKind;
-use crate::tasks::{SessionTask, SessionTaskResult};
-use codex_protocol::attention::{AttentionError, ThreadAttentionResponse};
+use crate::tasks::SessionTask;
+use crate::tasks::SessionTaskResult;
+use codex_protocol::attention::AttentionError;
+use codex_protocol::attention::ThreadAttentionResponse;
 use codex_thread_store::*;
 use pretty_assertions::assert_eq;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{OnceLock, Weak};
+use std::sync::OnceLock;
+use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 struct SuspensionFailureStore {
     inner: Arc<dyn ThreadStore>,

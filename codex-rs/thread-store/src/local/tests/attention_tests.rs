@@ -1,8 +1,9 @@
 use super::*;
-use codex_protocol::attention::{
-    ThreadAttentionHeldReason, ThreadAttentionNotification, ThreadAttentionOrigin,
-    ThreadAttentionOriginKind, ThreadAttentionResponse,
-};
+use codex_protocol::attention::ThreadAttentionHeldReason;
+use codex_protocol::attention::ThreadAttentionNotification;
+use codex_protocol::attention::ThreadAttentionOrigin;
+use codex_protocol::attention::ThreadAttentionOriginKind;
+use codex_protocol::attention::ThreadAttentionResponse;
 use std::io::Write;
 
 fn notice(thread_id: ThreadId) -> RolloutItem {
@@ -245,7 +246,9 @@ async fn canonical_attention_unknown_lifetime_refuses_while_foreground_remains_r
 async fn canonical_attention_migration_preserves_lifetime_independent_of_rollback_and_bounded_context()
  {
     use codex_protocol::attention::ThreadAttentionDelivery;
-    use codex_protocol::protocol::{ThreadRolledBackEvent, TurnStartedEvent, UserMessageEvent};
+    use codex_protocol::protocol::ThreadRolledBackEvent;
+    use codex_protocol::protocol::TurnStartedEvent;
+    use codex_protocol::protocol::UserMessageEvent;
     for bounded_subagent in [false, true] {
         for uncertain in [false, true] {
             for proof in ["v1", "append-only", "unknown", "damaged"] {

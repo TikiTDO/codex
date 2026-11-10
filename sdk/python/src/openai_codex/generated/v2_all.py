@@ -383,6 +383,14 @@ class AsyncUserInputQuestion(BaseModel):
     title: str
 
 
+class AttentionTurnStartedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread_id: Annotated[str, Field(alias="threadId")]
+    turn_id: Annotated[str, Field(alias="turnId")]
+
+
 class AuthMode(Enum):
     apikey = "apikey"
     chatgpt = "chatgpt"
@@ -526,6 +534,7 @@ class CodexErrorInfoValue(str, Enum):
     unauthorized = "unauthorized"
     bad_request = "badRequest"
     thread_rollback_failed = "threadRollbackFailed"
+    context_clear_failed = "contextClearFailed"
     sandbox_error = "sandboxError"
     other = "other"
 
@@ -782,6 +791,32 @@ class CommandMigration(BaseModel):
         populate_by_name=True,
     )
     name: str
+
+
+class CompactionInput(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    discard_images: Annotated[
+        bool | None,
+        Field(
+            alias="discardImages",
+            description="Omit inline image bodies from the compactor input and installed compacted history. The original transcript remains unchanged.",
+        ),
+    ] = None
+    instructions: Annotated[
+        str | None,
+        Field(
+            description="Additional instructions for what the compacted context should preserve, summarize, or otherwise emphasize."
+        ),
+    ] = None
+    retry_websocket: Annotated[
+        bool | None,
+        Field(
+            alias="retryWebsocket",
+            description="After a successful compaction, allow the next model request to try the Responses WebSocket transport again. A failed attempt returns the session to sticky HTTP fallback; this does not enable automatic retries.",
+        ),
+    ] = None
 
 
 class ComputerUseMacosConfig(BaseModel):
@@ -1121,6 +1156,13 @@ class OutputTextContentItem(BaseModel):
     logprobs: list[Any] | None = None
     text: str
     type: Annotated[Literal["output_text"], Field(title="OutputTextContentItemType")]
+
+
+class ContextClearedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread_id: Annotated[str, Field(alias="threadId")]
 
 
 class ContextCompactedNotification(BaseModel):
@@ -4397,6 +4439,23 @@ class ServerDiagnosticsProcess(BaseModel):
     resident_memory_bytes: Annotated[int | None, Field(alias="residentMemoryBytes", ge=0)] = None
 
 
+class AttentionTurnStartedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["attention/turn/started"], Field(title="Attention/turn/startedNotificationMethod")
+    ]
+    params: AttentionTurnStartedNotification
+
+
 class ProjectChangedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -4705,6 +4764,23 @@ class ThreadCompactedServerNotification(BaseModel):
         Literal["thread/compacted"], Field(title="Thread/compactedNotificationMethod")
     ]
     params: ContextCompactedNotification
+
+
+class ThreadContextClearedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["thread/context/cleared"], Field(title="Thread/context/clearedNotificationMethod")
+    ]
+    params: ContextClearedNotification
 
 
 class ModelReroutedServerNotification(BaseModel):
@@ -5287,6 +5363,67 @@ class ThreadAttachmentUpdatedNotification(BaseModel):
     thread_id: Annotated[str, Field(alias="threadId")]
 
 
+class ThreadAttentionDelivery(Enum):
+    started = "started"
+    buffered = "buffered"
+
+
+class ThreadAttentionHeldReasonValue(Enum):
+    blocking_request = "blockingRequest"
+    busy = "busy"
+    plan_mode = "planMode"
+    pending_trigger_turn = "pendingTriggerTurn"
+    server_draining = "serverDraining"
+
+
+class ThreadAttentionHeldReason(
+    RootModel[ThreadAttentionHeldReasonValue | Literal["admissionUncertain"]]
+):
+    root: ThreadAttentionHeldReasonValue | Literal["admissionUncertain"]
+
+
+class ThreadAttentionListParams(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class ThreadAttentionOriginKind(Enum):
+    peer = "peer"
+    desk = "desk"
+    desk_comment = "deskComment"
+    monitor = "monitor"
+    periodic = "periodic"
+
+
+class AcceptedThreadAttentionResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    delivery: ThreadAttentionDelivery
+    status: Annotated[Literal["accepted"], Field(title="AcceptedThreadAttentionResponseStatus")]
+    turn_id: Annotated[str | None, Field(alias="turnId")] = None
+
+
+class HeldThreadAttentionResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    reason: ThreadAttentionHeldReason
+    status: Annotated[Literal["held"], Field(title="HeldThreadAttentionResponseStatus")]
+
+
+class ThreadAttentionResponse(
+    RootModel[AcceptedThreadAttentionResponse | HeldThreadAttentionResponse]
+):
+    root: Annotated[
+        AcceptedThreadAttentionResponse | HeldThreadAttentionResponse,
+        Field(title="ThreadAttentionResponse"),
+    ]
+
+
 class ThreadClosedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5298,10 +5435,24 @@ class ThreadCompactStartParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    input: CompactionInput | None = None
     thread_id: Annotated[str, Field(alias="threadId")]
 
 
 class ThreadCompactStartResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+
+
+class ThreadContextClearParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class ThreadContextClearResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
@@ -7364,6 +7515,17 @@ class ThreadCompactStartRequest(BaseModel):
     params: ThreadCompactStartParams
 
 
+class ThreadContextClearRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["thread/context/clear"], Field(title="Thread/context/clearRequestMethod")
+    ]
+    params: ThreadContextClearParams
+
+
 class ThreadShellCommandRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -7474,6 +7636,17 @@ class ThreadInjectItemsRequest(BaseModel):
         Literal["thread/inject_items"], Field(title="Thread/injectItemsRequestMethod")
     ]
     params: ThreadInjectItemsParams
+
+
+class ThreadAttentionListRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["thread/attention/list"], Field(title="Thread/attention/listRequestMethod")
+    ]
+    params: ThreadAttentionListParams
 
 
 class SkillsListRequest(BaseModel):
@@ -10303,6 +10476,35 @@ class SubAgentSource(
     root: SubAgentSourceValue | ThreadSpawnSubAgentSource | OtherSubAgentSource
 
 
+class ThreadAttentionOrigin(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    kind: ThreadAttentionOriginKind
+    sender: Annotated[
+        str | None,
+        Field(description="A routing label, never authentication or operator authority."),
+    ] = None
+    source_ref: Annotated[str, Field(alias="sourceRef")]
+
+
+class ThreadAttentionParams(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    batch_id: Annotated[
+        str,
+        Field(
+            alias="batchId",
+            description="Stable id for this exact captured batch; retries retain it.",
+        ),
+    ]
+    origins: list[ThreadAttentionOrigin]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class ThreadForkParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11254,6 +11456,15 @@ class ThreadTurnsListRequest(BaseModel):
     params: ThreadTurnsListParams
 
 
+class ThreadAttentionRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["thread/attention"], Field(title="Thread/attentionRequestMethod")]
+    params: ThreadAttentionParams
+
+
 class PluginShareUpdateTargetsRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -12103,6 +12314,16 @@ class SessionSource(RootModel[SessionSourceValue | CustomSessionSource | SubAgen
     root: SessionSourceValue | CustomSessionSource | SubAgentSessionSource
 
 
+class ThreadAttentionNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    admission: ThreadAttentionResponse
+    batch_id: Annotated[str, Field(alias="batchId")]
+    origins: list[ThreadAttentionOrigin]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class FunctionCallOutputThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -12681,6 +12902,23 @@ class ReviewStartResponse(BaseModel):
     turn: Turn
 
 
+class ThreadAttentionServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["thread/attention"], Field(title="Thread/attentionNotificationMethod")
+    ]
+    params: ThreadAttentionNotification
+
+
 class TurnStartedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -12897,6 +13135,13 @@ class Thread(BaseModel):
             description="Unix timestamp (in seconds) when the thread was last updated.",
         ),
     ]
+
+
+class ThreadAttentionListResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    notices: list[ThreadAttentionNotification]
 
 
 class ThreadForkResponse(BaseModel):
@@ -13302,6 +13547,7 @@ class ClientRequest(
         | ThreadSectionMoveRequest
         | ThreadUnarchiveRequest
         | ThreadCompactStartRequest
+        | ThreadContextClearRequest
         | ThreadShellCommandRequest
         | ThreadApproveGuardianDeniedActionRequest
         | ThreadRevertRequest
@@ -13315,6 +13561,8 @@ class ClientRequest(
         | ThreadTurnsListRequest
         | ThreadItemsListRequest
         | ThreadInjectItemsRequest
+        | ThreadAttentionRequest
+        | ThreadAttentionListRequest
         | SkillsListRequest
         | SkillsExtraRootsSetRequest
         | HooksListRequest
@@ -13411,6 +13659,7 @@ class ClientRequest(
         | ThreadSectionMoveRequest
         | ThreadUnarchiveRequest
         | ThreadCompactStartRequest
+        | ThreadContextClearRequest
         | ThreadShellCommandRequest
         | ThreadApproveGuardianDeniedActionRequest
         | ThreadRevertRequest
@@ -13424,6 +13673,8 @@ class ClientRequest(
         | ThreadTurnsListRequest
         | ThreadItemsListRequest
         | ThreadInjectItemsRequest
+        | ThreadAttentionRequest
+        | ThreadAttentionListRequest
         | SkillsListRequest
         | SkillsExtraRootsSetRequest
         | HooksListRequest
@@ -13676,6 +13927,8 @@ class ServerNotification(
     RootModel[
         ErrorServerNotification
         | ThreadStartedServerNotification
+        | ThreadAttentionServerNotification
+        | AttentionTurnStartedServerNotification
         | ThreadStatusChangedServerNotification
         | ThreadReadStateChangedServerNotification
         | ThreadArchivedServerNotification
@@ -13734,6 +13987,7 @@ class ServerNotification(
         | ItemReasoningSummaryPartAddedServerNotification
         | ItemReasoningTextDeltaServerNotification
         | ThreadCompactedServerNotification
+        | ThreadContextClearedServerNotification
         | ModelReroutedServerNotification
         | ModelVerificationServerNotification
         | ModelProviderAuthRecoveryStartedServerNotification
@@ -13765,6 +14019,8 @@ class ServerNotification(
     root: Annotated[
         ErrorServerNotification
         | ThreadStartedServerNotification
+        | ThreadAttentionServerNotification
+        | AttentionTurnStartedServerNotification
         | ThreadStatusChangedServerNotification
         | ThreadReadStateChangedServerNotification
         | ThreadArchivedServerNotification
@@ -13823,6 +14079,7 @@ class ServerNotification(
         | ItemReasoningSummaryPartAddedServerNotification
         | ItemReasoningTextDeltaServerNotification
         | ThreadCompactedServerNotification
+        | ThreadContextClearedServerNotification
         | ModelReroutedServerNotification
         | ModelVerificationServerNotification
         | ModelProviderAuthRecoveryStartedServerNotification
