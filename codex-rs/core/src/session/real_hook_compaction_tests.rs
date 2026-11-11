@@ -7,6 +7,129 @@ use std::time::Duration;
 const HOOK_TEXT: &str = "REAL_PUBLISHED_COMPACTION_HOOK_CONTEXT";
 const GATE_CALL: &str = "hook-publication-gate-call";
 
+#[test_case::test_case(false, false; "local summarizer")]
+#[test_case::test_case(false, true; "remote summarizer")]
+#[test_case::test_case(true, false; "native reset")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_compact_lifecycle_stdout_reaches_summary_and_returning_model(
+    token_budget: bool,
+    remote: bool,
+) {
+    const CAPTURE: &str = "EXACT_PRE_COMPACT_CAPTURE";
+    const RECOVERY: &str = "EXACT_POST_COMPACT_RECOVERY";
+    let server = responses::start_mock_server().await;
+    let root = tempfile::tempdir().unwrap();
+    let first = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_function_call("compact-call", "compact_context", "{}"),
+            responses::ev_completed_with_tokens("first", 100),
+        ]),
+    )
+    .await;
+    let summary = if token_budget {
+        None
+    } else {
+        Some(responses::mount_sse_once(&server, responses::sse(if remote {
+            vec![json!({"type":"response.output_item.done", "item":{"type":"compaction", "encrypted_content":"lifecycle-summary"}}), responses::ev_completed("summary")]
+        } else {
+            vec![responses::ev_assistant_message("summary", "A deliberately marker-free summary."), responses::ev_completed("summary")]
+        })).await)
+    };
+    let continued = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("continued", "done"),
+            responses::ev_completed("continued"),
+        ]),
+    )
+    .await;
+    std::fs::write(root.path().join("config.toml"), "").unwrap();
+    std::fs::write(root.path().join("hooks.json"), json!({"hooks": {
+        "PreCompact": [{"hooks":[{"type":"command", "command":format!("cat >/dev/null; printf '%s' '{CAPTURE}'"), "timeout":5}]}],
+        "PostCompact": [{"hooks":[{"type":"command", "command":format!("cat >/dev/null; printf '%s' '{RECOVERY}'"), "timeout":5}]}]
+    }}).to_string()).unwrap();
+    let mut provider = built_in_model_providers(None)["openai"].clone();
+    provider.base_url = Some(format!("{}/v1", server.uri()));
+    provider.supports_websockets = false;
+    if !remote {
+        provider.name = "OpenAI (test)".into();
+    }
+    let (mut session, _, events) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        vec![],
+        root.path(),
+        move |config| {
+            config.model_provider = provider;
+            config.features.enable(Feature::CodexHooks).unwrap();
+            config.model_context_window = Some(100_000);
+            config.model_auto_compact_token_limit = Some(90_000);
+            if token_budget {
+                config.features.enable(Feature::TokenBudget).unwrap();
+            } else {
+                config.features.disable(Feature::TokenBudget).unwrap();
+            }
+        },
+    )
+    .await;
+    let config = session.get_config().await;
+    let (hooks, receiver) = codex_hooks::Hooks::new(
+        codex_hooks::HooksConfig {
+            feature_enabled: true,
+            bypass_hook_trust: true,
+            shell_program: Some("/bin/sh".into()),
+            shell_args: vec!["-c".into()],
+            config_layer_stack: Some(config.config_layer_stack.clone()),
+            ..Default::default()
+        },
+        session.thread_id,
+        Arc::new(crate::hook_mcp_executor::CoreHookMcpExecutor {
+            runtime: Arc::clone(&session.services.mcp_runtime),
+            thread_id: session.thread_id,
+        }),
+    )
+    .unwrap();
+    Arc::get_mut(&mut session).unwrap().async_hook_results = receiver;
+    session.services.hooks.store(Arc::new(hooks));
+    super::super::turn_input::handle(
+        &session,
+        TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "exercise compact lifecycle".into(),
+            text_elements: vec![],
+        }]),
+        TurnInputMode::StartOrSteer,
+        "compact-lifecycle-turn".into(),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            match events.recv().await.unwrap().msg {
+                EventMsg::TurnComplete(_) => break,
+                EventMsg::Error(error) => panic!("lifecycle turn failed: {}", error.message),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        !first
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains(CAPTURE)
+    );
+    if let Some(summary) = summary {
+        let body = summary.single_request().body_json().to_string();
+        assert_eq!(body.matches(CAPTURE).count(), 1);
+        assert!(!body.contains(RECOVERY));
+    }
+    let body = continued.single_request().body_json().to_string();
+    assert_eq!(body.matches(RECOVERY).count(), 1);
+    assert!(!body.contains(CAPTURE));
+}
+
 #[test_case::test_case(false, true, true, false; "remote summary")]
 #[test_case::test_case(true, false, true, false; "token budget local summary")]
 #[test_case::test_case(true, true, true, false; "token budget remote summary")]

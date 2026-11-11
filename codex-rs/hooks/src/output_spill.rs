@@ -18,6 +18,16 @@ pub(crate) struct AdditionalContextLimit {
 }
 
 impl AdditionalContextLimit {
+    pub(crate) fn capped_at(self, maximum: usize) -> Self {
+        Self {
+            token_limit: if self.token_limit == 0 {
+                maximum
+            } else {
+                self.token_limit.min(maximum)
+            },
+        }
+    }
+
     pub(crate) fn from_config(value: Option<usize>) -> Self {
         Self {
             token_limit: value.unwrap_or(DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT),
