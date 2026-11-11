@@ -572,12 +572,16 @@ pub(crate) async fn run_pre_compact_hooks(
     if outcome.should_stop {
         PreCompactHookOutcome::Stopped
     } else {
-        PreCompactHookOutcome::Continue
+        PreCompactHookOutcome::Continue {
+            additional_contexts: outcome.additional_contexts,
+        }
     }
 }
 
 pub(crate) enum PreCompactHookOutcome {
-    Continue,
+    Continue {
+        additional_contexts: Vec<codex_hooks::HookContext>,
+    },
     Stopped,
 }
 
@@ -611,6 +615,7 @@ pub(crate) async fn run_post_compact_hooks(
 
     let outcome = hooks.run_post_compact(request).await;
     emit_hook_completed_events(sess, turn_context, outcome.hook_events).await;
+    record_additional_contexts(sess, turn_context, outcome.additional_contexts).await;
     if outcome.should_stop {
         PostCompactHookOutcome::Stopped
     } else {

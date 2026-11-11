@@ -99,6 +99,30 @@ pub(crate) fn apply_compaction_instructions(
     base_instructions
 }
 
+/// Keep caller controls intact while admitting configured PreCompact capture guidance.
+/// A nonempty hook result requires a fresh request: a background candidate predates this capture.
+pub(crate) fn with_pre_compact_context(
+    input: Option<&CompactionInput>,
+    contexts: Vec<codex_hooks::HookContext>,
+) -> Option<CompactionInput> {
+    if contexts.is_empty() {
+        return input.cloned();
+    }
+    let mut input = input.cloned().unwrap_or_default();
+    let mut instructions = contexts
+        .into_iter()
+        .map(|context| context.text)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if let Some(caller) = input.instructions.take() {
+        instructions
+            .push_str("\n\nCurrent caller guidance, which takes precedence over hook carry:\n");
+        instructions.push_str(&caller);
+    }
+    input.instructions = Some(instructions);
+    Some(input)
+}
+
 pub(crate) fn apply_compaction_prompt_instructions(
     mut prompt: String,
     input: Option<&CompactionInput>,
@@ -295,8 +319,10 @@ async fn run_compact_task_inner(
     )
     .await;
     let pre_compact_outcome = run_pre_compact_hooks(&sess, &turn_context, trigger).await;
-    match pre_compact_outcome {
-        PreCompactHookOutcome::Continue => {}
+    let captured_input = match pre_compact_outcome {
+        PreCompactHookOutcome::Continue {
+            additional_contexts,
+        } => with_pre_compact_context(compaction_input, additional_contexts),
         PreCompactHookOutcome::Stopped => {
             let error = CodexErr::TurnAborted;
             attempt
@@ -309,7 +335,8 @@ async fn run_compact_task_inner(
                 .await;
             return Err(error);
         }
-    }
+    };
+    let compaction_input = captured_input.as_ref();
     let result = run_compact_task_inner_impl(
         Arc::clone(&sess),
         Arc::clone(&turn_context),

@@ -24,6 +24,40 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use test_case::test_case;
 
+#[test]
+fn compact_capture_preserves_caller_controls_and_forces_fresh_input() {
+    assert!(with_pre_compact_context(None, vec![]).is_none());
+    let caller = CompactionInput {
+        instructions: Some("current explicit request".into()),
+        discard_images: true,
+        retry_websocket: true,
+    };
+    let result = with_pre_compact_context(
+        Some(&caller),
+        vec![codex_hooks::HookContext::harness("captured carry".into())],
+    )
+    .unwrap();
+    assert!(result.discard_images);
+    assert!(result.retry_websocket);
+    assert!(
+        result
+            .instructions
+            .unwrap()
+            .ends_with("current explicit request")
+    );
+    assert_eq!(
+        with_pre_compact_context(Some(&caller), vec![]),
+        Some(caller)
+    );
+    assert!(
+        with_pre_compact_context(
+            None,
+            vec![codex_hooks::HookContext::harness("captured carry".into())]
+        )
+        .is_some()
+    );
+}
+
 #[test_case(true; "metadata enabled")]
 #[test_case(false; "metadata disabled after capture")]
 #[tokio::test]

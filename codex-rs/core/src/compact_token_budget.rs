@@ -48,7 +48,8 @@ async fn run_compact_task_inner(
     let turn_context = &step_context.turn;
     let pre_compact_outcome = run_pre_compact_hooks(sess, turn_context, trigger).await;
     match pre_compact_outcome {
-        PreCompactHookOutcome::Continue => {}
+        // This route has no summarizer; capture side effects still run, and PostCompact unpacks.
+        PreCompactHookOutcome::Continue { .. } => {}
         PreCompactHookOutcome::Stopped => return Err(CodexErr::TurnAborted),
     }
 

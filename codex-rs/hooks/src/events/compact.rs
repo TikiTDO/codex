@@ -16,6 +16,8 @@ use crate::engine::ConfiguredHandler;
 use crate::engine::HandlerRunResult;
 use crate::engine::dispatcher;
 use crate::engine::output_parser;
+use crate::output_spill::AdditionalContext;
+use crate::output_spill::DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT;
 use crate::schema::PostCompactCommandInput;
 use crate::schema::PreCompactCommandInput;
 use crate::schema::SubagentCommandInputFields;
@@ -45,6 +47,7 @@ pub struct PostCompactRequest {
 #[derive(Debug)]
 pub struct StatelessHookOutcome {
     pub hook_events: Vec<HookCompletedEvent>,
+    pub additional_contexts: Vec<crate::HookContext>,
     pub should_stop: bool,
     pub stop_reason: Option<String>,
 }
@@ -52,6 +55,7 @@ pub struct StatelessHookOutcome {
 #[derive(Debug)]
 pub struct PreCompactOutcome {
     pub hook_events: Vec<HookCompletedEvent>,
+    pub additional_contexts: Vec<crate::HookContext>,
     pub should_stop: bool,
     pub stop_reason: Option<String>,
 }
@@ -82,6 +86,7 @@ pub(crate) async fn run_pre(
     if matched.is_empty() {
         return PreCompactOutcome {
             hook_events: Vec::new(),
+            additional_contexts: Vec::new(),
             should_stop: false,
             stop_reason: None,
         };
@@ -98,6 +103,7 @@ pub(crate) async fn run_pre(
                 ),
                 should_stop: false,
                 stop_reason: None,
+                additional_contexts: Vec::new(),
             };
         }
     };
@@ -111,12 +117,26 @@ pub(crate) async fn run_pre(
         parse_pre_completed,
     )
     .await;
+    let mut additional_contexts = common::flatten_additional_contexts(
+        results
+            .iter()
+            .map(|result| result.data.additional_contexts.as_slice()),
+    );
+    for context in &mut additional_contexts {
+        context.limit = context.limit.capped_at(DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT);
+    }
+    let additional_contexts = engine
+        .command_runtime
+        .output_spiller()
+        .maybe_spill_additional_contexts(additional_contexts)
+        .await;
     let should_stop = results.iter().any(|result| result.data.should_stop);
     let stop_reason = results
         .iter()
         .find_map(|result| result.data.stop_reason.clone());
     PreCompactOutcome {
         hook_events: results.into_iter().map(|result| result.completed).collect(),
+        additional_contexts,
         should_stop,
         stop_reason,
     }
@@ -163,6 +183,7 @@ pub(crate) async fn run_post(
     if matched.is_empty() {
         return StatelessHookOutcome {
             hook_events: Vec::new(),
+            additional_contexts: Vec::new(),
             should_stop: false,
             stop_reason: None,
         };
@@ -179,6 +200,7 @@ pub(crate) async fn run_post(
                 ),
                 should_stop: false,
                 stop_reason: None,
+                additional_contexts: Vec::new(),
             };
         }
     };
@@ -192,12 +214,26 @@ pub(crate) async fn run_post(
         parse_post_completed,
     )
     .await;
+    let mut additional_contexts = common::flatten_additional_contexts(
+        results
+            .iter()
+            .map(|result| result.data.additional_contexts.as_slice()),
+    );
+    for context in &mut additional_contexts {
+        context.limit = context.limit.capped_at(DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT);
+    }
+    let additional_contexts = engine
+        .command_runtime
+        .output_spiller()
+        .maybe_spill_additional_contexts(additional_contexts)
+        .await;
     let should_stop = results.iter().any(|result| result.data.should_stop);
     let stop_reason = results
         .iter()
         .find_map(|result| result.data.stop_reason.clone());
     StatelessHookOutcome {
         hook_events: results.into_iter().map(|result| result.completed).collect(),
+        additional_contexts,
         should_stop,
         stop_reason,
     }
@@ -222,6 +258,7 @@ fn post_command_input(request: &PostCompactRequest) -> Result<Value, serde_json:
 struct CompactHandlerData {
     should_stop: bool,
     stop_reason: Option<String>,
+    additional_contexts: Vec<AdditionalContext>,
 }
 
 fn parse_pre_completed(
@@ -263,6 +300,7 @@ fn parse_completed(
     let mut status = HookRunStatus::Completed;
     let mut should_stop = false;
     let mut stop_reason = None;
+    let mut additional_contexts = Vec::new();
 
     match run_result.error.as_deref() {
         Some(error) => {
@@ -309,6 +347,16 @@ fn parse_completed(
                         kind: HookOutputEntryKind::Error,
                         text: format!("hook returned invalid {event_label} hook JSON output"),
                     });
+                } else if handler.can_apply_control_effects() {
+                    // Compact hooks use successful plain stdout as capture/recovery context,
+                    // like SessionStart. Preserve origin metadata and the configured spill limit.
+                    common::append_additional_context(
+                        &mut entries,
+                        &mut additional_contexts,
+                        handler,
+                        run_result.stdout.clone(),
+                        &run_result.context_metadata,
+                    );
                 }
             }
             Some(code) => {
@@ -337,6 +385,7 @@ fn parse_completed(
         data: CompactHandlerData {
             should_stop,
             stop_reason,
+            additional_contexts,
         },
         completion_order: 0,
     }
@@ -469,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn pre_compact_ignores_plain_stdout() {
+    fn pre_compact_preserves_successful_plain_stdout_for_capture() {
         let parsed = parse_pre_completed(
             &handler(HookEventName::PreCompact),
             run_result(Some(0), "checking compact policy\n", ""),
@@ -477,11 +526,19 @@ mod tests {
         );
 
         assert_eq!(parsed.completed.run.status, HookRunStatus::Completed);
-        assert_eq!(parsed.completed.run.entries, Vec::new());
+        assert_eq!(parsed.data.additional_contexts.len(), 1);
+        assert_eq!(
+            parsed.data.additional_contexts[0].context.text,
+            "checking compact policy\n"
+        );
+        assert_eq!(
+            parsed.completed.run.entries[0].kind,
+            HookOutputEntryKind::Context
+        );
     }
 
     #[test]
-    fn post_compact_ignores_plain_stdout() {
+    fn post_compact_preserves_successful_plain_stdout_for_recovery() {
         let parsed = parse_post_completed(
             &handler(HookEventName::PostCompact),
             run_result(Some(0), "logged compact summary\n", ""),
@@ -489,7 +546,28 @@ mod tests {
         );
 
         assert_eq!(parsed.completed.run.status, HookRunStatus::Completed);
-        assert_eq!(parsed.completed.run.entries, Vec::new());
+        assert_eq!(parsed.data.additional_contexts.len(), 1);
+        assert_eq!(
+            parsed.data.additional_contexts[0].context.text,
+            "logged compact summary\n"
+        );
+        assert_eq!(
+            parsed.completed.run.entries[0].kind,
+            HookOutputEntryKind::Context
+        );
+    }
+
+    #[test]
+    fn failed_compact_hook_stdout_is_not_capture_or_recovery() {
+        for event in [HookEventName::PreCompact, HookEventName::PostCompact] {
+            let parsed = parse_pre_completed(
+                &handler(event),
+                run_result(Some(1), "do not admit this", "failed"),
+                None,
+            );
+            assert!(parsed.data.additional_contexts.is_empty());
+            assert_eq!(parsed.completed.run.status, HookRunStatus::Failed);
+        }
     }
 
     fn pre_request() -> super::PreCompactRequest {

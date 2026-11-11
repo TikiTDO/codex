@@ -220,12 +220,6 @@ async fn run_remote_compact_task_inner(
     fallback: CompactionFallback,
     compaction_input: Option<&CompactionInput>,
 ) -> CodexResult<bool> {
-    // Captured candidates lack this request's controls. Do not wait for or adopt them.
-    let candidate = if compaction_input.is_some() {
-        None
-    } else {
-        candidate
-    };
     let turn_context = &step_context.turn;
     let trigger = compaction_metadata.trigger();
     let reason = compaction_metadata.reason();
@@ -245,8 +239,10 @@ async fn run_remote_compact_task_inner(
     )
     .await;
     let pre_compact_outcome = run_pre_compact_hooks(sess, turn_context, trigger).await;
-    match pre_compact_outcome {
-        PreCompactHookOutcome::Continue => {}
+    let captured_input = match pre_compact_outcome {
+        PreCompactHookOutcome::Continue {
+            additional_contexts,
+        } => crate::compact::with_pre_compact_context(compaction_input, additional_contexts),
         PreCompactHookOutcome::Stopped => {
             let error = CodexErr::TurnAborted;
             attempt
@@ -259,7 +255,14 @@ async fn run_remote_compact_task_inner(
                 .await;
             return Err(error);
         }
-    }
+    };
+    let compaction_input = captured_input.as_ref();
+    // Neither caller controls nor fresh capture can be supplied by an older background result.
+    let candidate = if compaction_input.is_some() {
+        None
+    } else {
+        candidate
+    };
     let started_item = if candidate.is_none() {
         let item = TurnItem::ContextCompaction(ContextCompactionItem::new());
         sess.emit_turn_item_started(turn_context, &item).await;
