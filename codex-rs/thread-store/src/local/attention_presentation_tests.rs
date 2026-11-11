@@ -283,7 +283,7 @@ async fn canonical_attention_presentation_bound_cut_excludes_later_native_turn_a
 }
 
 #[test]
-fn canonical_attention_presentation_intact_unmarked_legacy_is_not_receipt_readiness() {
+fn canonical_attention_presentation_intact_unmarked_root_recovers_without_fabricating_receipts() {
     let id = ThreadId::new();
     let items = vec![
         RolloutItem::SessionMeta(Box::new(SessionMetaLine {
@@ -316,16 +316,18 @@ fn canonical_attention_presentation_intact_unmarked_legacy_is_not_receipt_readin
         start_ordinal: 1,
         end: None,
     };
+    let receipts = scan(
+        id,
+        vec![(
+            segment.clone(),
+            std::io::Cursor::new(&bytes),
+            bytes.len() as u64,
+        )],
+    )
+    .unwrap();
     assert!(
-        scan(
-            id,
-            vec![(
-                segment.clone(),
-                std::io::Cursor::new(&bytes),
-                bytes.len() as u64
-            )]
-        )
-        .is_err()
+        receipts.notices.is_empty(),
+        "presentation markers are not receipts"
     );
     let result = scan_source(
         id,
