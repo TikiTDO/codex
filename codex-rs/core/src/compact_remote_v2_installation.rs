@@ -213,10 +213,13 @@ async fn build_and_install_compaction(
             .build_initial_context_with_world_state(replacement_step_context, &cutoff_world_state)
             .await;
         let (prefix_context, initial_context) = split_prefix_updates(initial_context);
-        let initial_context = merge_world_state_updates(initial_context)
+        let mut initial_context: Vec<ResponseItemEnvelope> = merge_world_state_updates(initial_context)
             .into_iter()
             .map(ResponseItemEnvelope::new)
             .collect();
+        initial_context.push(ResponseItemEnvelope::new(crate::compact::post_compaction_item(
+            turn_context.config.post_compaction_prompt.as_deref(),
+        )));
         sess.replace_compacted_history(
             compacted_history,
             replacement_step_context.to_turn_context_item(),
@@ -241,6 +244,15 @@ async fn build_and_install_compaction(
             compacted_history,
         )
         .await;
+        let new_history = crate::compact::insert_initial_context_before_last_real_user_or_summary(
+            new_history,
+            vec![ResponseItemEnvelope::new(crate::compact::post_compaction_item(
+                compaction_turn_context
+                    .config
+                    .post_compaction_prompt
+                    .as_deref(),
+            ))],
+        );
         let (window_number, window_ids) = sess.advance_auto_compact_window().await;
         let installation = CompactedHistoryMetadata {
             input_goal_ids,
