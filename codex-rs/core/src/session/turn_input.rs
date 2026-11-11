@@ -630,6 +630,11 @@ async fn start_if_idle(
     let sender_messages = capture_sender_user_messages(session, &mut input).await;
     match kind {
         TurnStartKind::User => {
+            session
+                .services
+                .unified_exec_manager
+                .cancel_completion_watches()
+                .await;
             session.clear_connector_selection().await;
             task_input.push(
                 pending_turn_input(

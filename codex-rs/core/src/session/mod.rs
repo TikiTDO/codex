@@ -4538,6 +4538,10 @@ impl Session {
         installation: impl Into<CompactedHistoryInstallation<'a>>,
     ) -> bool {
         let installation = installation.into();
+        self.services
+            .unified_exec_manager
+            .cancel_completion_watches()
+            .await;
         let compaction_model_hash = match &installation {
             CompactedHistoryInstallation::Complete(metadata) => &metadata.compaction_model_hash,
             CompactedHistoryInstallation::Prefix { model_info, .. } => &model_info.comp_hash,

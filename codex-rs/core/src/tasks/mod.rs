@@ -571,6 +571,10 @@ impl Session {
     }
 
     pub async fn abort_all_tasks(self: &Arc<Self>, reason: TurnAbortReason) {
+        self.services
+            .unified_exec_manager
+            .cancel_completion_watches()
+            .await;
         let mut aborted_turn = false;
         let mut active_turn_to_clear = None;
         if let Some(mut active_turn) = self.take_active_turn(&reason).await {
@@ -638,6 +642,10 @@ impl Session {
         reason: TurnAbortReason,
         error: Option<ErrorEvent>,
     ) {
+        self.services
+            .unified_exec_manager
+            .cancel_completion_watches()
+            .await;
         let task = active_turn.task.take();
         if let Some(task) = task {
             self.handle_task_abort(task, reason.clone(), &active_turn.turn_state, error)

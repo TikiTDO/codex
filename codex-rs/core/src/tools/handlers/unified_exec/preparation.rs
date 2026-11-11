@@ -245,6 +245,11 @@ impl<'a> ParsedExecCommand<'a> {
         let completion_timeout = match lifetime {
             ExecCommandLifetime::Interactive => None,
             ExecCommandLifetime::OneShot => {
+                if args.notify_on_exit {
+                    return Err(FunctionCallError::RespondToModel(
+                        "notify_on_exit requires the interactive exec_command tool".into(),
+                    ));
+                }
                 args.tty = false;
                 Some(Duration::from_millis(
                     args.timeout_ms.unwrap_or(DEFAULT_EXEC_COMMAND_TIMEOUT_MS),

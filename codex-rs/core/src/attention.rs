@@ -267,11 +267,25 @@ pub(crate) async fn handle(
     Ok(notice.admission)
 }
 
-async fn admit(
+pub(crate) async fn admit(
     session: &Arc<Session>,
     request: TurnInputRequest,
     submission_id: String,
 ) -> Result<ThreadAttentionResponse, AttentionError> {
+    // Internal completion subscriptions use this same quiet admission path.
+    // They must obey the existing idle execution-capacity gate too.
+    if session.active_turn.lock().await.is_none() {
+        let config = session.get_config().await;
+        let source = session.thread_config_snapshot().await.session_source;
+        let version = session
+            .multi_agent_version()
+            .unwrap_or_else(|| config.multi_agent_version_from_features());
+        session
+            .services
+            .agent_control
+            .check_turn_admission(version, &source)
+            .map_err(|err| AttentionError::Unavailable(err.to_string()))?;
+    }
     let TurnInput::ResponseItem(item) = request.input.clone() else {
         return Err(AttentionError::InvalidBinding(
             "attention must be a standalone tool notification".into(),

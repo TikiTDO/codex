@@ -1268,6 +1268,7 @@ impl UnifiedExecProcessManager {
             metrics_sidecar.map(|sidecar| Arc::new(std::sync::Mutex::new(Some(sidecar))));
         let entry = ProcessEntry {
             process: Arc::clone(&process),
+            completion_event_done: CancellationToken::new(),
             plugin_metrics_sidecar: plugin_metrics_sidecar.clone(),
             call_id: context.call_id.clone(),
             process_id,
@@ -1281,6 +1282,7 @@ impl UnifiedExecProcessManager {
             session: Arc::downgrade(&context.session),
             last_used: started_at,
         };
+        let completion_event_done = entry.completion_event_done.clone();
         let pruned_entry = {
             let mut store = self.process_store.lock().await;
             let pruned_entry = Self::prune_processes_if_needed(&mut store);
@@ -1298,6 +1300,7 @@ impl UnifiedExecProcessManager {
             started_at,
             network_denial_monitor,
             plugin_metrics_sidecar,
+            completion_event_done,
         );
         // Install the watcher before cancellable cleanup, and outside the process-store lock.
         if let Some(pruned_entry) = pruned_entry {
@@ -1801,6 +1804,7 @@ impl UnifiedExecProcessManager {
     }
 
     pub(crate) async fn terminate_all_processes(&self) {
+        self.cancel_completion_watches().await;
         let entries: Vec<ProcessEntry> = {
             let mut processes = self.process_store.lock().await;
             let entries: Vec<ProcessEntry> = processes
@@ -1855,6 +1859,7 @@ impl UnifiedExecProcessManager {
     }
 
     pub(crate) async fn terminate_process(&self, process_id: i32) -> bool {
+        self.cancel_completion_watch(process_id).await;
         let (process, already_exited) = {
             let store = self.process_store.lock().await;
             let Some(entry) = store.processes.get(&process_id) else {

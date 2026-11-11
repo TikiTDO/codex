@@ -165,6 +165,8 @@ impl ExecCommandHandler {
         let turn_environment = selected_executor(&environments, &step_context.environments)?;
         let parsed =
             ParsedExecCommand::parse(&arguments, &session, &step_context, turn_environment)?;
+        let notify_on_exit = parsed.args.notify_on_exit;
+        let watch_generation = manager.completion_watch_generation().await;
         maybe_emit_implicit_skill_invocation(
             &session,
             &step_context,
@@ -237,7 +239,15 @@ impl ExecCommandHandler {
             None => manager.exec_command(request, &context).await,
         };
         match result {
-            Ok(response) => Ok(boxed_tool_output(response)),
+            Ok(response) => {
+                if notify_on_exit && let Some(process_id) = response.process_id {
+                    manager
+                        .arm_completion_watch(process_id, &context, watch_generation)
+                        .await
+                        .map_err(FunctionCallError::RespondToModel)?;
+                }
+                Ok(boxed_tool_output(response))
+            }
             Err(UnifiedExecError::SandboxDenied {
                 output,
                 original_token_count,
@@ -289,6 +299,7 @@ fn one_shot_exec_command_spec(spec: ToolSpec) -> ToolSpec {
     let properties = spec.parameters.properties.get_or_insert_default();
     properties.remove("tty");
     properties.remove("yield_time_ms");
+    properties.remove("notify_on_exit");
     properties.insert(
         "timeout_ms".to_string(),
         JsonSchema::number(Some(

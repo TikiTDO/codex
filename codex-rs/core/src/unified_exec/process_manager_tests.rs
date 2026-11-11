@@ -629,6 +629,7 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
         store.processes.insert(
             process_id,
             ProcessEntry {
+                completion_event_done: tokio_util::sync::CancellationToken::new(),
                 process: if is_exited {
                     Arc::clone(&exited_process)
                 } else {

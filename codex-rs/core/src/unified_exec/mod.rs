@@ -44,6 +44,7 @@ use crate::tools::network_approval::DeferredNetworkApproval;
 use codex_core_plugins::PluginMetricsSidecar;
 
 mod async_watcher;
+mod completion_watch;
 mod errors;
 mod oneshot;
 pub(crate) mod output;
@@ -157,6 +158,7 @@ impl ProcessStore {
 
 pub(crate) struct UnifiedExecProcessManager {
     process_store: Mutex<ProcessStore>,
+    completion_watches: Mutex<completion_watch::CompletionWatches>,
     max_write_stdin_yield_time_ms: u64,
 }
 
@@ -164,6 +166,7 @@ impl UnifiedExecProcessManager {
     pub(crate) fn new(max_write_stdin_yield_time_ms: u64) -> Self {
         Self {
             process_store: Mutex::new(ProcessStore::default()),
+            completion_watches: Mutex::new(completion_watch::CompletionWatches::default()),
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
                 .max(MIN_EMPTY_YIELD_TIME_MS),
         }
@@ -178,6 +181,7 @@ impl Default for UnifiedExecProcessManager {
 
 struct ProcessEntry {
     process: Arc<UnifiedExecProcess>,
+    completion_event_done: CancellationToken,
     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
     call_id: String,
     process_id: i32,

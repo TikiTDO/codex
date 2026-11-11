@@ -166,6 +166,7 @@ pub(crate) fn spawn_exit_watcher(
     started_at: Instant,
     network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
+    completion_event_done: tokio_util::sync::CancellationToken,
 ) {
     let session_ref = Arc::clone(&context.session);
     let turn_ref = Arc::clone(&context.step_context.turn);
@@ -239,6 +240,9 @@ pub(crate) fn spawn_exit_watcher(
             )
             .await;
         }
+        // Distinct from the exit token: output and the completed execution item
+        // have both settled before an opted-in model notification may be sent.
+        completion_event_done.cancel();
     });
 }
 

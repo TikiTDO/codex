@@ -53,6 +53,13 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
             JsonSchema::number(Some(yield_time_ms_description.to_string())),
         ),
         (
+            "notify_on_exit".to_string(),
+            JsonSchema::boolean(Some(
+                "Opt in to one asynchronous tool notification when a yielded background command exits. Starts a turn if idle, or waits for a safe point if busy; never interrupts work. Defaults to false. The watcher is cancelled on task interruption, replacement, context compaction or shutdown. Use a bounded wait command and explicitly re-arm after completion."
+                    .to_string(),
+            )),
+        ),
+        (
             "max_output_tokens".to_string(),
             JsonSchema::number(Some(
                 "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.".to_string(),
