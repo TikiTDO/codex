@@ -343,7 +343,7 @@ async fn create_replacement_recorder(
     .with_selected_capability_roots(source_meta.selected_capability_roots)
     .with_runtime_workspace_roots(source_meta.runtime_workspace_roots)
     .with_multi_agent_version(source_meta.multi_agent_version)
-    .with_attention_receipt_lifetime_version(receipt_lifetime_proved.then_some(1))
+    .with_attention_receipt_lifetime_version(Some(if receipt_lifetime_proved { 1 } else { 0 }))
     .with_history_mode(ThreadHistoryMode::Paginated)
     .with_history_base(history_base)
     .with_forked_from_ordinal_exclusive(forked_from_ordinal_exclusive)

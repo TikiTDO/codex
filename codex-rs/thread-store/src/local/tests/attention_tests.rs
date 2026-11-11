@@ -174,7 +174,7 @@ async fn canonical_attention_copied_fork_preserves_header_and_parent_receipts_as
 }
 
 #[tokio::test]
-async fn canonical_attention_unknown_lifetime_refuses_while_foreground_remains_readable() {
+async fn canonical_attention_unmarked_root_recovers_while_unknown_version_refuses() {
     for version in [None, Some(2)] {
         for mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
             let home = TempDir::new().unwrap();
@@ -211,7 +211,7 @@ async fn canonical_attention_unknown_lifetime_refuses_while_foreground_remains_r
             let cold = LocalThreadStore::new(test_config(home.path()), None);
             cold.resume_thread(ResumeThreadParams {
                 thread_id: id,
-                rollout_path: Some(path),
+                rollout_path: Some(path.clone()),
                 history: None,
                 history_revision: None,
                 include_archived: false,
@@ -219,11 +219,30 @@ async fn canonical_attention_unknown_lifetime_refuses_while_foreground_remains_r
             })
             .await
             .unwrap();
-            let err = cold
-                .load_canonical_attention_receipts(id)
-                .await
-                .unwrap_err();
-            assert!(err.to_string().contains("receipt lifetime version"));
+            let recovered = cold.load_canonical_attention_receipts(id).await;
+            if version.is_none() {
+                let recovered =
+                    recovered.expect("standalone pre-marker session acquires native receipts");
+                let ledger = crate::reduce_attention_receipts(id, recovered.notices).unwrap();
+                assert_eq!(ledger.len(), 1);
+                assert!(crate::attention_receipt_is_quarantined(&ledger["receipt"]));
+                // Acquisition reads the canonical source; it does not fabricate a marker.
+                assert_eq!(
+                    codex_rollout::read_session_meta_line(&path)
+                        .await
+                        .unwrap()
+                        .meta
+                        .attention_receipt_lifetime_version,
+                    None
+                );
+            } else {
+                assert!(
+                    recovered
+                        .unwrap_err()
+                        .to_string()
+                        .contains("receipt lifetime version")
+                );
+            }
             let foreground = cold
                 .load_latest_model_context(LoadThreadHistoryParams {
                     thread_id: id,
@@ -239,6 +258,59 @@ async fn canonical_attention_unknown_lifetime_refuses_while_foreground_remains_r
             );
             cold.shutdown_thread(id).await.unwrap();
         }
+    }
+}
+
+#[tokio::test]
+async fn canonical_attention_unmarked_root_still_requires_intact_uninherited_source() {
+    for failure in ["damaged", "truncated", "inherited"] {
+        let home = TempDir::new().unwrap();
+        let id = ThreadId::new();
+        let store = LocalThreadStore::new(test_config(home.path()), None);
+        let mut params = create_thread_params(id);
+        params.history_mode = ThreadHistoryMode::Paginated;
+        store.create_thread(params).await.unwrap();
+        store
+            .append_items(AppendThreadItemsParams {
+                thread_id: id,
+                items: vec![notice(id)],
+            })
+            .await
+            .unwrap();
+        let path = store.live_rollout_path(id).await.unwrap();
+        store.shutdown_thread(id).await.unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let (head, rest) = text.split_once('\n').unwrap();
+        let mut head: serde_json::Value = serde_json::from_str(head).unwrap();
+        head["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("attention_receipt_lifetime_version");
+        if failure == "inherited" {
+            head["payload"]["forked_from_id"] = ThreadId::new().to_string().into();
+        }
+        let suffix = match failure {
+            "damaged" => "{invalid}\n",
+            "truncated" => "{\"type\":",
+            _ => "",
+        };
+        std::fs::write(&path, format!("{head}\n{rest}{suffix}")).unwrap();
+        let cold = LocalThreadStore::new(test_config(home.path()), None);
+        cold.resume_thread(ResumeThreadParams {
+            thread_id: id,
+            rollout_path: Some(path),
+            history: None,
+            history_revision: None,
+            include_archived: false,
+            metadata: thread_metadata(),
+        })
+        .await
+        .unwrap();
+        assert!(
+            cold.load_canonical_attention_receipts(id).await.is_err(),
+            "{failure}"
+        );
+        cold.shutdown_thread(id).await.unwrap();
     }
 }
 
@@ -386,7 +458,7 @@ async fn canonical_attention_migration_preserves_lifetime_independent_of_rollbac
                         .unwrap()
                         .meta
                         .attention_receipt_lifetime_version,
-                    proved.then_some(1)
+                    Some(if proved { 1 } else { 0 })
                 );
                 let cold = LocalThreadStore::new(config, Some(db));
                 cold.resume_thread(ResumeThreadParams {

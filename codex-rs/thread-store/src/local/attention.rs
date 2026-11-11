@@ -552,10 +552,23 @@ fn scan_source<R: Read>(
                     return Err(unavailable("wrong or absent canonical session identity"));
                 }
                 if let RolloutItem::SessionMeta(meta) = &line.item {
+                    // Standalone sessions created before native attention have no lifetime
+                    // marker, even after their history was paginated. Acquire their retained
+                    // receipt state from this strict, full-source scan rather than requiring
+                    // a header edit or a user-input delivery path. This never substitutes an
+                    // empty ledger: every retained receipt is still parsed and reduced below.
+                    // Inherited/bounded lifetimes and explicit unknown versions still refuse.
+                    let unmarked_root = meta.meta.attention_receipt_lifetime_version.is_none()
+                        && meta.meta.history_base.is_none()
+                        && meta.meta.forked_from_id.is_none()
+                        && meta.meta.parent_thread_id.is_none()
+                        && !meta.meta.attached_thread
+                        && meta.meta.subagent_history_start_ordinal.is_none();
                     if index == target_segment
                         && (segment.owner_thread_id != thread_id
                             || (presentation.is_none()
                                 && !(meta.meta.attention_receipt_lifetime_version == Some(1)
+                                    || unmarked_root
                                     || (allow_append_only_legacy
                                         && meta.meta.attention_receipt_lifetime_version.is_none()
                                         && meta.meta.history_mode

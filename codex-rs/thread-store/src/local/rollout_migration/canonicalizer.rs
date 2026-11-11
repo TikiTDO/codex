@@ -93,7 +93,10 @@ impl LegacyRolloutCanonicalizer {
             return Err(migration_error("rollout metadata thread id changed"));
         }
         // Only the independent strict full-source capture can supply this proof.
-        metadata.meta.attention_receipt_lifetime_version = receipt_lifetime_proved.then_some(1);
+        // An explicitly failed capture is not a pre-marker standalone session. Keep
+        // that distinction durable so compatibility acquisition cannot clear it.
+        metadata.meta.attention_receipt_lifetime_version =
+            Some(if receipt_lifetime_proved { 1 } else { 0 });
         metadata.meta.history_mode = ThreadHistoryMode::Paginated;
         metadata.meta.history_base = None;
         metadata.meta.subagent_history_start_ordinal = None;

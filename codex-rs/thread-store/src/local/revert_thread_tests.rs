@@ -420,11 +420,9 @@ async fn canonical_attention_revert_cold_resume_refuses_receipts_and_keeps_foreg
     let contents = std::fs::read_to_string(&path).unwrap();
     let (head, rest) = contents.split_once('\n').unwrap();
     let mut head: serde_json::Value = serde_json::from_str(head).unwrap();
-    head["payload"]
-        .as_object_mut()
-        .unwrap()
-        .remove("attention_receipt_lifetime_version");
-    // Only remove receipt proof. Preserve model projection byte coordinates.
+    head["payload"]["attention_receipt_lifetime_version"] = 2.into();
+    // An explicit unsupported version is not an unmarked old standalone session.
+    // Preserve model projection byte coordinates.
     let rewritten_head = head.to_string();
     assert!(rewritten_head.len() <= contents.split_once('\n').unwrap().0.len());
     let padding = " ".repeat(contents.split_once('\n').unwrap().0.len() - rewritten_head.len());
@@ -449,7 +447,7 @@ async fn canonical_attention_revert_cold_resume_refuses_receipts_and_keeps_foreg
             .unwrap()
             .meta
             .attention_receipt_lifetime_version,
-        None
+        Some(0)
     );
     let cold = LocalThreadStore::new(config, Some(db));
     cold.resume_thread(crate::ResumeThreadParams {
@@ -1100,7 +1098,7 @@ async fn canonical_attention_historic_v1_ancestor_and_empty_journal_do_not_prove
                 .unwrap()
                 .meta
                 .attention_receipt_lifetime_version,
-            None
+            Some(0)
         );
         // Model-format classification cannot promote receipt readiness.
         let report = store
