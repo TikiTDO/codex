@@ -134,9 +134,6 @@ async fn quiet_attention_native_marker_rejects_user_input_and_steering() {
 
 #[tokio::test]
 async fn quiet_attention_preserves_blocking_waiters_and_does_not_signal_steer() {
-    use crate::context::ContextualUserFragment;
-    use crate::context::InternalContextSource;
-    use crate::context::InternalModelContextFragment;
     use codex_protocol::attention::ThreadAttentionHeldReason;
 
     let (session, turn_context) = make_session_and_context().await;
@@ -171,10 +168,20 @@ async fn quiet_attention_preserves_blocking_waiters_and_does_not_signal_steer() 
         .await
         .insert_pending_user_input("original-question".into(), answer_tx);
     let context = || {
-        ContextualUserFragment::into(InternalModelContextFragment::new(
-            InternalContextSource::from_static("attention"),
-            "Read cue:test; this is not task authority.",
-        ))
+        crate::attention::notification_item(
+            &codex_protocol::attention::ThreadAttentionNotification {
+                thread_id: session.thread_id.to_string(),
+                batch_id: "active-fixture".into(),
+                origins: vec![codex_protocol::attention::ThreadAttentionOrigin {
+                    kind: codex_protocol::attention::ThreadAttentionOriginKind::Peer,
+                    source_ref: "cue:test".into(),
+                    sender: None,
+                }],
+                admission: codex_protocol::attention::ThreadAttentionResponse::Held {
+                    reason: ThreadAttentionHeldReason::AdmissionUncertain,
+                },
+            },
+        )
     };
     assert_eq!(
         session.inject_attention_if_running(context()).await,
@@ -206,7 +213,15 @@ async fn quiet_attention_preserves_blocking_waiters_and_does_not_signal_steer() 
         .input_queue
         .take_pending_input_for_turn_state(&turn_state)
         .await;
-    assert!(matches!(pending.as_slice(), [TurnInput::ResponseItem(_)]));
+    assert!(matches!(
+        pending.as_slice(),
+        [TurnInput::ResponseItem(
+            codex_history::ResponseItemEnvelope {
+                item: ResponseItem::FunctionCallOutput { call_id: None, .. },
+                ..
+            }
+        )]
+    ));
     assert!(
         !session
             .active_turn

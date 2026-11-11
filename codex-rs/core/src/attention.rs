@@ -8,6 +8,8 @@ use codex_protocol::attention::ThreadAttentionDelivery;
 use codex_protocol::attention::ThreadAttentionHeldReason;
 use codex_protocol::attention::ThreadAttentionNotification;
 use codex_protocol::attention::ThreadAttentionResponse;
+use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::turn_input::NotSubmittedReason;
 use codex_protocol::turn_input::TurnInput;
@@ -22,6 +24,31 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::MutexGuard;
+
+/// The protocol already supports standalone host tool notifications: a function
+/// output with no call_id. This is neither a fabricated tool call/reply pair nor
+/// an additional reply to an already completed model tool call.
+///
+/// Construct from the validated receipt coordinates, never source prose. Keeping
+/// the payload data-only avoids promoting a peer notice into user/developer input.
+pub(crate) fn notification_item(notice: &ThreadAttentionNotification) -> ResponseItem {
+    ResponseItem::FunctionCallOutput {
+        id: None,
+        call_id: None,
+        name: Some("attention".to_string()),
+        namespace: Some("observatory".to_string()),
+        output: FunctionCallOutputPayload::from_text(
+            serde_json::json!({
+                "type": "attention",
+                "thread_id": notice.thread_id,
+                "batch_id": notice.batch_id,
+                "origins": notice.origins,
+            })
+            .to_string(),
+        ),
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct AttentionLedger {
@@ -181,10 +208,10 @@ pub(crate) async fn handle(
         || notice.batch_id.is_empty()
         || notice.origins.is_empty()
         || !request.background_attention
-        || !matches!(&request.input, TurnInput::ResponseItem(_))
+        || request.input != TurnInput::ResponseItem(notification_item(&notice))
     {
         return Err(AttentionError::InvalidBinding(
-            "invalid exact-thread quiet attention request".into(),
+            "invalid exact-thread attention tool notification".into(),
         ));
     }
     codex_protocol::attention::validate_attention_metadata(&notice.batch_id, &notice.origins)
@@ -247,7 +274,7 @@ async fn admit(
 ) -> Result<ThreadAttentionResponse, AttentionError> {
     let TurnInput::ResponseItem(item) = request.input.clone() else {
         return Err(AttentionError::InvalidBinding(
-            "quiet attention must be internal response context".into(),
+            "attention must be a standalone tool notification".into(),
         ));
     };
     match session.inject_attention_if_running(item.clone()).await {
@@ -309,6 +336,25 @@ mod tests {
     use super::*;
     use codex_protocol::attention::ThreadAttentionOrigin;
     use codex_protocol::attention::ThreadAttentionOriginKind;
+
+    #[test]
+    fn attention_notification_uses_standalone_tool_output_not_an_instruction_role() {
+        let notice = notice(ThreadId::new(), "batch-one", "cue:one");
+        let item = notification_item(&notice);
+        let serialized = serde_json::to_value(&item).unwrap();
+        assert_eq!(serialized["type"], "function_call_output");
+        assert_eq!(serialized["name"], "attention");
+        assert_eq!(serialized["namespace"], "observatory");
+        assert!(serialized["call_id"].is_null());
+        assert!(serialized.get("role").is_none());
+        let output: serde_json::Value =
+            serde_json::from_str(serialized["output"].as_str().unwrap()).unwrap();
+        assert_eq!(output["thread_id"], notice.thread_id);
+        assert_eq!(output["batch_id"], notice.batch_id);
+        assert_eq!(output["origins"][0]["sourceRef"], "cue:one");
+        assert!(output.get("admission").is_none());
+    }
+
     fn notice(id: ThreadId, batch: &str, source: &str) -> ThreadAttentionNotification {
         ThreadAttentionNotification {
             thread_id: id.to_string(),

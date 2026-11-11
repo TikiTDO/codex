@@ -699,15 +699,16 @@ impl CodexThread {
     pub async fn submit_attention(
         &self,
         notice: codex_protocol::attention::ThreadAttentionNotification,
-        context: crate::context::InternalModelContextFragment,
         blocking_request: bool,
     ) -> Result<
         codex_protocol::attention::ThreadAttentionResponse,
         codex_protocol::attention::AttentionError,
     > {
         use codex_protocol::attention::AttentionError;
+        codex_protocol::attention::validate_attention_metadata(&notice.batch_id, &notice.origins)
+            .map_err(|err| AttentionError::InvalidBinding(err.into()))?;
         let mut request = TurnInputRequest::new(TurnInput::ResponseItem(
-            ContextualUserFragment::into(context),
+            crate::attention::notification_item(&notice),
         ));
         request.background_attention = true;
         request.start.turn_trigger = Some("attention".to_string());

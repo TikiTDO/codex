@@ -153,9 +153,28 @@ async fn quiet_attention_idle_case(
         .filter(|request| request.url.path().ends_with("/responses"))
         .collect::<Vec<_>>();
     assert_eq!(requests.len(), 1);
-    let input = requests[0].body_json::<Value>()?["input"].to_string();
-    assert!(input.contains("codex_internal_context"));
-    assert!(input.contains("cue:fixture"));
+    let body = requests[0].body_json::<Value>()?;
+    let notifications = body["input"]
+        .as_array()
+        .expect("input items")
+        .iter()
+        .filter(|item| {
+            item["type"] == "function_call_output"
+                && item["name"] == "attention"
+                && item["namespace"] == "observatory"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(notifications.len(), 1);
+    assert!(notifications[0].get("role").is_none());
+    assert!(notifications[0]["call_id"].is_null());
+    let output: Value = serde_json::from_str(
+        notifications[0]["output"]
+            .as_str()
+            .expect("notification output"),
+    )?;
+    assert_eq!(output["type"], "attention");
+    assert_eq!(output["thread_id"], thread.id);
+    assert_eq!(output["origins"][0]["sourceRef"], "cue:fixture");
     // Cold recovery requires the old server's actual persistence teardown, not
     // merely a dropped observer or kill-on-drop's best-effort process cleanup.
     assert!(

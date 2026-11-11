@@ -13849,14 +13849,10 @@ fn canonical_attention_request(
             reason: ThreadAttentionHeldReason::AdmissionUncertain,
         },
     };
-    let context = crate::context::InternalModelContextFragment::new(
-        crate::context::InternalContextSource::from_static("attention"),
-        "receipt fixture",
-    );
     let mut request = codex_protocol::turn_input::TurnInputRequest::new(
-        codex_protocol::turn_input::TurnInput::ResponseItem(
-            crate::context::ContextualUserFragment::into(context),
-        ),
+        codex_protocol::turn_input::TurnInput::ResponseItem(crate::attention::notification_item(
+            &notice,
+        )),
     );
     request.background_attention = true;
     request.start.turn_trigger = Some("attention".into());
@@ -13918,6 +13914,51 @@ async fn canonical_attention_first_idle_receipt_is_durable_and_deduplicated_with
         crate::attention::handle(&session, overlap, request, false, "overlap".into()).await,
         Err(AttentionError::InvalidBinding(_))
     ));
+    crate::session::handlers::shutdown_session_runtime(&session).await;
+    session.live_thread().unwrap().shutdown().await.unwrap();
+    drop(events);
+}
+
+#[tokio::test]
+async fn canonical_attention_rejects_instruction_or_mismatched_result_before_admission() {
+    use codex_protocol::attention::AttentionError;
+    let (mut session, _, events) = make_session_and_context_with_rx().await;
+    open_thread_persistence(Arc::get_mut(&mut session).expect("unique attention fixture session"))
+        .await;
+    let (notice, request) = canonical_attention_request(&session, "bound", "fixture:one");
+    let (other_notice, _) = canonical_attention_request(&session, "other", "fixture:two");
+    let context = crate::context::InternalModelContextFragment::new(
+        crate::context::InternalContextSource::from_static("attention"),
+        "This instruction must never be admitted as an attention result.",
+    );
+    for input in [
+        crate::context::ContextualUserFragment::into(context),
+        crate::attention::notification_item(&other_notice),
+    ] {
+        let mut invalid = request.clone();
+        invalid.input = codex_protocol::turn_input::TurnInput::ResponseItem(input);
+        assert!(matches!(
+            crate::attention::handle(
+                &session,
+                notice.clone(),
+                invalid,
+                false,
+                "invalid-notification".into(),
+            )
+            .await,
+            Err(AttentionError::InvalidBinding(_))
+        ));
+    }
+    assert!(session.active_turn.lock().await.is_none());
+    assert!(
+        session
+            .services
+            .attention_ledger
+            .snapshot(session.thread_id, session.live_thread())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     crate::session::handlers::shutdown_session_runtime(&session).await;
     session.live_thread().unwrap().shutdown().await.unwrap();
     drop(events);
