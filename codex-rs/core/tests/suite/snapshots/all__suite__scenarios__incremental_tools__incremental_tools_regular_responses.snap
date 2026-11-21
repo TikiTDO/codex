@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools.rs
-assertion_line: 399
+assertion_line: 438
 expression: "context_snapshot::format_request_history_snapshot(if\nsuppress_model_change_announcements == Some(true)\n{\n    \"A model switch suppresses the model ID announcement while appending changed tools and replacement instructions. Repeated turns preserve the prefix; compaction starts a new window with the updated base.\"\n} else if incremental_tools\n{\n    \"Tool definitions precede the initial base instructions. A model switch appends one developer notice, changed tools, and replacement instructions without rewriting the prefix; compaction starts a new window with the updated base.\"\n} else\n{\n    \"Regular Responses requests carry the full current tool catalog without an incremental notice; changed execution instructions replace the catalog on subsequent requests.\"\n}, &requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Tool definitions precede the initial base instructions. A model switch appends one developer notice, changed tools, and replacement instructions without rewriting the prefix; compaction starts a new window with the updated base.
@@ -19,13 +19,15 @@ Settings:
   tools (1; hash=16d317804b13dd3d):
     - web_search; hash=e214d4db1bc49e89
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=019c865b71a05fec):
-        - namespace/functions; hash=f3355f5705e28592
+00:additional_tools/developer (2; hash=a4e0576db44b9223):
+        - namespace/functions; hash=eb527ccd2c7818c3
           - custom/exec
           - function/wait
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
+          - function/context_status
+          - function/compact_context
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
@@ -49,13 +51,15 @@ Settings:
 Settings: relative to window 1
   model: "updated-tools-model"
 -- request 3 (turn) --
-00:additional_tools/developer (2; hash=019c865b71a05fec):
-        - namespace/functions; hash=f3355f5705e28592
+00:additional_tools/developer (2; hash=a4e0576db44b9223):
+        - namespace/functions; hash=eb527ccd2c7818c3
           - custom/exec
           - function/wait
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
+          - function/context_status
+          - function/compact_context
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
@@ -96,13 +100,15 @@ Settings: relative to window 1
 ## Window 3 (after request 5: input diverged at item 00)
 Settings: same as window 2
 -- request 6 (turn) --
-00:additional_tools/developer (2; hash=7df544e43dd38360):
-        - namespace/functions; hash=1e51a9a9273be2f8
+00:additional_tools/developer (2; hash=7e7b1722a5a602f7):
+        - namespace/functions; hash=16df8b184c8e13cd
           - custom/exec
           - function/wait
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
+          - function/context_status
+          - function/compact_context
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
@@ -122,8 +128,18 @@ Settings: same as window 2
         </tools>
 06:message/user:
     <ENVIRONMENT_CONTEXT>
-07:message/user:
+07:message/developer:
+    # CONTEXT COMPACTION EVENT
+
+    The conversation history was compressed immediately before this marker was recorded. The retained
+    summary is bounded evidence, not proof of uninterrupted context and not automatic task authority.
+
+    Before consequential action, re-establish the current task, constraints, runtime and identity
+    facts, and relevant route or custody state from live sources where the active instructions require
+    it. Do not perform an external effect solely because this marker appeared. If the seam materially
+    changes the response, say that compaction occurred rather than simulating unbroken continuity.
+08:message/user:
     Continue with the same updated tools.
-08:compaction:encrypted=true; chars=28; hash=e4a73156e0a498bc
-09:message/user:
+09:compaction:encrypted=true; chars=28; hash=e4a73156e0a498bc
+10:message/user:
     Continue after compaction.

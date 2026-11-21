@@ -302,6 +302,9 @@ pub(crate) async fn admit(
     }
     // Invoke the existing handler directly. Enqueue-and-wait here would self-wait
     // on this same submission loop and can deadlock with shutdown.
+    let request = crate::codex_thread::resolve_client_turn_input(request)
+        .await
+        .map_err(|err| AttentionError::Unavailable(err.to_string()))?;
     let result = turn_input::handle(
         session,
         WithTurnExtensionData::from(request),
@@ -330,9 +333,9 @@ pub(crate) async fn admit(
                 _ => ThreadAttentionHeldReason::Busy,
             },
         },
-        TurnInputSubmission::Steered { .. } => {
+        TurnInputSubmission::Accepted | TurnInputSubmission::Steered { .. } => {
             return Err(AttentionError::Unavailable(
-                "quiet admission unexpectedly steered".into(),
+                "quiet idle admission unexpectedly returned a non-start acceptance".into(),
             ));
         }
     })

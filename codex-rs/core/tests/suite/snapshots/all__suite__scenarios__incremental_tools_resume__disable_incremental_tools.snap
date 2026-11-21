@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools_resume.rs
+assertion_line: 212
 expression: "context_snapshot::format_request_history_snapshot(\"Disabling incremental tools preserves updates in the existing window; after compaction the generated catalog survives resume.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Disabling incremental tools preserves updates in the existing window; after compaction the generated catalog survives resume.
@@ -16,11 +17,13 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=7b4c6a992fd91f91):
-        - namespace/functions; hash=101d32aa59ea258b
+00:additional_tools/developer (2; hash=5b7d07d036d56fdb):
+        - namespace/functions; hash=cabba451202436d9
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
+          - function/context_status
+          - function/compact_context
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
@@ -56,10 +59,12 @@ Settings:
 ## Window 2 (after request 3: input diverged at item 00)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=3b0da5c6c5e4fd8e):
-        - namespace/functions; hash=36c9912d971c5be8
+00:additional_tools/developer (2; hash=bceeceb399ca6805):
+        - namespace/functions; hash=7059bf0165681409
           - function/update_plan
           - function/request_user_input
+          - function/context_status
+          - function/compact_context
           - custom/apply_patch
           - function/view_image
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
@@ -75,13 +80,23 @@ Settings: same as window 1
         </tools>
 04:message/user:
     <ENVIRONMENT_CONTEXT>
-05:message/user:
+05:message/developer:
+    # CONTEXT COMPACTION EVENT
+
+    The conversation history was compressed immediately before this marker was recorded. The retained
+    summary is bounded evidence, not proof of uninterrupted context and not automatic task authority.
+
+    Before consequential action, re-establish the current task, constraints, runtime and identity
+    facts, and relevant route or custody state from live sources where the active instructions require
+    it. Do not perform an external effect solely because this marker appeared. If the seam materially
+    changes the response, say that compaction occurred rather than simulating unbroken continuity.
+06:message/user:
     Disable incremental tools, enable planning, and remove shell tools in the existing window.
-06:compaction:encrypted=true; chars=17; hash=6c10f5e81c1f8e16
-07:message/user:
+07:compaction:encrypted=true; chars=17; hash=6c10f5e81c1f8e16
+08:message/user:
     Continue in the new window.
 -- request 5 (turn) --
-08:message/user:
-    <ENVIRONMENT_CONTEXT>
 09:message/user:
+    <ENVIRONMENT_CONTEXT>
+10:message/user:
     Resume with the same tools.

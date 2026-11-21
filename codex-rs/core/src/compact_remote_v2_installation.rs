@@ -7,6 +7,7 @@ use crate::compact::build_compaction_replacement_history;
 use crate::context::world_state::split_prefix_updates;
 use crate::context_manager::updates::merge_world_state_updates;
 use crate::session::CompactedHistoryInstallation;
+use crate::session::PrefixCompactionInstallation;
 use codex_rollout_trace::CompactionCheckpointTracePayload;
 
 #[cfg(test)]
@@ -27,6 +28,7 @@ pub(super) async fn run_compaction(
     fallback: CompactionFallback,
     compaction_input: Option<&CompactionInput>,
 ) -> CodexResult<bool> {
+    let mut installed_prefix = false;
     if let Some(candidate) = candidate {
         let installed = build_and_install_compaction(
             sess,
@@ -42,6 +44,7 @@ pub(super) async fn run_compaction(
         )
         .await?;
         if installed {
+            installed_prefix = true;
             let status = crate::session::context_window::context_window_token_status(
                 sess,
                 &replacement_step_context.turn,
@@ -57,7 +60,7 @@ pub(super) async fn run_compaction(
             return Ok(false);
         }
     }
-    build_and_install_compaction(
+    let foreground = build_and_install_compaction(
         sess,
         step_context,
         replacement_step_context,
@@ -69,7 +72,11 @@ pub(super) async fn run_compaction(
         /*candidate*/ None,
         compaction_input,
     )
-    .await
+    .await;
+    match foreground {
+        Ok(installed) => Ok(installed_prefix || installed),
+        Err(err) => Err(err),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -107,7 +114,8 @@ async fn build_and_install_compaction(
             }),
         turn_context.provider.info().name.as_str(),
     );
-    if needs_start && candidate.is_none() {
+    let defer_start = sess.defer_compaction_start(turn_context, compaction_metadata.phase());
+    if needs_start && candidate.is_none() && !defer_start {
         sess.emit_turn_item_started(turn_context, &compaction_item)
             .await;
     }
@@ -127,7 +135,11 @@ async fn build_and_install_compaction(
             )),
         )
     } else {
+        let mut request = crate::hook_runtime::sampling::SamplingRequest::new(
+            codex_hooks::SamplingKind::ForegroundCompaction,
+        );
         let attempt = run_remote_compact_v2_attempt(
+            &mut request,
             sess,
             step_context,
             &compaction_trace,
@@ -156,6 +168,7 @@ async fn build_and_install_compaction(
                         fallback_turn_context.provider.info().name.as_str(),
                     );
                 let fallback_result = run_remote_compact_v2_attempt(
+                    &mut request,
                     sess,
                     replacement_step_context,
                     &fallback_compaction_trace,
@@ -174,6 +187,13 @@ async fn build_and_install_compaction(
                 );
                 match fallback_result {
                     Ok(attempt) => (attempt, fallback_turn_context),
+                    Err(fallback_error)
+                        if crate::responses_retry::is_terminal_sampling_outcome(
+                            &fallback_error,
+                        ) =>
+                    {
+                        return Err(fallback_error);
+                    }
                     Err(_) => return Err(error),
                 }
             }
@@ -181,6 +201,7 @@ async fn build_and_install_compaction(
         (attempt, compaction_turn_context, None)
     };
     let RemoteCompactV2Attempt {
+        rejected_audio_file_ids,
         input_goal_ids,
         trace_input_history,
         prompt_input,
@@ -191,10 +212,9 @@ async fn build_and_install_compaction(
         owned_client_session: _owned_client_session,
     } = attempt;
     if prefix.is_none()
-        && let Some(token_usage) = token_usage.as_ref()
+        && let Some(usage) = &token_usage
     {
-        sess.record_rollout_budget_usage(token_usage).await?;
-        analytics_details.active_context_tokens_before = Some(token_usage.input_tokens);
+        analytics_details.active_context_tokens_before = Some(usage.input_tokens);
     }
     let (compacted_history, retained_images) = build_v2_compacted_history(
         prompt_input,
@@ -206,6 +226,7 @@ async fn build_and_install_compaction(
         } else {
             RetainedImageBudget::Disabled
         },
+        crate::session::file_audio::snapshot(sess).await.as_ref(),
     );
     let reviewer_compaction_hash = reviewer_compaction_hash(sess, turn_context).await;
     let installed = if let Some((prefix, model_info, cutoff_world_state)) = prefix {
@@ -213,27 +234,35 @@ async fn build_and_install_compaction(
             .build_initial_context_with_world_state(replacement_step_context, &cutoff_world_state)
             .await;
         let (prefix_context, initial_context) = split_prefix_updates(initial_context);
-        let mut initial_context: Vec<ResponseItemEnvelope> = merge_world_state_updates(initial_context)
-            .into_iter()
-            .map(ResponseItemEnvelope::new)
-            .collect();
-        initial_context.push(ResponseItemEnvelope::new(crate::compact::post_compaction_item(
-            turn_context.config.post_compaction_prompt.as_deref(),
-        )));
+        let mut initial_context: Vec<ResponseItemEnvelope> =
+            merge_world_state_updates(initial_context)
+                .into_iter()
+                .map(ResponseItemEnvelope::new)
+                .collect();
+        initial_context.push(ResponseItemEnvelope::new(
+            crate::compact::post_compaction_item(
+                turn_context.config.post_compaction_prompt.as_deref(),
+            ),
+        ));
         sess.replace_compacted_history(
             compacted_history,
             replacement_step_context.to_turn_context_item(),
             world_state_baseline,
-            CompactedHistoryInstallation::Prefix {
+            rejected_audio_file_ids,
+            CompactedHistoryInstallation::Prefix(PrefixCompactionInstallation {
                 prefix,
                 prefix_context,
                 initial_context,
+                reset_world_state_sections: world_state
+                    .full_context_excluded_section_ids()
+                    .chain(cutoff_world_state.full_context_excluded_section_ids())
+                    .collect(),
                 model_info: &model_info,
                 compaction_response_id,
                 reviewer_compaction_hash,
                 turn_context,
                 started_item: needs_start.then_some(&compaction_item),
-            },
+            }),
         )
         .await
     } else {
@@ -246,12 +275,14 @@ async fn build_and_install_compaction(
         .await;
         let new_history = crate::compact::insert_initial_context_before_last_real_user_or_summary(
             new_history,
-            vec![ResponseItemEnvelope::new(crate::compact::post_compaction_item(
-                compaction_turn_context
-                    .config
-                    .post_compaction_prompt
-                    .as_deref(),
-            ))],
+            vec![ResponseItemEnvelope::new(
+                crate::compact::post_compaction_item(
+                    turn_context
+                        .config
+                        .post_compaction_prompt
+                        .as_deref(),
+                ),
+            )],
         );
         let (window_number, window_ids) = sess.advance_auto_compact_window().await;
         let installation = CompactedHistoryMetadata {
@@ -263,10 +294,15 @@ async fn build_and_install_compaction(
             compaction_model_hash: compaction_turn_context.model_info().comp_hash.clone(),
             reviewer_compaction_hash,
         };
+        if needs_start && defer_start {
+            sess.emit_turn_item_started(turn_context, &compaction_item)
+                .await;
+        }
         sess.replace_compacted_history(
             new_history,
             replacement_step_context.to_turn_context_item(),
             world_state_baseline,
+            rejected_audio_file_ids,
             installation,
         )
         .await
@@ -310,7 +346,9 @@ async fn reviewer_compaction_hash(sess: &Session, turn_context: &TurnContext) ->
         // reviewer, including model changes accepted while compaction was running.
         let mut review_context = crate::guardian::GuardianReviewContext::from(&review_turn);
         review_context.model_info = review_turn.capture_current_model_info();
-        let (_, reviewer) = crate::guardian::resolve_review_model(sess, &review_context).await;
+        let (_, reviewer) = crate::guardian::resolve_review_model(sess, &review_context)
+            .await
+            .ok()?;
         reviewer.comp_hash.clone()
     } else {
         None

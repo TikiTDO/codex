@@ -67,8 +67,9 @@ fn params(
         multi_agent_version: None,
         history_mode: mode,
         history_base: None,
+        inherited_history_visibility: Default::default(),
         subagent_history_start_ordinal: hidden,
-        initial_window_id: "window-1".into(),
+        initial_window_id: codex_protocol::ContextWindowId::new_uuid_v7(),
         runtime_workspace_roots: None,
         metadata: ThreadPersistenceMetadata {
             cwd: Some(home.to_path_buf()),
@@ -80,13 +81,13 @@ fn params(
 
 async fn seed_metadata(store: &LocalThreadStore, id: ThreadId, mode: ThreadHistoryMode) {
     // Match native public paginated-read setup; a projection row is not state metadata.
-    let mut metadata = codex_state::ThreadMetadataBuilder::new(
+    let metadata = codex_state::ThreadMetadataBuilder::new(
         id,
         store.config.codex_home.join("not-created-yet.jsonl"),
         chrono::Utc::now(),
         SessionSource::Exec,
-    );
-    metadata.history_mode = mode;
+    )
+    .with_history_mode(mode);
     store
         .state_db()
         .await
@@ -154,6 +155,7 @@ fn marker(id: ThreadId, turn: &str) -> RolloutItem {
 }
 fn user(id: ThreadId, turn: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+        content_token_count: None,
         thread_id: id,
         turn_id: turn.into(),
         started_at_ms: None,
@@ -311,6 +313,7 @@ fn canonical_attention_presentation_intact_unmarked_root_recovers_without_fabric
     }
     let segment = RolloutLineageSegment {
         rollout_id: id,
+        hides_parent: false,
         owner_thread_id: id,
         rollout_path: "not-reopened".into(),
         start_ordinal: 1,
@@ -337,9 +340,7 @@ fn canonical_attention_presentation_intact_unmarked_root_recovers_without_fabric
             bytes.len() as u64,
         )],
         false,
-        Some(RolloutLineage {
-            segments: vec![segment],
-        }),
+        Some(RolloutLineage::from_captured_segments(id, vec![segment])),
     )
     .unwrap()
     .presentation
@@ -624,15 +625,14 @@ fn canonical_attention_presentation_strict_identity_ordinal_and_truncation_refus
     let mut valid = super::tests::bytes(id);
     let segment = RolloutLineageSegment {
         rollout_id: id,
+        hides_parent: false,
         owner_thread_id: id,
         rollout_path: "not-reopened".into(),
         start_ordinal: 1,
         end: None,
     };
     let check = |bytes: Vec<u8>, physical: RolloutLineageSegment| {
-        let scope = RolloutLineage {
-            segments: vec![physical.clone()],
-        };
+        let scope = RolloutLineage::from_captured_segments(id, vec![physical.clone()]);
         scan_source(
             id,
             vec![(

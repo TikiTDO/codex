@@ -93,7 +93,7 @@ impl ToolExecutor<ToolInvocation> for ContextStatusHandler {
             let token_status = context_window_token_status_for_model(
                 invocation.session.as_ref(),
                 step.turn.config.as_ref(),
-                step.turn.as_ref(),
+                Some(step.turn.as_ref()),
                 step.settings.model_info.as_ref(),
             )
             .await;

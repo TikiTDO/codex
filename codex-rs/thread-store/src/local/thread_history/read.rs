@@ -5,12 +5,13 @@ use serde::Serialize;
 use sqlx::Row;
 
 use super::super::LocalThreadStore;
+use super::super::rollout_lineage::LineageWalk;
 use super::super::rollout_lineage::RolloutLineage;
 use super::segment_paging::page_item_rows;
 use super::segment_paging::page_turn_rows;
 use super::segment_paging::validate_page_size;
 use super::sqlite_integer;
-use super::turn_lookup::find_source_turn;
+use super::turn_lookup::find_turn;
 use crate::ItemPage;
 use crate::ListItemsParams;
 use crate::ListTurnsParams;
@@ -111,24 +112,30 @@ pub(in crate::local) async fn list_turns(
     )
     .await?;
     validate_page_size(params.page_size)?;
-    let lineage = store
-        .resolve_rollout_lineage_for_history_page(params.thread_id)
-        .await?;
-    list_turns_on_lineage(store, params, &lineage).await
+    let lineage = LineageWalk::for_history_page(store, params.thread_id);
+    list_turns_with_walk(store, params, lineage).await
 }
 
-/// Same native query/mapping body, for callers already owning a validated finite lineage.
+/// Query exactly the finite lineage captured under attention's lifecycle guards.
 pub(in crate::local) async fn list_turns_on_lineage(
     store: &LocalThreadStore,
     params: ListTurnsParams,
-    lineage: &RolloutLineage,
+    bound: &RolloutLineage,
 ) -> ThreadStoreResult<TurnPage> {
     validate_page_size(params.page_size)?;
+    list_turns_with_walk(store, params, LineageWalk::from_bound_lineage(store, bound)).await
+}
+
+async fn list_turns_with_walk(
+    store: &LocalThreadStore,
+    params: ListTurnsParams,
+    mut lineage: LineageWalk<'_>,
+) -> ThreadStoreResult<TurnPage> {
     let pool = store.thread_history_db().await?;
     let page = page_turn_rows(
         pool,
         params.thread_id,
-        lineage,
+        &mut lineage,
         params.cursor.as_deref(),
         params.page_size,
         params.sort_direction,
@@ -146,7 +153,7 @@ pub(in crate::local) async fn list_turns_on_lineage(
             {
                 // Synthetic fork-boundary rows are interrupted without local summary IDs.
                 // Load their summary from the earliest visible source turn.
-                load_inherited_summary_items(pool, lineage, &turn).await?
+                load_inherited_summary_items(pool, &mut lineage, &turn).await?
             }
             StoredTurnItemsView::Summary => turn.summary_items,
         };
@@ -185,6 +192,7 @@ pub(in crate::local) async fn list_items(
         if params.turn_id.is_none()
             || params.position.is_some()
             || params.after_updated_at_ordinal.is_some()
+            || params.before_updated_at_ordinal.is_some()
             || params.sort_key != crate::ItemSortKey::CreatedAtOrdinal
             || !(1..=100).contains(&ids.len())
         {
@@ -197,11 +205,9 @@ pub(in crate::local) async fn list_items(
         params.sort_direction = crate::SortDirection::Asc;
     }
     validate_page_size(params.page_size)?;
-    let lineage = store
-        .resolve_rollout_lineage_for_history_page(params.thread_id)
-        .await?;
     let pool = store.thread_history_db().await?;
-    let page = page_item_rows(pool, &lineage, &params).await?;
+    let mut lineage = LineageWalk::for_history_page(store, params.thread_id);
+    let page = page_item_rows(pool, &mut lineage, &params).await?;
 
     Ok(ItemPage {
         items: page.rows.into_iter().map(|row| row.item).collect(),
@@ -242,12 +248,12 @@ pub(super) async fn validate_thread_for_paginated_reads(
 
 async fn load_inherited_summary_items(
     pool: &sqlx::SqlitePool,
-    lineage: &RolloutLineage,
+    lineage: &mut LineageWalk<'_>,
     turn: &StoredTurnRow,
 ) -> ThreadStoreResult<Vec<StoredThreadItem>> {
-    let source = find_source_turn(pool, lineage, turn.turn_id.as_str()).await?;
+    let lineage = lineage.resolve_all().await?;
+    let source = find_turn(pool, lineage.iter().rev(), turn.turn_id.as_str()).await?;
     let Some(segment) = lineage
-        .segments()
         .iter()
         .find(|segment| segment.rollout_id() == source.rollout_id)
     else {

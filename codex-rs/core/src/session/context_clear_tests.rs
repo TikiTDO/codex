@@ -173,10 +173,13 @@ async fn clear_context_wake_first_real_reservation_is_preserved() {
     let store = Arc::new(ClearStore::default());
     attach_test_thread_store(&mut session, store.clone()).await;
     queue_trigger(&session).await;
-    let (reserved, _) = session.reserve_pending_work_turn().await.unwrap();
+    let reserved = session.reserve_pending_work_turn().await.unwrap();
     assert!(session.clear_effective_context().await.is_err());
     let active = session.active_turn.lock().await;
-    assert!(Arc::ptr_eq(&active.as_ref().unwrap().turn_state, &reserved));
+    assert!(Arc::ptr_eq(
+        &active.as_ref().unwrap().turn_state,
+        &reserved.turn_state
+    ));
     assert!(session.input_queue.has_trigger_turn_mailbox_items().await);
 }
 
@@ -328,7 +331,7 @@ async fn clear_context_private_completion_keeps_admission_through_actual_flush(
     assert!(futures::poll!(clear.as_mut()).is_pending());
     store.fail_flush.store(false, Ordering::SeqCst);
     store.release.add_permits(1);
-    let ((), result) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let (_, result) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::join!(finish, clear)
     })
     .await
@@ -396,7 +399,7 @@ async fn clear_context_private_completion_releases_admission_before_blocked_pare
         "admission released before send can complete"
     );
     queue_trigger(&session).await;
-    let (next_state, _) = session
+    let next_state = session
         .reserve_pending_work_turn()
         .await
         .expect("parent may reuse reviewer immediately");
@@ -419,7 +422,7 @@ async fn clear_context_private_completion_releases_admission_before_blocked_pare
             .as_ref()
             .unwrap()
             .turn_state,
-        &next_state
+        &next_state.turn_state
     ));
 }
 
@@ -538,10 +541,9 @@ async fn clear_context_real_ordinary_input_waits_for_barrier_then_starts_on_clea
     let mut ordinary = Box::pin(tokio::task::unconstrained(
         super::super::turn_input::handle(
             &session,
-            TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "ORDINARY_INPUT_AFTER_CLEAR".into(),
-                text_elements: Vec::new(),
-            }]),
+            TurnInputRequest::user_input(vec![codex_user_input::ResolvedUserInput::text(
+                "ORDINARY_INPUT_AFTER_CLEAR".into(),
+            )]),
             TurnInputMode::StartOrSteer,
             "ordinary-after-clear".into(),
         ),

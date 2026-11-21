@@ -27,7 +27,7 @@ mod tests {
     use super::*;
     use crate::session::session::Session;
     use crate::session::step_context::StepContext;
-    use crate::session::tests::make_session_and_context;
+    use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
     use crate::session::turn_context::TurnContext;
     use crate::state::TaskKind;
     use crate::tasks::SessionTask;
@@ -41,6 +41,24 @@ mod tests {
     use codex_protocol::protocol::TurnAbortReason;
     use std::time::Duration;
     use tokio::sync::Mutex;
+
+    async fn test_session_and_turn() -> (Arc<Session>, Arc<TurnContext>) {
+        let (session, turn, _events) = make_session_and_context_with_auth_and_config_and_rx(
+            codex_login::CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            |config| {
+                #[cfg(target_os = "linux")]
+                {
+                    config.codex_linux_sandbox_exe = Some(
+                        codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
+                            .expect("completion-watch tests require the native sandbox helper"),
+                    );
+                }
+            },
+        )
+        .await;
+        (session, turn)
+    }
 
     struct RunningTask;
     impl SessionTask for RunningTask {
@@ -89,9 +107,7 @@ mod tests {
 
     #[tokio::test]
     async fn completion_watch_is_opt_in_and_does_not_duplicate_inline_completion() {
-        let (session, turn) = make_session_and_context().await;
-        let session = Arc::new(session);
-        let turn = Arc::new(turn);
+        let (session, turn) = test_session_and_turn().await;
         launch(&session, &turn, "sleep 1", false).await;
         assert!(
             session
@@ -119,9 +135,7 @@ mod tests {
 
     #[tokio::test]
     async fn completion_watch_preserves_question_and_delivers_once_without_steering() {
-        let (session, turn) = make_session_and_context().await;
-        let session = Arc::new(session);
-        let turn = Arc::new(turn);
+        let (session, turn) = test_session_and_turn().await;
         session
             .spawn_task(Arc::clone(&turn), Vec::new(), RunningTask)
             .await;
@@ -185,7 +199,8 @@ mod tests {
             .take_pending_input_for_turn_state(&state)
             .await;
         assert_eq!(pending.len(), 1);
-        let crate::session::TurnInput::ResponseItem(envelope) = &pending[0] else {
+        assert!(pending[0].additional_context.is_none());
+        let crate::session::TurnInput::ResponseItem(envelope) = &pending[0].input else {
             panic!("not tool evidence")
         };
         let wire = serde_json::to_value(&envelope.item).unwrap();
@@ -239,9 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn completion_watch_interrupt_cancels_only_watched_processes_and_advances_generation() {
-        let (session, turn) = make_session_and_context().await;
-        let session = Arc::new(session);
-        let turn = Arc::new(turn);
+        let (session, turn) = test_session_and_turn().await;
         session
             .spawn_task(Arc::clone(&turn), Vec::new(), RunningTask)
             .await;

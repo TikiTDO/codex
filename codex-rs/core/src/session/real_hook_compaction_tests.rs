@@ -84,6 +84,7 @@ async fn real_compact_lifecycle_stdout_reaches_summary_and_returning_model(
         },
         session.thread_id,
         Arc::new(crate::hook_mcp_executor::CoreHookMcpExecutor {
+            session: Default::default(),
             runtime: Arc::clone(&session.services.mcp_runtime),
             thread_id: session.thread_id,
         }),
@@ -93,10 +94,9 @@ async fn real_compact_lifecycle_stdout_reaches_summary_and_returning_model(
     session.services.hooks.store(Arc::new(hooks));
     super::super::turn_input::handle(
         &session,
-        TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "exercise compact lifecycle".into(),
-            text_elements: vec![],
-        }]),
+        TurnInputRequest::user_input(vec![codex_user_input::ResolvedUserInput::text(
+            "exercise compact lifecycle".into(),
+        )]),
         TurnInputMode::StartOrSteer,
         "compact-lifecycle-turn".into(),
     )
@@ -267,6 +267,7 @@ async fn run_real_hook_turn_case(
         },
         session.thread_id,
         Arc::new(crate::hook_mcp_executor::CoreHookMcpExecutor {
+            session: Default::default(),
             runtime: Arc::clone(&session.services.mcp_runtime),
             thread_id: session.thread_id,
         }),
@@ -276,10 +277,9 @@ async fn run_real_hook_turn_case(
     session.services.hooks.store(Arc::new(hooks));
     super::super::turn_input::handle(
         &session,
-        TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "exercise compaction publication".into(),
-            text_elements: Vec::new(),
-        }]),
+        TurnInputRequest::user_input(vec![codex_user_input::ResolvedUserInput::text(
+            "exercise compaction publication".into(),
+        )]),
         TurnInputMode::StartOrSteer,
         "publication-turn".into(),
     )
@@ -393,10 +393,9 @@ async fn run_real_hook_turn_case(
         .unwrap();
         super::super::turn_input::handle(
             &session,
-            TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "next ordinary turn".into(),
-                text_elements: Vec::new(),
-            }]),
+            TurnInputRequest::user_input(vec![codex_user_input::ResolvedUserInput::text(
+                "next ordinary turn".into(),
+            )]),
             TurnInputMode::StartOrSteer,
             "after-late-publication".into(),
         )
