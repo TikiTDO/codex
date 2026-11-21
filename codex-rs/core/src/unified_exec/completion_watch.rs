@@ -1,7 +1,7 @@
 //! Hand-armed completion subscriptions for existing sandboxed exec processes.
 //!
 //! A subscription is local to this live thread. It survives ordinary turn finish,
-//! but not interrupt, task replacement, compaction or shutdown. It is never
+//! but not interrupt, task replacement, successful context replacement or shutdown. It is never
 //! reconstructed from command output or replayed blindly after a process restart.
 use super::UnifiedExecContext;
 use super::UnifiedExecProcess;
@@ -20,6 +20,19 @@ use tokio_util::sync::CancellationToken;
 pub(super) struct CompletionWatches {
     generation: u64,
     watches: HashMap<i32, Arc<CompletionWatch>>,
+}
+
+impl CompletionWatches {
+    fn cancel(&mut self) -> Vec<Arc<CompletionWatch>> {
+        self.generation = self.generation.wrapping_add(1);
+        self.watches
+            .drain()
+            .map(|(_, watch)| {
+                watch.cancelled.cancel();
+                watch
+            })
+            .collect()
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -334,6 +347,27 @@ fn notification_item(
 }
 
 impl UnifiedExecProcessManager {
+    /// Fence delivery before idle admission, and invalidate watches only after a successful
+    /// durable context replacement. A refused, failed or cancelled replacement drops the fence
+    /// unchanged. Delivery takes registry -> admission, so the opposite lock order would deadlock.
+    pub(crate) async fn replace_context_with_fenced_completion_watches<T>(
+        &self,
+        replacement: impl std::future::Future<Output = anyhow::Result<T>>,
+    ) -> anyhow::Result<T> {
+        let mut registry = self.completion_watches.lock().await;
+        let result = replacement.await;
+        let watches = if result.is_ok() {
+            registry.cancel()
+        } else {
+            Vec::new()
+        };
+        drop(registry);
+        for watch in watches {
+            watch.process.terminate();
+        }
+        result
+    }
+
     pub(crate) async fn completion_watch_generation(&self) -> u64 {
         self.completion_watches.lock().await.generation
     }
@@ -459,18 +493,7 @@ impl UnifiedExecProcessManager {
     }
 
     pub(crate) async fn cancel_completion_watches(&self) {
-        let watches = {
-            let mut registry = self.completion_watches.lock().await;
-            registry.generation = registry.generation.wrapping_add(1);
-            registry
-                .watches
-                .drain()
-                .map(|(_, watch)| {
-                    watch.cancelled.cancel();
-                    watch
-                })
-                .collect::<Vec<_>>()
-        };
+        let watches = self.completion_watches.lock().await.cancel();
         // Only opted-in watcher commands are terminated here. Ordinary background
         // terminals keep the existing process manager's lifetime and permissions.
         for watch in watches {

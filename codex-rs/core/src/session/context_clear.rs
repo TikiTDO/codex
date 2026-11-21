@@ -17,11 +17,18 @@ use codex_protocol::protocol::TokenUsageInfo;
 use codex_thread_store::PersistContext;
 
 impl Session {
+    pub(crate) async fn clear_effective_context(&self) -> anyhow::Result<Option<TokenCountEvent>> {
+        self.services
+            .unified_exec_manager
+            .replace_context_with_fenced_completion_watches(self.clear_effective_context_inner())
+            .await
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "idle admission and state stay fenced through the durable checkpoint barrier"
     )]
-    pub(crate) async fn clear_effective_context(&self) -> anyhow::Result<Option<TokenCountEvent>> {
+    async fn clear_effective_context_inner(&self) -> anyhow::Result<Option<TokenCountEvent>> {
         let live_thread = self.live_thread_for_persistence("clear context")?;
         let _settings = thread_settings::acquire_persistence_lock(self).await;
         let _active = self.active_turn.lock().await;
