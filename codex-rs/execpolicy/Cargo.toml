@@ -21,6 +21,7 @@ workspace = true
 caseless = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+codex-execpolicy-rules = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 multimap = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

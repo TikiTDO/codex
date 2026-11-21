@@ -5,6 +5,190 @@ use pretty_assertions::assert_eq;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+#[cfg(unix)]
+mod completion_watch_clear {
+    use super::*;
+    use crate::tools::context::ToolCallSource;
+    use crate::tools::context::ToolInvocation;
+    use crate::tools::context::ToolPayload;
+    use crate::tools::handlers::ExecCommandHandler;
+    use crate::tools::registry::ToolExecutor;
+    use crate::turn_diff_tracker::TurnDiffTracker;
+    use pretty_assertions::assert_eq;
+
+    async fn fixture() -> (
+        Arc<Session>,
+        Arc<TurnContext>,
+        Arc<ClearStore>,
+        async_channel::Receiver<Event>,
+    ) {
+        let (mut session, turn, events) = make_session_and_context_with_auth_and_config_and_rx(
+            codex_login::CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            |config| {
+                #[cfg(target_os = "linux")]
+                {
+                    config.codex_linux_sandbox_exe = Some(
+                        codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
+                            .expect("clear/watch tests require the native sandbox helper"),
+                    );
+                }
+            },
+        )
+        .await;
+        let store = Arc::new(ClearStore::default());
+        attach_test_thread_store(Arc::get_mut(&mut session).unwrap(), store.clone()).await;
+        (session, turn, store, events)
+    }
+
+    async fn launch(session: &Arc<Session>, turn: &Arc<TurnContext>, call: &str, notify: bool) {
+        ExecCommandHandler::default()
+            .handle(ToolInvocation {
+                session: Arc::clone(session),
+                step_context: StepContext::for_test(Arc::clone(turn)),
+                turn: Arc::clone(turn),
+                cancellation_token: CancellationToken::new(),
+                tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+                call_id: call.to_string(),
+                tool_name: codex_tools::ToolName::plain("exec_command"),
+                source: ToolCallSource::Direct,
+                native_call: None,
+                environments: Default::default(),
+                payload: ToolPayload::Function {
+                    arguments: serde_json::json!({
+                        "cmd": "sleep 30", "shell": "/bin/bash", "login": false,
+                        "yield_time_ms": 250, "notify_on_exit": notify,
+                    })
+                    .to_string(),
+                },
+            })
+            .await
+            .expect("launch actual bounded background process");
+    }
+
+    #[tokio::test]
+    async fn clear_context_cancels_old_watch_but_preserves_ordinary_terminal() {
+        let (session, turn, _store, events) = fixture().await;
+        launch(&session, &turn, "clear-ordinary", false).await;
+        let ordinary = session.list_background_terminals().await;
+        assert_eq!(ordinary.len(), 1);
+        launch(&session, &turn, "clear-watched", true).await;
+        let manager = &session.services.unified_exec_manager;
+        let generation = manager.completion_watch_generation().await;
+        let result = session.clear_effective_context().await;
+        let next_generation = manager.completion_watch_generation().await;
+        // Observe the real child's terminal event, not a sleep or a synthetic empty registry.
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.expect("execution event channel");
+                if matches!(event.msg, EventMsg::ExecCommandEnd(end) if end.call_id == "clear-watched")
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .is_ok();
+        let remaining = session.list_background_terminals().await;
+        let pending = session
+            .input_queue
+            .has_pending_input(&session.active_turn)
+            .await;
+        let active = session.active_turn.lock().await.is_some();
+        session.close_unified_exec_processes().await;
+        assert!(result.is_ok());
+        assert!(
+            next_generation > generation,
+            "clear did not invalidate old watches"
+        );
+        assert!(
+            ended,
+            "watched process did not terminate after successful clear"
+        );
+        assert_eq!(remaining, ordinary, "ordinary terminal lifetime changed");
+        assert!(!pending && !active, "old watcher woke the cleared context");
+    }
+
+    #[tokio::test]
+    async fn clear_context_refusal_preserves_watch_and_generation() {
+        let (session, turn, _store, _events) = fixture().await;
+        session
+            .spawn_task(
+                Arc::clone(&turn),
+                Vec::new(),
+                NeverEndingTask {
+                    kind: TaskKind::Regular,
+                    listen_to_cancellation_token: true,
+                },
+            )
+            .await;
+        // Starting a task is itself a replacement boundary. Arm on the active task so this
+        // fixture measures the refused clear, not the preceding task-start cancellation.
+        launch(&session, &turn, "refused-clear-watched", true).await;
+        let before = session.list_background_terminals().await;
+        let generation = session
+            .services
+            .unified_exec_manager
+            .completion_watch_generation()
+            .await;
+        let refused = session.clear_effective_context().await.is_err();
+        let next_generation = session
+            .services
+            .unified_exec_manager
+            .completion_watch_generation()
+            .await;
+        let remaining = session.list_background_terminals().await;
+        session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+        session.close_unified_exec_processes().await;
+        assert!(refused);
+        assert_eq!(next_generation, generation);
+        assert_eq!(remaining, before, "refused clear terminated the watch");
+    }
+
+    #[tokio::test]
+    async fn clear_context_failed_or_cancelled_persistence_preserves_watch_and_generation() {
+        for failure in ["append", "flush", "cancel"] {
+            let (session, turn, store, _events) = fixture().await;
+            launch(&session, &turn, "failed-clear-watched", true).await;
+            let before = session.list_background_terminals().await;
+            let generation = session
+                .services
+                .unified_exec_manager
+                .completion_watch_generation()
+                .await;
+            match failure {
+                "cancel" => {
+                    store.block_flush.store(true, Ordering::SeqCst);
+                    let mut clear = Box::pin(tokio::task::unconstrained(
+                        session.clear_effective_context(),
+                    ));
+                    assert!(futures::poll!(clear.as_mut()).is_pending());
+                    store.entered.acquire().await.unwrap().forget();
+                    drop(clear);
+                }
+                _ => {
+                    store
+                        .fail_append
+                        .store(failure == "append", Ordering::SeqCst);
+                    store.fail_flush.store(failure == "flush", Ordering::SeqCst);
+                    assert!(session.clear_effective_context().await.is_err());
+                }
+            }
+            let next_generation = session
+                .services
+                .unified_exec_manager
+                .completion_watch_generation()
+                .await;
+            let remaining = session.list_background_terminals().await;
+            store.fail_append.store(false, Ordering::SeqCst);
+            store.fail_flush.store(false, Ordering::SeqCst);
+            session.close_unified_exec_processes().await;
+            assert_eq!(next_generation, generation, "{failure}");
+            assert_eq!(remaining, before, "{failure}: watch lifetime changed");
+        }
+    }
+}
+
 struct ClearStore {
     inner: InMemoryThreadStore,
     block_flush: AtomicBool,
@@ -173,10 +357,13 @@ async fn clear_context_wake_first_real_reservation_is_preserved() {
     let store = Arc::new(ClearStore::default());
     attach_test_thread_store(&mut session, store.clone()).await;
     queue_trigger(&session).await;
-    let (reserved, _) = session.reserve_pending_work_turn().await.unwrap();
+    let reserved = session.reserve_pending_work_turn().await.unwrap();
     assert!(session.clear_effective_context().await.is_err());
     let active = session.active_turn.lock().await;
-    assert!(Arc::ptr_eq(&active.as_ref().unwrap().turn_state, &reserved));
+    assert!(Arc::ptr_eq(
+        &active.as_ref().unwrap().turn_state,
+        &reserved.turn_state
+    ));
     assert!(session.input_queue.has_trigger_turn_mailbox_items().await);
 }
 
@@ -328,7 +515,7 @@ async fn clear_context_private_completion_keeps_admission_through_actual_flush(
     assert!(futures::poll!(clear.as_mut()).is_pending());
     store.fail_flush.store(false, Ordering::SeqCst);
     store.release.add_permits(1);
-    let ((), result) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let (_, result) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::join!(finish, clear)
     })
     .await
@@ -396,7 +583,7 @@ async fn clear_context_private_completion_releases_admission_before_blocked_pare
         "admission released before send can complete"
     );
     queue_trigger(&session).await;
-    let (next_state, _) = session
+    let next_state = session
         .reserve_pending_work_turn()
         .await
         .expect("parent may reuse reviewer immediately");
@@ -419,7 +606,7 @@ async fn clear_context_private_completion_releases_admission_before_blocked_pare
             .as_ref()
             .unwrap()
             .turn_state,
-        &next_state
+        &next_state.turn_state
     ));
 }
 
@@ -538,10 +725,9 @@ async fn clear_context_real_ordinary_input_waits_for_barrier_then_starts_on_clea
     let mut ordinary = Box::pin(tokio::task::unconstrained(
         super::super::turn_input::handle(
             &session,
-            TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "ORDINARY_INPUT_AFTER_CLEAR".into(),
-                text_elements: Vec::new(),
-            }]),
+            TurnInputRequest::user_input(vec![codex_user_input::ResolvedUserInput::text(
+                "ORDINARY_INPUT_AFTER_CLEAR".into(),
+            )]),
             TurnInputMode::StartOrSteer,
             "ordinary-after-clear".into(),
         ),

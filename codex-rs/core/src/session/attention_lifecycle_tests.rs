@@ -451,16 +451,16 @@ async fn canonical_attention_lost_suspend_waiter_keeps_queued_request_order(phas
         thread
             .io
             .tx_sub
-            .send(crate::session::Submission {
+            .send(Box::new(crate::session::Submission {
                 id: id.into(),
-                op,
+                op: op.into(),
                 turn_extension_init: None,
                 trace: None,
                 parent_turn_id: None,
                 root_turn_id: None,
                 residency_guard: None,
                 message_delivery: None,
-            })
+            }))
             .await
             .unwrap();
         if index == 0 {
@@ -547,7 +547,10 @@ fn raw_fixture_context(marker: &'static str) -> crate::context::InternalModelCon
 async fn raw_fixture_thread(
     session: Arc<Session>,
     events: async_channel::Receiver<Event>,
-) -> (Arc<crate::CodexThread>, async_channel::Receiver<Submission>) {
+) -> (
+    Arc<crate::CodexThread>,
+    async_channel::Receiver<Box<Submission>>,
+) {
     let context = session
         .active_turn
         .lock()
@@ -567,10 +570,14 @@ async fn raw_fixture_thread(
     (Arc::new(thread), receiver)
 }
 
-fn contains_raw_fixture_input(input: &[TurnInput], marker: &'static str) -> bool {
+fn contains_raw_fixture_input(
+    input: &[crate::session::input_queue::InputQueueEntry],
+    marker: &'static str,
+) -> bool {
     let expected = crate::context::ContextualUserFragment::into(raw_fixture_context(marker));
-    input.iter().any(|item| {
-        matches!(item, TurnInput::ResponseItem(envelope)
+    input.iter().any(|entry| {
+        entry.additional_context.is_none()
+            && matches!(&entry.input, TurnInput::ResponseItem(envelope)
             if envelope.item == expected && envelope.metadata.is_none())
     })
 }
@@ -692,7 +699,10 @@ async fn canonical_attention_public_raw_lost_reply_is_outer_unknown_after_actual
     );
     assert!(futures::poll!(&mut call).is_pending());
     let submission = receiver.recv().await.unwrap();
-    let Op::InjectAttention { item, reply } = submission.op else {
+    let crate::session::SubmissionOp::Protocol(op) = submission.op else {
+        panic!("public helper queued a protocol operation")
+    };
+    let Op::InjectAttention { item, reply } = *op else {
         panic!("public helper queued its typed operation")
     };
     // Controlled observation fault: use the real private append, then lose its

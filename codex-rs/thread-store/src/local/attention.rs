@@ -124,7 +124,7 @@ async fn load_source(
         let verified = store
             .resolve_attention_lineage(thread_id, path.clone())
             .await?;
-        if verified != proposed {
+        if verified.segments() != proposed.segments() {
             continue;
         }
         let mut writers = Vec::new();
@@ -168,14 +168,15 @@ async fn load_source(
         let captured = store
             .resolve_attention_lineage(thread_id, path.clone())
             .await?;
-        if captured != verified {
+        if captured.segments() != verified.segments() {
             continue;
         }
         if let Some(scope) = scope.as_ref()
-            && *scope
+            && scope.segments()
                 != store
                     .resolve_attention_presentation_lineage(thread_id, path.clone())
                     .await?
+                    .segments()
         {
             continue;
         }
@@ -211,15 +212,17 @@ async fn load_source(
             if result.paginated {
                 view.retained_turn_ids = positive_turn_ids(store, thread_id, &bound).await?;
             }
-            if verified
+            if verified.segments()
                 != store
                     .resolve_attention_lineage(thread_id, path.clone())
                     .await?
-                || scope
+                    .segments()
+                || scope.as_ref().map(RolloutLineage::segments)
                     != Some(
                         store
                             .resolve_attention_presentation_lineage(thread_id, path.clone())
-                            .await?,
+                            .await?
+                            .segments(),
                     )
             {
                 return Err(unavailable(
@@ -297,13 +300,13 @@ async fn positive_turn_ids(
 pub(super) struct ReplacementGuards {
     _target: tokio::sync::OwnedRwLockWriteGuard<()>,
     _ancestors: Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
-    _writers: Vec<tokio::sync::OwnedMutexGuard<()>>,
+    _writers: Vec<tokio::sync::OwnedMutexGuard<u64>>,
 }
 
 impl ReplacementGuards {
     pub(super) fn target_only(
         target: tokio::sync::OwnedRwLockWriteGuard<()>,
-        writer: tokio::sync::OwnedMutexGuard<()>,
+        writer: tokio::sync::OwnedMutexGuard<u64>,
     ) -> Self {
         Self {
             _target: target,
@@ -351,7 +354,7 @@ pub(super) async fn lock_replacement(
         let verified = store
             .resolve_attention_lineage(thread_id, path.clone())
             .await?;
-        if verified != proposed {
+        if verified.segments() != proposed.segments() {
             continue;
         }
         return Ok((
@@ -746,6 +749,7 @@ mod tests {
         std::fs::write(&path, b"replacement\n").unwrap();
         let segment = RolloutLineageSegment {
             rollout_id: physical,
+            hides_parent: false,
             owner_thread_id: id,
             rollout_path: path,
             start_ordinal: 1,
@@ -765,6 +769,7 @@ mod tests {
         std::fs::write(&path, &prefix).unwrap();
         let mut segment = RolloutLineageSegment {
             rollout_id: id,
+            hides_parent: false,
             owner_thread_id: id,
             rollout_path: path.clone(),
             start_ordinal: 1,
@@ -802,6 +807,7 @@ mod tests {
         let physical = ThreadId::default();
         let segment = RolloutLineageSegment {
             rollout_id: physical,
+            hides_parent: false,
             owner_thread_id: other,
             rollout_path: "unused".into(),
             start_ordinal: 1,
@@ -863,15 +869,17 @@ mod cancellation_tests {
                 let _ = released.recv();
             });
             entry.await.unwrap();
-            let lineage = super::super::rollout_lineage::RolloutLineage {
-                segments: vec![RolloutLineageSegment {
+            let lineage = super::super::rollout_lineage::RolloutLineage::from_captured_segments(
+                id,
+                vec![RolloutLineageSegment {
                     rollout_id: id,
+                    hides_parent: false,
                     owner_thread_id: id,
                     rollout_path: path.clone(),
                     start_ordinal: 1,
                     end: None,
                 }],
-            };
+            );
             let mut work = Box::pin(capture_under_guards(id, lineage, false, protection));
             assert!(futures::poll!(&mut work).is_pending());
             drop(work);
@@ -943,6 +951,7 @@ mod cancellation_tests {
         };
         let segment = RolloutLineageSegment {
             rollout_id: id,
+            hides_parent: false,
             owner_thread_id: id,
             rollout_path: path.clone(),
             start_ordinal: 1,

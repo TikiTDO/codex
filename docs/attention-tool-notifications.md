@@ -39,11 +39,16 @@ the question's callback. It is consumed once on admission. An uncertain admissio
 retried. This is admission evidence, not evidence that the model read or acted on the result.
 
 Subscriptions survive ordinary turn completion so they can wake an idle hand. Interruption,
-task replacement, context-compaction installation and shutdown cancel them and
+task replacement, context-compaction installation, successful idle context clear and shutdown cancel them and
 terminate only their opted-in watcher commands; ordinary terminals retain their existing
 lifecycle. A generation check prevents a command launched before cancellation from arming late.
 The hand must explicitly re-arm after those boundaries. There is no automatic cold-resume replay
 of shell processes or pending subscriptions.
+
+Idle clear fences completion delivery before taking idle admission. Only a successfully persisted
+and installed replacement invalidates the watcher generation; refused, failed or cancelled clears
+leave existing watches intact. Ordinary background terminals are not completion subscriptions and
+retain their existing lifetime.
 
 Codex does not infer a quiet timeout from arbitrary stdout or exit codes. Filtering and quiet
 retry belong to the hand's bounded watcher command, which can wait again without waking the model.

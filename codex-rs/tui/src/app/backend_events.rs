@@ -7,47 +7,84 @@ use super::app_server_event_targets::server_notification_thread_target;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::AppServerSessionEvent;
 use crate::backend_id::BackendId;
+use crate::chatwidget::ThreadInputState;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::ServerNotification;
+use codex_protocol::ThreadId;
+use std::collections::HashMap;
 
 impl App {
     pub(super) async fn handle_polled_backend_event(
         &mut self,
         app_server: &AppServerSession,
         displayed_owner: BackendId,
+        parked_inputs: &mut HashMap<ThreadId, ThreadInputState>,
         event: AppServerSessionEvent,
     ) {
         if displayed_owner != event.backend_id {
-            // A parked voice session still needs its own notifications.
-            if event.backend_id == app_server.backend_id()
-                && let AppServerEvent::ServerNotification(notification) = &event.event
+            if event.backend_id != app_server.backend_id() {
+                return;
+            }
+            let invalidates_discovery = match &event.event {
+                AppServerEvent::Lagged { .. } | AppServerEvent::Disconnected { .. } => true,
+                AppServerEvent::ServerNotification(notification) => matches!(
+                    notification.as_ref(),
+                    ServerNotification::AccountUpdated(_)
+                        | ServerNotification::ThreadArchived(_)
+                        | ServerNotification::ThreadDeleted(_)
+                        | ServerNotification::ThreadUnarchived(_)
+                ),
+                _ => false,
+            };
+            if invalidates_discovery {
+                self.cancel_agents_overview_refresh(event.backend_id);
+                self.reset_agents_overview_discovery(event.backend_id);
+            }
+            if let AppServerEvent::ServerNotification(notification) = &event.event
                 && let ServerNotificationThreadTarget::Thread(thread_id) =
                     server_notification_thread_target(notification)
-                && self.voice_owner_thread_id() == Some(thread_id)
             {
-                // Backend switching retains the voice owner's existing channel
-                // and stamps its source. Never update a colliding foreign cache
-                // or feed this event into the displayed thread's active receiver.
-                let owned_channel = self
-                    .thread_event_channels
-                    .get(&thread_id)
-                    .filter(|channel| channel.backend_id == Some(event.backend_id));
-                if let Some(channel) = owned_channel {
-                    let mut store = channel.store.lock().await;
-                    if store.suppresses_attention_marker(notification) {
+                if matches!(
+                    notification.as_ref(),
+                    ServerNotification::ThreadArchived(_)
+                        | ServerNotification::ThreadDeleted(_)
+                        | ServerNotification::ThreadUnarchived(_)
+                ) && self.backend_registry.owner(thread_id) == Some(event.backend_id)
+                {
+                    self.track_agents_overview_notification(notification);
+                    self.repaint_agents_overview();
+                }
+                if let ServerNotification::ThreadSettingsUpdated(settings) = notification.as_ref()
+                    && self.backend_registry.owner(thread_id) == Some(event.backend_id)
+                    && self
+                        .update_retained_blank_settings(thread_id, settings)
+                        .await
+                    && let Some(input) = parked_inputs.get_mut(&thread_id)
+                {
+                    input.pending_thread_settings = Some(settings.clone());
+                }
+                if self.voice_owner_thread_id() == Some(thread_id) {
+                    // Retain exact backend ownership and foreground provenance even
+                    // while a different backend is displayed.
+                    let owned_channel = self
+                        .thread_event_channels
+                        .get(&thread_id)
+                        .filter(|channel| channel.backend_id == Some(event.backend_id));
+                    if let Some(channel) = owned_channel {
+                        let mut store = channel.store.lock().await;
+                        if store.suppresses_attention_marker(notification) {
+                            return;
+                        }
+                        store.push_notification_ref(notification);
+                    } else if matches!(
+                        notification.as_ref(),
+                        ServerNotification::AttentionTurnStarted(_)
+                    ) {
+                        tracing::warn!(%thread_id, "background voice attention provenance unavailable: source channel is not bound");
                         return;
                     }
-                    // Genuine input and every native horizon mutation must reach
-                    // the same owner even while another backend is displayed.
-                    store.push_notification_ref(notification);
-                } else if matches!(
-                    notification.as_ref(),
-                    ServerNotification::AttentionTurnStarted(_)
-                ) {
-                    tracing::warn!(%thread_id, "background voice attention provenance unavailable: source channel is not bound");
-                    return;
+                    self.deliver_background_voice_notification(thread_id, notification);
                 }
-                self.deliver_background_voice_notification(thread_id, notification);
             }
             return;
         }

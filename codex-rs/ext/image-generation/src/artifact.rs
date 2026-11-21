@@ -7,21 +7,54 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 const MAX_IMAGE_GENERATION_OUTPUT_HINT_BYTES: usize = 1024;
 const MAX_TITLE_SLUG_BYTES: usize = 80;
 
-/// Returns the artifact path for a generated image: one folder per local day, and a filename that
-/// sorts by creation time and names the image by its title (custom layer, from 1a134a594).
+/// Identify GIFs from their encoded header so transport and filenames preserve animation.
+#[derive(Clone, Copy)]
+pub(crate) enum GeneratedImageFormat {
+    Png,
+    Gif,
+}
+
+impl GeneratedImageFormat {
+    pub(crate) fn from_base64(result: &str) -> Self {
+        let result = result.trim();
+        if result.starts_with("R0lGODdh") || result.starts_with("R0lGODlh") {
+            Self::Gif
+        } else {
+            Self::Png
+        }
+    }
+
+    pub(crate) fn mime_type(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Gif => "image/gif",
+        }
+    }
+
+    pub(crate) fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Gif => "gif",
+        }
+    }
+}
+
+/// Date, intentional title and call identity remain stable for either encoded format.
 pub(crate) fn image_generation_artifact_path(
     output_dir: &AbsolutePathBuf,
     created_at: &DateTime<FixedOffset>,
     title: &str,
     call_id: &str,
+    format: GeneratedImageFormat,
 ) -> AbsolutePathBuf {
     output_dir
         .join(created_at.format("%Y-%m-%d").to_string())
         .join(format!(
-            "{}-{}-{}.png",
+            "{}-{}-{}.{}",
             created_at.format("%Y%m%d-%H%M%S-%3f"),
             title_slug(title),
             identifier_slug(call_id),
+            format.extension(),
         ))
 }
 

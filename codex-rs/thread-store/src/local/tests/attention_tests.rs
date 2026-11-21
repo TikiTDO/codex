@@ -4,6 +4,7 @@ use codex_protocol::attention::ThreadAttentionNotification;
 use codex_protocol::attention::ThreadAttentionOrigin;
 use codex_protocol::attention::ThreadAttentionOriginKind;
 use codex_protocol::attention::ThreadAttentionResponse;
+use pretty_assertions::assert_eq;
 use std::io::Write;
 
 fn notice(thread_id: ThreadId) -> RolloutItem {

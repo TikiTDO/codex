@@ -497,6 +497,7 @@ async fn explicit_compaction_native_reset_stop_leaves_ready_result_unconsumed(po
         },
         session.thread_id,
         Arc::new(crate::hook_mcp_executor::CoreHookMcpExecutor {
+            session: Default::default(),
             runtime: Arc::clone(&session.services.mcp_runtime),
             thread_id: session.thread_id,
         }),

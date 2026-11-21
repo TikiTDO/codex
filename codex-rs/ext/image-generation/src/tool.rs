@@ -4,10 +4,13 @@ use std::io;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use chrono::Local;
+use codex_api::GifOptions;
 use codex_api::ImageBackground;
 use codex_api::ImageEditRequest;
 use codex_api::ImageGenerationRequest;
+use codex_api::ImageOutput;
 use codex_api::ImageQuality;
+use codex_attachment_store::UploadContent;
 use codex_attachment_store::UploadRequest;
 use codex_attachment_store::UploadResult;
 use codex_exec_server::CreateDirectoryOptions;
@@ -59,6 +62,7 @@ use sha2::Sha256;
 
 use crate::IMAGE_GEN_NAMESPACE;
 use crate::IMAGEGEN_TOOL_NAME;
+use crate::artifact::GeneratedImageFormat;
 use crate::artifact::image_generation_artifact_path;
 use crate::artifact::image_generation_output_hint;
 use crate::backend::CodexImagesBackend;
@@ -74,12 +78,14 @@ const MAX_EXECUTOR_GENERATED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_EXECUTOR_GENERATED_IMAGE_BASE64_BYTES: usize =
     MAX_EXECUTOR_GENERATED_IMAGE_BYTES.div_ceil(3) * 4;
 const IMAGEGEN_DESCRIPTION: &str = include_str!("../imagegen_description.md");
+const IMAGEGEN_GIF_DESCRIPTION: &str = include_str!("../imagegen_gif_description.md");
 
 #[derive(Clone)]
 pub(crate) struct ImageGenerationTool {
     backend: CodexImagesBackend,
     save_root: Option<AbsolutePathBuf>,
     thread_id: String,
+    gif_enabled: bool,
 }
 
 impl ImageGenerationTool {
@@ -88,11 +94,13 @@ impl ImageGenerationTool {
         backend: CodexImagesBackend,
         save_root: Option<AbsolutePathBuf>,
         thread_id: String,
+        gif_enabled: bool,
     ) -> Self {
         Self {
             backend,
             save_root,
             thread_id,
+            gif_enabled,
         }
     }
 }
@@ -101,6 +109,8 @@ impl ImageGenerationTool {
 #[serde(deny_unknown_fields)]
 struct ImagegenArgs {
     prompt: String,
+    /// Set this to create a simple looping GIF with 2–16 frames. Use {} for defaults.
+    gif: Option<GifOptions>,
     /// Whether the output should have a transparent background. Defaults to false.
     #[serde(default)]
     transparent_background: bool,
@@ -144,7 +154,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ImageGenerationTool {
 
     /// Advertises a rewritten prompt, background choice, and optional edit references.
     fn spec(&self) -> ToolSpec {
-        imagegen_tool_spec()
+        imagegen_tool_spec(self.gif_enabled)
     }
 
     /// Exposes image generation directly and through the nested code-mode tool surface.
@@ -171,6 +181,16 @@ impl ImageGenerationTool {
             resolve_title(args.title.as_deref()).map_err(FunctionCallError::RespondToModel)?;
         let creative_metadata = args.metadata.clone().unwrap_or_default();
         validate_metadata(&creative_metadata).map_err(FunctionCallError::RespondToModel)?;
+        if args.gif.is_some() && creative_metadata != ImagegenMetadata::default() {
+            return Err(FunctionCallError::RespondToModel(
+                "Embedded artifact metadata is supported for PNG only; omit metadata for GIF output.".into(),
+            ));
+        }
+        if args.gif.is_some() && !self.gif_enabled {
+            return Err(FunctionCallError::RespondToModel(
+                "GIF output is unavailable in this session.".to_string(),
+            ));
+        }
         let PreparedImageRequest {
             request,
             input_images,
@@ -285,9 +305,11 @@ impl ImageGenerationTool {
                 let request = UploadRequest {
                     thread_id: self.thread_id.clone(),
                     ephemeral: call.ephemeral,
-                    file_name: None,
-                    tags: HashMap::from([("usage".to_string(), "image_gen".to_string())]),
-                    data,
+                    content: UploadContent::Image {
+                        file_name: None,
+                        tags: HashMap::from([("usage".to_string(), "image_gen".to_string())]),
+                        data,
+                    },
                 };
                 match call.attachment_store.upload(request).await {
                     Ok(UploadResult::File { file_id }) => GeneratedImageRef::File { file_id },
@@ -373,6 +395,7 @@ async fn save_image_generation_result(
     call_id: &str,
     result: &str,
 ) -> Option<AbsolutePathBuf> {
+    let format = GeneratedImageFormat::from_base64(result);
     let (output_dir, save_result) = match save_root {
         Some(save_root) => {
             let path = image_generation_artifact_path(
@@ -380,13 +403,17 @@ async fn save_image_generation_result(
                 &metadata.created_at,
                 &metadata.title,
                 call_id,
+                format,
             );
             let output_dir = path.parent().unwrap_or_else(|| save_root.clone());
             let save_result: io::Result<AbsolutePathBuf> = async {
                 let bytes = BASE64_STANDARD
                     .decode(result.trim().as_bytes())
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-                let bytes = embed_png_metadata(bytes, metadata)?;
+                let bytes = match format {
+                    GeneratedImageFormat::Png => embed_png_metadata(bytes, metadata)?,
+                    GeneratedImageFormat::Gif => bytes,
+                };
                 if let Some(parent) = path.parent() {
                     LOCAL_FS
                         .create_directory(
@@ -435,7 +462,10 @@ async fn save_image_generation_result(
                     ));
                 }
 
-                let bytes = embed_png_metadata(bytes, metadata)?;
+                let bytes = match format {
+                    GeneratedImageFormat::Png => embed_png_metadata(bytes, metadata)?,
+                    GeneratedImageFormat::Gif => bytes,
+                };
                 if bytes.len() > MAX_EXECUTOR_GENERATED_IMAGE_BYTES {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -465,6 +495,7 @@ async fn save_image_generation_result(
                     &metadata.created_at,
                     &metadata.title,
                     call_id,
+                    format,
                 );
                 if let Some(parent) = path.parent() {
                     let parent_uri = PathUri::from_abs_path(&parent);
@@ -560,6 +591,7 @@ async fn request_for_call_args(
             return Ok(PreparedImageRequest {
                 request: ImageRequest::Generate(ImageGenerationRequest {
                     prompt: args.prompt.clone(),
+                    output: args.gif.map(ImageOutput::Gif),
                     background: Some(background),
                     model: IMAGE_MODEL.to_string(),
                     n: None,
@@ -609,6 +641,7 @@ async fn request_for_call_args(
         request: ImageRequest::Edit(ImageEditRequest {
             images,
             prompt: args.prompt.clone(),
+            output: args.gif.map(ImageOutput::Gif),
             background: Some(background),
             model: IMAGE_MODEL.to_string(),
             n: None,
@@ -734,7 +767,7 @@ fn parse_args(call: &ToolCall<'_>) -> Result<ImagegenArgs, FunctionCallError> {
 }
 
 /// Builds the namespace function schema exposed to the model.
-fn imagegen_tool_spec() -> ToolSpec {
+fn imagegen_tool_spec(gif_enabled: bool) -> ToolSpec {
     let mut schema_value = serde_json::to_value(
         SchemaSettings::draft2019_09()
             .with(|settings| settings.inline_subschemas = true)
@@ -745,6 +778,9 @@ fn imagegen_tool_spec() -> ToolSpec {
     let Value::Object(ref mut schema) = schema_value else {
         unreachable!("imagegen root schema must be an object");
     };
+    if !gif_enabled && let Some(Value::Object(properties)) = schema.get_mut("properties") {
+        properties.remove("gif");
+    }
     let mut input_schema = Map::new();
     for key in ["properties", "required", "type", "additionalProperties"] {
         if let Some(value) = schema.remove(key) {
@@ -756,7 +792,11 @@ fn imagegen_tool_spec() -> ToolSpec {
         description: default_namespace_description(IMAGE_GEN_NAMESPACE),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: IMAGEGEN_TOOL_NAME.to_string(),
-            description: IMAGEGEN_DESCRIPTION.to_string(),
+            description: if gif_enabled {
+                format!("{IMAGEGEN_DESCRIPTION}\n{IMAGEGEN_GIF_DESCRIPTION}")
+            } else {
+                IMAGEGEN_DESCRIPTION.to_string()
+            },
             strict: false,
             parameters: parse_tool_input_schema(&Value::Object(input_schema))
                 .unwrap_or_else(|err| panic!("imagegen input schema should parse: {err}")),
@@ -797,7 +837,11 @@ impl ToolOutput for GeneratedImageOutput {
     fn code_mode_result(&self, _payload: &ToolPayload) -> Value {
         let mut result = Map::from_iter([(
             "image_url".to_string(),
-            Value::String(format!("data:image/png;base64,{}", self.result)),
+            Value::String(format!(
+                "data:{};base64,{}",
+                GeneratedImageFormat::from_base64(&self.result).mime_type(),
+                self.result
+            )),
         )]);
         if let Some(output_hint) = &self.output_hint {
             result.insert(
@@ -812,7 +856,11 @@ impl ToolOutput for GeneratedImageOutput {
     fn to_response_item(&self, call_id: &str, _payload: &ToolPayload) -> ResponseInputItem {
         let mut content = vec![FunctionCallOutputContentItem::InputImage {
             image: ImageReference::Inline {
-                image_url: format!("data:image/png;base64,{}", self.result),
+                image_url: format!(
+                    "data:{};base64,{}",
+                    GeneratedImageFormat::from_base64(&self.result).mime_type(),
+                    self.result
+                ),
             },
             detail: Some(DEFAULT_IMAGE_DETAIL),
         }];
